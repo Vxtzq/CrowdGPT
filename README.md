@@ -19,7 +19,7 @@
 
 ---
 
-## 🌪️ What is CrowdGPT?
+## 🤔 What is CrowdGPT?
 
 CrowdGPT is a **BitTorrent-style compute swarm** for training Large Language Models. Instead of relying on centralized mega-corporations, CrowdGPT turns idle GPUs into a single, decentralized supercomputer.
 
