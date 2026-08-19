@@ -30,10 +30,94 @@ CrowdGPT is an **anarchic, BitTorrent-style compute swarm** for training Large L
 
 ---
 
-## ⚡ Quick Start (Zero-Friction)
+## ⚡ Quick Start
 
-Just copy and paste the one-liner for your operating system. It will automatically clone the repo, detect your GPU hardware, install the correct PyTorch backend, and launch the swarm node.
+Want the absolute fastest setup? Check out [**`easy_install.md`**](./easy_install.md) for one-line installers that auto-detect your hardware and launch the node instantly.
 
-**🪟 Windows (PowerShell):**
-```powershell
-git clone https://github.com/Vxtzq/CrowdGPT/; cd CrowdGPT; $req="requirements.txt"; if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { $req="requirements_cuda.txt" } elseif (Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match "AMD|Radeon|Intel|Arc" }) { $req="requirements_directml.txt" }; Write-Host "🔧 Installing $req"; pip install -r $req; python crowdgpt.py
+### 🛠️ Manual Installation
+
+If you prefer to manage your own Python environments or already have PyTorch installed:
+
+1. **Clone the repository:**
+
+   ~~~bash
+   git clone https://github.com/Vxtzq/CrowdGPT/
+   cd CrowdGPT
+   ~~~
+
+2. **Install the requirements for your hardware:**
+
+   *(Note: `torch` is unpinned in these files to preserve your existing CUDA/ROCm installations and avoid re-downloading multi-GB wheels)*
+
+   - **NVIDIA (CUDA):**
+     ~~~bash
+     pip install -r requirements_cuda.txt
+     ~~~
+   - **AMD (ROCm):**
+     ~~~bash
+     pip install -r requirements_rocm.txt
+     ~~~
+   - **DirectX / Windows GPUs (DirectML):**
+     ~~~bash
+     pip install -r requirements_directml.txt
+     ~~~
+   - **CPU / macOS (MPS auto-detected):**
+     ~~~bash
+     pip install -r requirements.txt
+     ~~~
+
+3. **Launch the swarm node:**
+
+   ~~~bash
+   python crowdgpt.py
+   ~~~
+
+---
+
+## 🎛️ CLI Configuration
+
+By default, the node runs in continuous swarm mode, pulling shards from the coordinator. You can override the defaults to force specific hardware or training intensities:
+
+~~~bash
+python crowdgpt.py --server http://your-coordinator:3000 --mode deep --batch-size 8 --precision bf16
+~~~
+
+| Flag | Description | Allowed Values |
+|---|---|---|
+| `--server` | Swarm coordinator URL | Any valid URL |
+| `--mode` | Training intensity | `quick`, `balanced`, `deep`, `ultra` |
+| `--batch-size` | Batch size (power of 2) | `1, 2, 4, 8, 16, 32, 64, 128, 256, 512` |
+| `--seq-len` | Sequence length (power of 2) | `8, 16, 32, 64` |
+| `--precision` | Weight precision | `fp32`, `bf16`, `fp16` |
+| `--backend` | Force compute backend | `auto`, `cuda`, `rocm`, `directml`, `mps`, `cpu` |
+| `--single` | Run one cycle and exit | Boolean flag |
+
+---
+
+## 🧠 How the Swarm Works
+
+1. **The Coordinator (`server.py`):** Acts as a tracker. It holds the global model weights, hands out 1MB dataset shards, and aggregates incoming gradients.
+2. **The Swarm Node (`crowdgpt.py`):** Connects anonymously via IP, downloads the global weights, computes gradients locally on your GPU, and seeds the delta back to the network.
+3. **Consensus:** The swarm advances only when multiple distinct nodes agree on the math (Byzantine Fault Tolerance), preventing malicious actors from poisoning the model.
+
+---
+
+## 📚 Contribute Training Data
+
+Want to shape what the model learns? We curate our training data via Pull Requests to our HuggingFace dataset to ensure high quality and prevent poisoning. 
+
+👉 **[Read the Data Contribution Guide](./docs/DATA.md)**
+
+---
+
+## 🤝 Community & Links
+
+- 🌐 **Website:** [crowdgpt.ai](https://crowdgpt.ai) *(Coming Soon)*
+- 💬 **Discord:** [Join the Swarm](#) *(Link coming soon)*
+- 🐦 **Twitter/X:** [@CrowdGPT_ai](#) *(Link coming soon)*
+
+---
+
+<p align="center">
+  <sub>Built with 🌪️ by the open-source community. If your GPU is idle, the swarm is hungry.</sub>
+</p>
