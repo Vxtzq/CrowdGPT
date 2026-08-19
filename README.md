@@ -13,7 +13,7 @@
 
 <h3 align="center">True Decentralized, Permissionless LLM Training.</h3>
 <p align="center">
-  No accounts. Just raw compute.<br>
+  No accounts. Safe. Useful<br>
   <a href="https://crowdgpt.ai"><strong>crowdgpt.ai</strong> (Coming Soon 🚀)</a> · <a href="./docs/ARCHITECTURE.md">Architecture</a> · <a href="./docs/DATA.md">Contribute Data</a>
 </p>
 
