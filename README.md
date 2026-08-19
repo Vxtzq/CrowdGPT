@@ -93,14 +93,6 @@ python crowdgpt.py --server http://your-coordinator:3000 --mode deep --batch-siz
 
 ---
 
-## 🧠 How the Swarm Works
-
-1. **The Coordinator (`server.py`):** Acts as a tracker. It holds the global model weights, hands out 1MB dataset shards, and aggregates incoming gradients.
-2. **The Swarm Node (`crowdgpt.py`):** Connects anonymously via IP, downloads the global weights, computes gradients locally on your GPU, and seeds the delta back to the network.
-3. **Consensus:** The swarm advances only when multiple distinct nodes agree on the math (Byzantine Fault Tolerance), preventing malicious actors from poisoning the model.
-
----
-
 ## 📚 Contribute Training Data
 
 Want to shape what the model learns? We curate our training data via Pull Requests to our HuggingFace dataset to ensure high quality and prevent poisoning. 
@@ -112,11 +104,5 @@ Want to shape what the model learns? We curate our training data via Pull Reques
 ## 🤝 Community & Links
 
 - 🌐 **Website:** [crowdgpt.ai](https://crowdgpt.ai) *(Coming Soon)*
-- 💬 **Discord:** [Join the Swarm](#) *(Link coming soon)*
+- 💬 **Discord:** [Join CrowdGPT](#) *(Link coming soon)*
 - 🐦 **Twitter/X:** [@CrowdGPT_ai](#) *(Link coming soon)*
-
----
-
-<p align="center">
-  <sub>Built with 🌪️ by the open-source community. If your GPU is idle, the swarm is hungry.</sub>
-</p>
