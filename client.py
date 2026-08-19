@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 console = Console()
 
 # ============ CONFIG ============
-DATASET_URL = "https://huggingface.co/datasets/Vxtzq/TinyStoriesBIN/resolve/main/tinystories_tokens.bin"
+DATASET_URL = "https://huggingface.co/datasets/Vxtzq/CrowdGPT/resolve/main/tinystories_tokens.bin"
 CHECKPOINT_DIR = Path("checkpoints")
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
