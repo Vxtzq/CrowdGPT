@@ -2,7 +2,7 @@
   <img src="https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/res/logo.png" alt="CrowdGPT" width="100%">
 </p>
 
-**If you find installation confusing go check [Installation guide](./easy_install.md)**
+**If you find installation confusing go check [easy_install.md](./easy_install.md)**
 
 # Download
 ```bash
