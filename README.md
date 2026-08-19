@@ -2,6 +2,10 @@
   <img src="https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/logo.png" alt="CrowdGPT" width="100%">
 </p>
 
+# Download
+```bash
+git clone https://github.com/Vxtzq/CrowdGPT/
+```
 # Install
 CUDA (Nvidia GPU)
 
