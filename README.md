@@ -82,7 +82,7 @@ python crowdgpt.py --server http://your-coordinator:3000 --mode deep --batch-siz
 
 | Flag | Description | Allowed Values |
 |---|---|---|
-| `--server` |  | Any valid URL |
+| `--server` | `api.crowdgpt.ai` | `api.crowdgpt.ai` |
 | `--mode` | Training intensity | `quick`, `balanced`, `deep`, `ultra` |
 | `--batch-size` | Batch size (power of 2) | `1, 2, 4, 8, 16, 32, 64, 128, 256, 512` |
 | `--seq-len` | Sequence length (power of 2) | `8, 16, 32, 64` |
