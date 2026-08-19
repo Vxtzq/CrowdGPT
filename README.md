@@ -30,7 +30,7 @@ CrowdGPT is a **BitTorrent-style compute swarm** for training Large Language Mod
 
 ## ⚡ Quick Start
 
-Want the absolute fastest setup? Check out [**`easy_install.md`**](./easy_install.md) for one-line install commands that auto-detect your hardware and launch the client instantly.
+Want the absolute fastest setup? Check out [**`easy_install.md`**](./docs/easy_install.md) for one-line install commands that auto-detect your hardware and launch the client instantly.
 
 ### 🛠️ Manual Installation
 
