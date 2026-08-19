@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/logo.png" alt="CrowdGPT" width="100%">
+  <img src="https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/res/logo.png" alt="CrowdGPT" width="100%">
 </p>
 
 # Download
