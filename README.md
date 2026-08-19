@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://crowdgpt.org">
-    <img src="https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/res/logo.png" alt="CrowdGPT" width="100%" style="max-width: 800px; border-radius: 12px;">
+    <img src="https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/res/logo_org.png" alt="CrowdGPT" width="100%" style="max-width: 800px; border-radius: 12px;">
   </a>
 </p>
 
