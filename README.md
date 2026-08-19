@@ -11,9 +11,9 @@
   <img src="https://img.shields.io/badge/Status-Beta-orange?style=for-the-badge" alt="Status">
 </p>
 
-<h3 align="center">The Decentralized, Permissionless LLM Swarm.</h3>
+<h3 align="center">True Decentralized, Permissionless LLM Training.</h3>
 <p align="center">
-  No accounts. No gatekeeping. Just raw compute.<br>
+  No accounts. Just raw compute.<br>
   <a href="https://crowdgpt.ai"><strong>crowdgpt.ai</strong> (Coming Soon 🚀)</a> · <a href="./docs/ARCHITECTURE.md">Architecture</a> · <a href="./docs/DATA.md">Contribute Data</a>
 </p>
 
