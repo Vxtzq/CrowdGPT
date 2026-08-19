@@ -5,8 +5,10 @@
 # Install
 Install requirements
 
-````pip install -r requirements.txt````
+```bash
+pip install -r requirements.txt```
 
 Run
 
-````python client.py````
+```bash
+python client.py```
