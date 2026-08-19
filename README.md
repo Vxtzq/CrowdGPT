@@ -21,12 +21,11 @@
 
 ## 🌪️ What is CrowdGPT?
 
-CrowdGPT is an **anarchic, BitTorrent-style compute swarm** for training Large Language Models. Instead of relying on centralized mega-corporations, CrowdGPT turns idle GPUs around the world into a single, decentralized supercomputer.
+CrowdGPT is a **BitTorrent-style compute swarm** for training Large Language Models. Instead of relying on centralized mega-corporations, CrowdGPT turns idle GPUs into a single, decentralized supercomputer.
 
-- **Permissionless:** No sign-ups, no emails, no API keys. Just run the script.
+- **Permissionless:** No sign-up required, no API keys.
 - **Byzantine Fault Tolerant:** The swarm survives poisoners and bad actors using coordinate-wise median aggregation.
 - **Hardware Agnostic:** Auto-detects NVIDIA (CUDA), AMD (ROCm), Intel/AMD (DirectML), and Apple Silicon (MPS).
-- **Power-of-2 Constraints:** Mathematically locked batch sizes and sequence lengths ensure perfect consensus across the swarm.
 
 ---
 
