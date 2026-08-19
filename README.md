@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://crowdgpt.ai">
-    <img src="https://raw.githubusercontent.ai/Vxtzq/CrowdGPT/main/res/logo.png" alt="CrowdGPT" width="100%" style="max-width: 800px; border-radius: 12px;">
+    <img src="https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/res/logo.png" alt="CrowdGPT" width="100%" style="max-width: 800px; border-radius: 12px;">
   </a>
 </p>
 
@@ -39,7 +39,7 @@ If you prefer to manage your own Python environments or already have PyTorch ins
 1. **Clone the repository:**
 
    ~~~bash
-   git clone https://github.ai/Vxtzq/CrowdGPT/
+   git clone https://github.com/Vxtzq/CrowdGPT/
    cd CrowdGPT
    ~~~
 
