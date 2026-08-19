@@ -6,9 +6,11 @@
 Install requirements
 
 ```bash
-pip install -r requirements.txt```
+pip install -r requirements.txt
+```
 
 Run
 
 ```bash
-python client.py```
+python client.py
+```
