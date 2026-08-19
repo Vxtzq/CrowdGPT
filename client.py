@@ -1,0 +1,423 @@
+#!/usr/bin/env python3
+import sys
+import io
+import os
+import gzip
+import zlib
+import json
+import time
+import struct
+import logging
+import hashlib
+import math
+import gc
+import argparse
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import requests
+
+from rich.console import Console
+from rich.table import Table
+from rich.live import Live
+
+# ============ LOGGING & CONSOLE ============
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
+log = logging.getLogger(__name__)
+console = Console()
+
+# ============ CONFIG ============
+DATASET_URL = "https://huggingface.co/datasets/Vxtzq/TinyStoriesBIN/resolve/main/tinystories_tokens.bin"
+CHECKPOINT_DIR = Path("checkpoints")
+CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+
+MODEL_CONFIG = {"vocabSize": 50257, "dim": 768, "nLayers": 8, "nHeads": 12,
+                "nKvHeads": 4, "headDim": 64, "maxSeqLen": 64, "architecture": "SotaGPT"}
+VOCAB_SIZE = MODEL_CONFIG["vocabSize"]
+DIM = MODEL_CONFIG["dim"]
+N_LAYERS = MODEL_CONFIG["nLayers"]
+N_HEADS = MODEL_CONFIG["nHeads"]
+N_KV_HEADS = MODEL_CONFIG["nKvHeads"]
+HEAD_DIM = MODEL_CONFIG["headDim"]
+MAX_SEQ_LEN = MODEL_CONFIG["maxSeqLen"]
+
+ALLOWED_BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128] # 256+ est trop risqué pour l'estimateur
+ALLOWED_SEQ_LENS = [8, 16, 32, 64]
+
+memory_config = {"ram_gb": 12, "safety_margin_gb": 1.0, "is_auto_detected": False, "precision": "bf16"}
+train_device, train_backend = None, None
+
+BANNER = """
+[bold cyan]CrowdGPT.ai[/bold cyan] [dim]::[/dim] [magenta]Decentralized LLM Swarm Node (Optimized)[/magenta]
+[dim]═══════════════════════════════════════════════════════════════[/dim]
+"""
+
+def print_welcome():
+    console.print(BANNER)
+
+# ============ HARDWARE & MEMORY ============
+def check_backend_available(name):
+    name = name.lower()
+    if name == "cpu": return True, torch.device('cpu'), "CPU"
+    if name == "cuda":
+        if torch.cuda.is_available(): return True, torch.device('cuda'), f"CUDA: {torch.cuda.get_device_name(0)}"
+        return False, None, "CUDA not available"
+    return False, None, f"Unknown: {name}"
+
+def detect_training_backend(force=None):
+    if force and force != "auto":
+        ok, dev, info = check_backend_available(force.lower())
+        if not ok: raise Exception(f"'{force}': {info}")
+        return dev, force.upper()
+    
+    if torch.cuda.is_available():
+        return torch.device('cuda'), "CUDA"
+    return torch.device('cpu'), "CPU"
+
+def auto_detect_vram_budget():
+    global train_backend
+    if train_backend == "CUDA" and torch.cuda.is_available():
+        try:
+            free_b, total_b = torch.cuda.mem_get_info(0)
+            usable = max(0.0, (free_b / 1024**3) - memory_config["safety_margin_gb"])
+            memory_config.update({"ram_gb": round(usable, 2), "is_auto_detected": True})
+            return
+        except Exception: pass
+    try:
+        import psutil
+        avail = psutil.virtual_memory().available / 1024**3
+        memory_config.update({"ram_gb": round(max(1.0, avail - 2.0), 2), "is_auto_detected": True})
+    except ImportError: pass
+
+def estimate_vram_bytes(precision="bf16", batch_size=4, seq_len=64):
+    """Estimation réaliste de la mémoire pour le Full Pretrain sur GPU."""
+    w = 2 if (precision == "bf16" and torch.cuda.is_bf16_supported()) else 4
+    
+    # 1. Poids du modèle (~215 Mo pour cette config)
+    vocab_b = VOCAB_SIZE * DIM * w
+    layer_b = (DIM*2 + DIM*(N_HEADS*HEAD_DIM) + DIM*(N_KV_HEADS*HEAD_DIM)*2 + DIM*DIM + DIM*2 + DIM*4*DIM*2 + 4*DIM*DIM) * w
+    model_b = vocab_b + (layer_b * N_LAYERS)
+    
+    # 2. Optimiseur (AdamW = 2x la taille du modèle) + Gradients
+    optim_grad_b = model_b * 3
+    
+    # 3. Activations (Estimation large mais réaliste : ~20 * B * T * D * w par couche)
+    act_per_layer = 20 * batch_size * seq_len * DIM * w
+    act_b = act_per_layer * N_LAYERS
+    
+    # 4. Logits de sortie
+    logits_b = batch_size * seq_len * VOCAB_SIZE * 4
+    
+    total_raw = model_b + optim_grad_b + act_b + logits_b
+    return int(total_raw * 1.1) + int(0.2 * 1024**3) # 10% de marge + 200Mo de fixe
+
+def recommend_optimal_config(precision="bf16", seq_len=64):
+    """Priorise le Full Pretrain et 100% des couches sur le GPU."""
+    budget = int(memory_config["ram_gb"] * 1024**3)
+    safe = budget - int(0.5 * 1024**3)
+    
+    best_bs = 4
+    for bs in ALLOWED_BATCH_SIZES:
+        if estimate_vram_bytes(precision, bs, seq_len) <= safe:
+            best_bs = bs
+        else:
+            break # On a trouvé la limite, on arrête
+            
+    return 0, "full_pretrain", best_bs, N_LAYERS
+
+# ============ MODEL ARCHITECTURE (Identique, simplifiée pour l'exemple) ============
+def precompute_freqs(dim, sl, dev):
+    inv = 1.0/(10000.0**(torch.arange(0,dim,2,dtype=torch.float32)/dim))
+    t = torch.arange(sl, dtype=torch.float32)
+    f = torch.einsum("i,j->ij", t, inv)
+    e = torch.cat((f,f),-1)
+    return e.cos()[None,None,:,:].to(dev), e.sin()[None,None,:,:].to(dev)
+
+def rotate_half(x):
+    a, b = x[...,:x.shape[-1]//2], x[...,x.shape[-1]//2:]
+    return torch.cat((-b,a),-1)
+
+class GroupedQueryAttention(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.nh, self.nkv, self.nrep = N_HEADS, N_KV_HEADS, N_HEADS//N_KV_HEADS
+        self.wq = nn.Linear(DIM, N_HEADS*HEAD_DIM, bias=False)
+        self.wk = nn.Linear(DIM, N_KV_HEADS*HEAD_DIM, bias=False)
+        self.wv = nn.Linear(DIM, N_KV_HEADS*HEAD_DIM, bias=False)
+        self.wo = nn.Linear(DIM, DIM, bias=False)
+
+    def forward(self, x, cos, sin):
+        B,T,C = x.size()
+        q = self.wq(x).view(B,T,self.nh,HEAD_DIM).transpose(1,2)
+        k = self.wk(x).view(B,T,self.nkv,HEAD_DIM).transpose(1,2)
+        v = self.wv(x).view(B,T,self.nkv,HEAD_DIM).transpose(1,2)
+        ct, st = cos[:,:,:T,:], sin[:,:,:T,:]
+        q = q*ct + rotate_half(q)*st
+        k = k*ct + rotate_half(k)*st
+        k = k.unsqueeze(2).expand(B,self.nkv,self.nrep,T,HEAD_DIM).reshape(B,self.nh,T,HEAD_DIM)
+        v = v.unsqueeze(2).expand(B,self.nkv,self.nrep,T,HEAD_DIM).reshape(B,self.nh,T,HEAD_DIM)
+        a = (q@k.transpose(-2,-1))*(1.0/math.sqrt(HEAD_DIM))
+        m = torch.tril(torch.ones(T,T,device=x.device)).view(1,1,T,T)
+        a = a.masked_fill(m==0, float('-inf'))
+        a = F.softmax(a, dim=-1, dtype=torch.float32).to(q.dtype)
+        return self.wo((a@v).transpose(1,2).contiguous().view(B,T,C))
+
+class SwiGLU(nn.Module):
+    def __init__(self):
+        super().__init__()
+        h = 4*DIM
+        self.w1 = nn.Linear(DIM,h,bias=False); self.w2 = nn.Linear(DIM,h,bias=False); self.w3 = nn.Linear(h,DIM,bias=False)
+    def forward(self, x): return self.w3(F.silu(self.w1(x))*self.w2(x))
+
+class Block(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.ln_1 = nn.LayerNorm(DIM); self.attn = GroupedQueryAttention()
+        self.ln_2 = nn.LayerNorm(DIM); self.mlp = SwiGLU()
+    def forward(self, x, cos, sin):
+        x = x + self.attn(self.ln_1(x), cos, sin)
+        return x + self.mlp(self.ln_2(x))
+
+class SotaGPT(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.wte = nn.Embedding(VOCAB_SIZE, DIM)
+        self.blocks = nn.ModuleList([Block() for _ in range(N_LAYERS)])
+        self.ln_f = nn.LayerNorm(DIM)
+        self.lm_head = nn.Linear(DIM, VOCAB_SIZE, bias=False)
+        self.wte.weight = self.lm_head.weight
+        cm, sm = precompute_freqs(HEAD_DIM, MAX_SEQ_LEN, train_device)
+        self.register_buffer("freqs_cos", cm); self.register_buffer("freqs_sin", sm)
+
+    def forward(self, idx):
+        x = self.wte(idx)
+        for b in self.blocks: x = b(x, self.freqs_cos, self.freqs_sin)
+        return self.lm_head(self.ln_f(x))
+
+    def get_flat_weights(self):
+        return np.concatenate([p.detach().float().flatten().cpu().numpy() for p in self.parameters()])
+
+    def load_flat_weights(self, fw):
+        ft = torch.from_numpy(fw) if not isinstance(fw, torch.Tensor) else fw
+        o = 0
+        for p in self.parameters():
+            s = p.numel()
+            p.data.copy_(ft[o:o+s].view(p.shape).to(p.device))
+            o += s
+
+# ============ DATASET & UTILS ============
+def _fetch_with_retry(url, headers=None, timeout=60, retries=3):
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+            r.raise_for_status()
+            return r
+        except Exception as e:
+            if attempt < retries - 1: time.sleep(2 ** (attempt + 1))
+            else: raise
+
+class TinyStoriesDatasetShard:
+    def __init__(self, url, ci, co, cs, seq_len=64):
+        self.url = url; self.ci = ci; self.co = co; self.cs = min(cs, 10 * 1024 * 1024)
+        self.seq_len = seq_len; self.tps = seq_len + 1
+        self.data = None; self.n = 0; self._l = False
+
+    def load_chunk(self):
+        if self._l: return
+        r = _fetch_with_retry(self.url, headers={'Range': f'bytes={self.co}-{self.co+self.cs-1}'}, timeout=60)
+        self.data = r.content
+        self.n = len(np.frombuffer(self.data, dtype=np.uint16)) // self.tps
+        self._l = True
+
+    def get_batch(self, bs, seed=None):
+        if not self._l: self.load_chunk()
+        tk = np.frombuffer(self.data, dtype=np.uint16)
+        rng = np.random.RandomState(seed)
+        inp, tgt = [], []
+        for _ in range(bs):
+            s = rng.randint(0, self.n) * self.tps
+            inp.append(tk[s:s+self.seq_len])
+            tgt.append(tk[s+1:s+self.seq_len+1])
+        return torch.tensor(np.array(inp), dtype=torch.long), torch.tensor(np.array(tgt), dtype=torch.long)
+
+def decompress_weights(raw, fmt="bf16"):
+    if len(raw) >= 2 and raw[0] == 0x78: raw = zlib.decompress(raw)
+    if fmt == "fp16": return np.frombuffer(raw, dtype=np.uint16).view(np.float16).astype(np.float32)
+    return torch.from_numpy(np.frombuffer(raw, dtype=np.uint16).copy()).view(torch.bfloat16).to(torch.float32).numpy()
+
+# ============ TRAINING ============
+def create_dashboard(step, total_steps, loss, tps, lr, global_step, backend_name, batch_size, seq_len):
+    table = Table(title="🧠 Swarm Node Dashboard", expand=True, border_style="green")
+    table.add_column("Metric", style="bold cyan"); table.add_column("Value", justify="right", style="magenta")
+    table.add_row("📈 Progress", f"{step}/{total_steps} ({step/max(1,total_steps)*100:.1f}%)")
+    table.add_row("📉 Loss", f"{loss:.4f}" if loss > 0 else "—")
+    table.add_row("⚡ Tokens/s", f"{tps:.0f}" if tps else "—")
+    table.add_row("🎛️ LR", f"{lr:.2e}" if lr else "—")
+    table.add_row("🌍 Global Step", str(global_step))
+    table.add_row("🖥️ Backend", backend_name)
+    table.add_row("📦 Batch / SeqLen", f"{batch_size} / {seq_len}")
+    return table
+
+def run_single_contribution(args, session_count):
+    global train_device, train_backend
+
+    console.print(f"[cyan]📡 Requesting shard...[/cyan]")
+    task_res = requests.get(f"{args.server}/fl/task?mode={args.mode}&format={args.precision}", timeout=600)
+    if task_res.status_code != 200: raise Exception(f"Coordinator rejected: {task_res.text[:200]}")
+
+    raw = task_res.content
+    ml = struct.unpack('<I', raw[:4])[0]
+    metadata = json.loads(raw[4:4+ml].decode('utf-8'))
+    weights_bytes = raw[4+ml:]
+
+    train_cfg = metadata.get("trainingConfig", {})
+    task_id = metadata['taskId']; global_step = metadata['globalStep']
+    weight_format = metadata.get('weightFormat', 'bf16')
+
+    batch_size = args.batch_size if args.batch_size > 0 else train_cfg.get("batchSize", 0)
+    seq_len = args.seq_len if args.seq_len > 0 else train_cfg.get("seqLen", 64)
+    steps = args.steps if args.steps > 0 else train_cfg.get("localSteps", 500)
+
+    dataset_shard = TinyStoriesDatasetShard(metadata.get("datasetConfig", {}).get("url", DATASET_URL), 0, 0, 1024*1024, seq_len)
+
+    console.print(f"[cyan]📦 Unpacking weights...[/cyan]")
+    initial_weights = decompress_weights(weights_bytes, weight_format)
+
+    # 🎯 NOUVELLE LOGIQUE D'AUTO-TUNING ROBUSTE
+    if batch_size == 0:
+        lora_rank, mode, best_bs, gpu_layers = recommend_optimal_config(args.precision, seq_len)
+        batch_size = best_bs
+        console.print(f"[green]✅ Config Optimisée:[/green] Mode: [bold]{mode}[/bold] | BS: [bold]{batch_size}[/bold] | GPU Layers: [bold]{gpu_layers}/{N_LAYERS}[/bold]")
+    else:
+        lora_rank = 0 # Force full pretrain si BS manuel
+
+    console.print(f"[cyan]🧠 Initializing SotaGPT...[/cyan]")
+    model = SotaGPT().to(train_device)
+    model.load_flat_weights(initial_weights)
+    model.train()
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9,0.95), weight_decay=0.01)
+    
+    use_autocast = (args.precision == "bf16" and train_backend == "CUDA" and torch.cuda.is_bf16_supported())
+    autocast_dtype = torch.bfloat16 if use_autocast else None
+
+    loss_history = []
+    seed = int(hashlib.md5(task_id.encode()).hexdigest()[:8], 16) + global_step
+
+    console.print(f"[bold green]🚀 Training ({steps} steps, BS={batch_size}, SeqLen={seq_len})[/bold green]")
+
+    with Live(create_dashboard(0, steps, 0, 0, args.lr, global_step, train_backend, batch_size, seq_len),
+              console=console, refresh_per_second=4, screen=False) as live:
+        t0 = time.time(); total_tok = 0
+
+        for step in range(1, steps+1):
+            x, y = dataset_shard.get_batch(batch_size, seed=hash("shard")%10000 + step)
+            x, y = x.to(train_device), y.to(train_device)
+
+            try:
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=autocast_dtype):
+                        logits = model(x)
+                        loss = F.cross_entropy(logits.view(-1,logits.size(-1)), y.view(-1))
+                        loss.backward()
+                else:
+                    logits = model(x)
+                    loss = F.cross_entropy(logits.view(-1,logits.size(-1)), y.view(-1))
+                    loss.backward()
+
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                
+                lv = float(loss.item())
+                if math.isnan(lv) or lv <= 0: lv = 10.0
+                
+                total_tok += x.numel()
+                elapsed = time.time()-t0
+                current_tps = int(total_tok/max(elapsed,0.01))
+                loss_history.append(lv)
+
+                live.update(create_dashboard(step, steps, lv, current_tps, optimizer.param_groups[0]['lr'], global_step, train_backend, batch_size, seq_len))
+            except Exception as e:
+                console.print(f"[bold red]❌ Error: {e}[/bold red]")
+                break
+
+    avg_loss = sum(loss_history)/max(1,len(loss_history))
+    delta = model.get_flat_weights() - initial_weights
+    
+    payload = json.dumps({"taskId":task_id,"loss":float(avg_loss),"localSteps":steps,
+        "tokensProcessed":total_tok,"loraRank":0,"isDelta":True,"weightFormat":"fp32"}).encode()
+    binary = struct.pack('<I', len(payload)) + payload + np.ascontiguousarray(delta.astype(np.float32)).tobytes()
+    compressed = gzip.compress(binary, compresslevel=2)
+
+    console.print(f"[cyan]📤 Seeding delta ({len(compressed)/1024/1024:.2f} MB)...[/cyan]")
+    r = requests.post(f"{args.server}/fl/submit", headers={"Content-Type":"application/octet-stream","Content-Encoding":"gzip"}, data=compressed, timeout=120)
+    
+    if r.status_code == 200:
+        console.print(f"[bold green]✅ Seeded successfully![/bold green]")
+    else:
+        raise Exception(f"Seed failed: {r.text[:300]}")
+
+    gc.collect()
+    if train_backend == "CUDA": torch.cuda.empty_cache()
+
+def run_swarm_node(args):
+    global train_device, train_backend
+    print_welcome()
+
+    try:
+        train_device, train_backend = detect_training_backend(args.backend)
+        console.print(f"[green]✅ Backend:[/green] [bold]{train_backend}[/bold] ({train_device})")
+        
+        if train_backend == "CPU":
+            console.print("\n[bold red]🚨 WARNING: PyTorch ne détecte PAS ton GPU ![/bold red]")
+            console.print("[yellow]Installe la version CUDA :[/yellow]")
+            console.print("[bold]pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121[/bold]\n")
+    except Exception as e:
+        console.print(f"[bold red]❌ Backend error: {e}[/bold red]")
+        sys.exit(1)
+
+    auto_detect_vram_budget()
+    console.print(f"[green]💾 VRAM/RAM Budget:[/green] [bold]{memory_config['ram_gb']:.1f} GB[/bold] usable")
+
+    session_count = 0
+    while True:
+        session_count += 1
+        console.print(f"\n[bold cyan]🔄 Cycle #{session_count}[/bold cyan]")
+        try:
+            run_single_contribution(args, session_count)
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            console.print(f"[bold red]❌ Cycle failed: {e}[/bold red]")
+            time.sleep(10)
+            continue
+
+        if args.single:
+            console.print("[green]✅ Done.[/green]")
+            break
+        time.sleep(3)
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--server", default="http://127.0.0.1:3000")
+    parser.add_argument("--backend", default="auto", choices=["auto","cuda","cpu"])
+    parser.add_argument("--batch-size", type=int, default=0)
+    parser.add_argument("--seq-len", type=int, default=0)
+    parser.add_argument("--steps", type=int, default=0)
+    parser.add_argument("--mode", default="quick")
+    parser.add_argument("--precision", default="bf16", choices=["fp32","bf16","fp16"])
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--single", action="store_true")
+    args = parser.parse_args()
+    run_swarm_node(args)
+
+if __name__ == "__main__":
+    try: main()
+    except KeyboardInterrupt: console.print("\n[yellow]Disconnected[/yellow]")
+    except Exception as e: console.print(f"\n[red]Fatal: {e}[/red]")
