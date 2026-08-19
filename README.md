@@ -1,11 +1,11 @@
 <p align="center">
-  <a href="https://crowdgpt.ai">
+  <a href="https://crowdgpt.org">
     <img src="https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/res/logo.png" alt="CrowdGPT" width="100%" style="max-width: 800px; border-radius: 12px;">
   </a>
 </p>
 
 <p align="center">
-  <a href="https://crowdgpt.ai"><img src="https://img.shields.io/badge/Website-crowdgpt.ai-00E5FF?style=for-the-badge&logo=vercel&logoColor=black" alt="Website"></a>
+  <a href="https://crowdgpt.org"><img src="https://img.shields.io/badge/Website-crowdgpt.org-00E5FF?style=for-the-badge&logo=vercel&logoColor=black" alt="Website"></a>
   <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/Status-Beta-orange?style=for-the-badge" alt="Status">
@@ -13,7 +13,7 @@
 
 <h3 align="center">True Decentralized, Permissionless LLM Training.</h3>
 <p align="center">
-  <a href="https://crowdgpt.ai"><strong>crowdgpt.ai</strong> (Coming Soon 🚀)</a> · <a href="./docs/ARCHITECTURE.md">Architecture</a> · <a href="./docs/DATA.md">Contribute Data</a>
+  <a href="https://crowdgpt.org"><strong>crowdgpt.org</strong> (Coming Soon 🚀)</a> · <a href="./docs/ARCHITECTURE.md">Architecture</a> · <a href="./docs/DATA.md">Contribute Data</a>
 </p>
 
 ---
@@ -82,7 +82,7 @@ python crowdgpt.py --server http://your-coordinator:3000 --mode deep --batch-siz
 
 | Flag | Description | Allowed Values |
 |---|---|---|
-| `--server` | Server URL | `api.crowdgpt.ai` |
+| `--server` | Server URL | `api.crowdgpt.org` |
 | `--mode` | Training intensity | `quick`, `balanced`, `deep`, `ultra` |
 | `--batch-size` | Batch size (power of 2) | `1, 2, 4, 8, 16, 32, 64, 128, 256, 512` |
 | `--seq-len` | Sequence length (power of 2) | `8, 16, 32, 64` |
@@ -102,6 +102,6 @@ Want to shape what the model learns? We curate our training data via Pull Reques
 
 ## 🤝 Community & Links
 
-- 🌐 **Website:** [crowdgpt.ai](https://crowdgpt.ai) *(Coming Soon)*
+- 🌐 **Website:** [crowdgpt.org](https://crowdgpt.org) *(Coming Soon)*
 - 💬 **Discord:** [Join CrowdGPT](#) *(Link coming soon)*
 - 🐦 **Twitter/X:** [@CrowdGPT_ai](#) *(Link coming soon)*
