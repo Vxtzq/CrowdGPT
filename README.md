@@ -54,7 +54,9 @@ Instead of one datacenter doing all the work, CrowdGPT distributes training acro
 
 ## 📊 Network Status
 
-
+<p align="center">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/res/tokens.json" alt="Tokens Processed">
+</p>
 
 ---
 
