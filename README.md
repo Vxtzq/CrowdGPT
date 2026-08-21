@@ -24,7 +24,7 @@
 
 ## 🤔 What is CrowdGPT?
 
-CrowdGPT is a **BitTorrent-style aipute swarm** for training Large Language Models. Instead of relying on centralized mega-corporations, CrowdGPT turns idle GPUs into a single, decentralized superaiputer.
+CrowdGPT is a **BitTorrent-style compute framework** for training Large Language Models. Instead of relying on centralized mega-corporations, CrowdGPT turns idle GPUs into a single, decentralized supercomputer.
 
 - **Permissionless:** No sign-up required, no API keys.
 - **Byzantine Fault Tolerant:** The swarm survives poisoners and bad actors using coordinate-wise median aggregation.
