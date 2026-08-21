@@ -1,6 +1,10 @@
 <p align="center">
-  <a href="https://crowdgpt.ai">
-    <img src="https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/res/logo.png" alt="CrowdGPT" width="100%" style="max-width: 800px; border-radius: 12px;">
+  <a href="https://crowdgpt.net">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/res/logo-dark.png">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/res/logo-light.png">
+      <img src="https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/res/logo-light.png" alt="CrowdGPT" width="100%" style="max-width: 800px; border-radius: 12px;">
+    </picture>
   </a>
 </p>
 
@@ -11,7 +15,7 @@
   <img src="https://img.shields.io/badge/Status-Beta-orange?style=for-the-badge" alt="Status">
 </p>
 
-<h3 align="center">True Decentralized, Permissionless LLM Training.</h3>
+<h3 align="center">The best ChatGPT 0$ can buy.</h3>
 <p align="center">
   <a href="https://crowdgpt.org"><strong>crowdgpt.org</strong> (coming Soon 🚀)</a> · <a href="./docs/ARCHITECTURE.md">Architecture</a> · <a href="./docs/DATA.md">Contribute Data</a>
 </p>
