@@ -18,6 +18,7 @@
   <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge">
   <img src="https://img.shields.io/badge/Status-Beta-orange?style=for-the-badge">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/res/tokens.json?style=for-the-badge" alt="Tokens Processed"?>
 </p>
 
 <p align="center">
@@ -49,15 +50,6 @@ Instead of one datacenter doing all the work, CrowdGPT distributes training acro
                 ▼
           Shared model
 ```
-
----
-
-## 📊 Network Status
-
-<p align="center">
-  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/res/tokens.json" alt="Tokens Processed">
-</p>
-
 ---
 
 ## ⚡ Quick Start
