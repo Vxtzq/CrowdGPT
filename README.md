@@ -18,7 +18,7 @@
   <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge">
   <img src="https://img.shields.io/badge/Status-Beta-orange?style=for-the-badge">
-  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/res/tokens.json?style=for-the-badge" alt="Tokens Processed"?>
+  <img src="https://img.shields.io/endpoint?style=for-the-badge&url=https%3A%2F%2Fraw.githubusercontent.com%2FVxtzq%2FCrowdGPT%2Fmain%2Fres%2Ftokens.json" alt="Tokens Processed">
 </p>
 
 <p align="center">
