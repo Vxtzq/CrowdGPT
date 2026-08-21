@@ -223,10 +223,6 @@ a { color: inherit; text-decoration: none; }
 .why-card p { font-size: 15px; color: var(--text-secondary); line-height: 1.7; }
 .why-tag { display: inline-block; margin-top: 18px; font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 500; color: var(--accent); padding: 4px 12px; border-radius: 6px; background: var(--accent-glow); }
 
-/* ===== PLATFORM STRIP ===== */
-
-
-
 /* ===== TERMINAL ===== */
 .terminal-wrap { max-width: 820px; margin: 0 auto; }
 .terminal {
@@ -247,6 +243,490 @@ a { color: inherit; text-decoration: none; }
 .t-comment { color: var(--text-muted); }
 .t-flag { color: var(--accent-2); }
 .t-output { color: var(--text-secondary); font-style: italic; }
+
+/* ===== LEADERBOARD ===== */
+.leaderboard-section {
+  position: relative; z-index: 1;
+  max-width: 1280px; margin: 0 auto;
+  padding: 110px 24px;
+}
+
+.lb-live-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  border-radius: 100px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin: 0 auto 48px;
+}
+.lb-live-bar .dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+  animation: blink 2s infinite;
+}
+.lb-live-bar-wrap { text-align: center; }
+
+.lb-hero-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  margin-bottom: 48px;
+}
+.lb-hero-stat {
+  background: var(--bg-soft);
+  padding: 32px 28px;
+  text-align: center;
+  transition: background .3s;
+}
+.lb-hero-stat:hover { background: var(--bg-softer); }
+.lb-hero-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 42px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  background: var(--grad);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 6px;
+}
+.lb-hero-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+}
+.lb-hero-sublabel {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  opacity: 0.7;
+}
+
+/* Controls */
+.lb-controls {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 40px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.lb-search {
+  flex: 1;
+  min-width: 260px;
+  position: relative;
+}
+.lb-search input {
+  width: 100%;
+  padding: 12px 16px 12px 44px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  transition: all .2s;
+}
+.lb-search input::placeholder { color: var(--text-muted); }
+.lb-search input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+.lb-search svg {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.lb-filter-group {
+  display: flex;
+  gap: 2px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px;
+}
+.lb-filter {
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all .15s;
+}
+.lb-filter.active {
+  background: var(--bg-softer);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.lb-filter:hover:not(.active) { color: var(--text); }
+
+/* Podium */
+.lb-podium {
+  display: grid;
+  grid-template-columns: 1fr 1.15fr 1fr;
+  gap: 16px;
+  margin-bottom: 56px;
+  align-items: end;
+}
+.lb-podium-card {
+  position: relative;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 32px 24px 28px;
+  text-align: center;
+  overflow: hidden;
+  transition: all .35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.lb-podium-card:hover {
+  transform: translateY(-6px);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-lg);
+}
+.lb-podium-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: var(--grad);
+  opacity: 0.6;
+  transition: opacity .3s;
+}
+.lb-podium-card:hover::before { opacity: 1; }
+
+.lb-podium-rank-bg {
+  position: absolute;
+  top: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 180px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.06em;
+  background: var(--grad);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  opacity: 0.08;
+  pointer-events: none;
+  z-index: 0;
+  user-select: none;
+}
+.lb-podium-card.center {
+  padding-top: 48px;
+  padding-bottom: 40px;
+}
+.lb-podium-card.center .lb-podium-rank-bg { font-size: 220px; top: -28px; opacity: 0.1; }
+
+.lb-podium-badge {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 100px;
+  background: var(--bg-softer);
+  border: 1px solid var(--border);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 20px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.lb-podium-badge.gold {
+  color: #fbbf24;
+  border-color: rgba(251,191,36,0.35);
+  background: rgba(251,191,36,0.08);
+}
+.lb-podium-badge.silver {
+  color: #cbd5e1;
+  border-color: rgba(203,213,225,0.3);
+  background: rgba(203,213,225,0.06);
+}
+.lb-podium-badge.bronze {
+  color: #fb923c;
+  border-color: rgba(251,146,60,0.35);
+  background: rgba(251,146,60,0.08);
+}
+[data-theme="light"] .lb-podium-badge.gold { color: #b45309; background: rgba(180,83,9,0.08); border-color: rgba(180,83,9,0.25); }
+[data-theme="light"] .lb-podium-badge.silver { color: #475569; background: rgba(71,85,105,0.08); border-color: rgba(71,85,105,0.2); }
+[data-theme="light"] .lb-podium-badge.bronze { color: #c2410c; background: rgba(194,65,12,0.08); border-color: rgba(194,65,12,0.25); }
+
+.lb-podium-avatar {
+  position: relative;
+  z-index: 1;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--grad);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  font-weight: 700;
+  color: white;
+  margin: 0 auto 16px;
+  box-shadow: 0 8px 24px var(--accent-glow);
+}
+.lb-podium-card.center .lb-podium-avatar {
+  width: 88px;
+  height: 88px;
+  font-size: 34px;
+  box-shadow: 0 12px 32px var(--accent-glow);
+}
+.lb-podium-name {
+  position: relative;
+  z-index: 1;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-bottom: 4px;
+}
+.lb-podium-country {
+  position: relative;
+  z-index: 1;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+  margin-bottom: 20px;
+}
+.lb-podium-stats {
+  position: relative;
+  z-index: 1;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.lb-podium-stat-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+.lb-podium-stat-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: 3px;
+  font-weight: 600;
+}
+
+/* Table */
+.lb-table-wrap {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.lb-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.lb-table thead {
+  background: var(--bg-softer);
+  border-bottom: 1px solid var(--border);
+}
+.lb-table th {
+  padding: 14px 20px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.lb-table th.right { text-align: right; }
+.lb-table td {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  vertical-align: middle;
+}
+.lb-table tr:last-child td { border-bottom: none; }
+.lb-table tbody tr { transition: background .15s; }
+.lb-table tbody tr:hover { background: var(--bg-softer); }
+
+.lb-table tr.is-you {
+  background: var(--accent-glow);
+}
+.lb-table tr.is-you:hover {
+  background: color-mix(in srgb, var(--accent-glow) 70%, var(--bg-softer) 30%);
+}
+.lb-table tr.is-you td:first-child {
+  position: relative;
+}
+.lb-table tr.is-you td:first-child::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  background: var(--grad);
+  border-radius: 0 2px 2px 0;
+}
+
+.lb-rank-cell {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  color: var(--text-muted);
+  width: 70px;
+  font-size: 14px;
+}
+.lb-rank-cell.top10 { color: var(--accent); }
+.lb-rank-cell.gold { color: #fbbf24; }
+.lb-rank-cell.silver { color: #cbd5e1; }
+.lb-rank-cell.bronze { color: #fb923c; }
+[data-theme="light"] .lb-rank-cell.gold { color: #b45309; }
+[data-theme="light"] .lb-rank-cell.silver { color: #475569; }
+[data-theme="light"] .lb-rank-cell.bronze { color: #c2410c; }
+
+.lb-user-cell {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.lb-user-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--grad);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: white;
+  flex-shrink: 0;
+}
+.lb-user-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lb-user-name {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+.lb-you-tag {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #04121a;
+  letter-spacing: 0.06em;
+}
+.lb-user-meta {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lb-mono {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 500;
+  text-align: right;
+  color: var(--text);
+  font-size: 14px;
+}
+.lb-mono.accent { color: var(--accent); }
+
+.lb-trust-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: flex-end;
+}
+.lb-trust-track {
+  width: 60px;
+  height: 4px;
+  background: var(--bg-softer);
+  border-radius: 100px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.lb-trust-fill {
+  height: 100%;
+  background: var(--grad);
+  border-radius: 100px;
+  transition: width .8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.lb-trust-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  color: var(--text-secondary);
+  min-width: 36px;
+  text-align: right;
+}
+
+.lb-empty {
+  padding: 80px 24px;
+  text-align: center;
+  color: var(--text-muted);
+}
+.lb-empty-icon {
+  font-size: 48px;
+  opacity: 0.3;
+  margin-bottom: 16px;
+}
+.lb-empty-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.lb-footer-note {
+  margin-top: 24px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+}
+.lb-footer-note .dot {
+  display: inline-block;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 6px var(--ok);
+  margin-right: 6px;
+  vertical-align: middle;
+  animation: blink 2s infinite;
+}
 
 /* ===== CTA ===== */
 .cta { position: relative; z-index: 1; text-align: center; padding: 110px 24px; }
@@ -277,14 +757,23 @@ a { color: inherit; text-decoration: none; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .why-grid { grid-template-columns: 1fr; }
   .footer-grid { grid-template-columns: 1fr 1fr; }
-  .platforms-row { gap: 28px; }
-  .platforms-inner { padding: 32px 24px; }
+  .lb-podium { grid-template-columns: 1fr; gap: 12px; }
+  .lb-podium-card.center { padding: 32px 24px; }
+  .lb-podium-card.center .lb-podium-avatar { width: 72px; height: 72px; font-size: 28px; }
+  .lb-podium-card.center .lb-podium-rank-bg { font-size: 180px; top: -20px; }
+  .lb-hero-stats { grid-template-columns: 1fr; }
+  .lb-table th:nth-child(4), .lb-table td:nth-child(4) { display: none; }
+}
+@media (max-width: 640px) {
+  .lb-table th:nth-child(3), .lb-table td:nth-child(3),
+  .lb-table th:nth-child(5), .lb-table td:nth-child(5) { display: none; }
+  .lb-controls { flex-direction: column; align-items: stretch; }
+  .lb-filter-group { width: 100%; justify-content: space-between; }
 }
 @media (max-width: 520px) {
   .stats-grid { grid-template-columns: 1fr; }
   .footer-grid { grid-template-columns: 1fr; }
   .header-actions .btn-ghost { display: none; }
-  .platforms-row { gap: 20px; }
 }
 </style>
 </head>
@@ -308,6 +797,7 @@ a { color: inherit; text-decoration: none; }
     </a>
     <nav class="nav">
       <a href="#why">Why CrowdGPT</a>
+      <a href="#leaderboard">Leaderboard</a>
       <a href="#start">Quickstart</a>
       <a href="https://github.com/Vxtzq/CrowdGPT/tree/main/docs" target="_blank">Docs</a>
     </nav>
@@ -329,7 +819,6 @@ a { color: inherit; text-decoration: none; }
 <!-- ===== HERO ===== -->
 <section class="hero">
   <div class="hero-inner">
-    
     <h1>Every device.<br><span class="accent">One AI.</span></h1>
     <p class="hero-sub">
       Train a large language model <strong>while you sleep</strong>. Turn idle GPUs and CPUs
@@ -389,7 +878,85 @@ a { color: inherit; text-decoration: none; }
   </div>
 </section>
 
+<!-- ===== LEADERBOARD ===== -->
+<section class="leaderboard-section" id="leaderboard">
+  <div class="section-head reveal">
+    <div class="section-tag">Leaderboard</div>
+    <h2 class="section-title">The network at work</h2>
+    <p class="section-sub">Every contributor shaping the future of AI, ranked by tokens trained.</p>
+  </div>
 
+  <div class="lb-live-bar-wrap reveal">
+    <div class="lb-live-bar">
+      <span class="dot"></span>
+      <span id="lb-live-text">Network live · updating every 30s</span>
+    </div>
+  </div>
+
+  <!-- Hero stats -->
+  <div class="lb-hero-stats reveal">
+    <div class="lb-hero-stat">
+      <div class="lb-hero-value" id="lb-hero-users">—</div>
+      <div class="lb-hero-label">Contributors</div>
+      <div class="lb-hero-sublabel" id="lb-hero-users-sub">across the network</div>
+    </div>
+    <div class="lb-hero-stat">
+      <div class="lb-hero-value" id="lb-hero-tokens">—</div>
+      <div class="lb-hero-label">Tokens Trained</div>
+      <div class="lb-hero-sublabel">and counting</div>
+    </div>
+    <div class="lb-hero-stat">
+      <div class="lb-hero-value" id="lb-hero-hours">—</div>
+      <div class="lb-hero-label">Compute Hours</div>
+      <div class="lb-hero-sublabel">donated this month</div>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="lb-controls reveal">
+    <div class="lb-search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="8"></circle>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+      </svg>
+      <input type="text" id="lb-search-input" placeholder="Search contributors…">
+    </div>
+    <div class="lb-filter-group">
+      <button class="lb-filter active" data-period="all">All time</button>
+      <button class="lb-filter" data-period="month">This month</button>
+      <button class="lb-filter" data-period="week">This week</button>
+    </div>
+  </div>
+
+  <!-- Podium -->
+  <div class="lb-podium reveal" id="lb-podium"></div>
+
+  <!-- Table -->
+  <div class="lb-table-wrap reveal">
+    <table class="lb-table">
+      <thead>
+        <tr>
+          <th>Rank</th>
+          <th>Contributor</th>
+          <th class="right">Trust</th>
+          <th class="right">Contributions</th>
+          <th class="right">Tokens</th>
+        </tr>
+      </thead>
+      <tbody id="lb-table-body"></tbody>
+    </table>
+    <div class="lb-empty" id="lb-empty" style="display:none;">
+      <div class="lb-empty-icon">🌱</div>
+      <div class="lb-empty-title">No contributors match your search</div>
+      <div>Try a different name, or clear the filter.</div>
+    </div>
+  </div>
+
+  <div class="lb-footer-note reveal">
+    <span class="dot"></span>
+    <span id="lb-footer-text">Rankings update in real time as shards are aggregated</span>
+  </div>
+</section>
 
 <!-- ===== QUICKSTART ===== -->
 <section class="section" id="start" style="padding-top:0">
@@ -452,7 +1019,7 @@ a { color: inherit; text-decoration: none; }
       <div class="footer-col">
         <h4>Product</h4>
         <a href="#why">Why CrowdGPT</a>
-        <a href="#platforms">Platforms</a>
+        <a href="#leaderboard">Leaderboard</a>
         <a href="#start">Quickstart</a>
       </div>
       <div class="footer-col">
@@ -465,7 +1032,7 @@ a { color: inherit; text-decoration: none; }
         <h4>Community</h4>
         <a href="#">Discord</a>
         <a href="#">Twitter / X</a>
-        <a href="#">Leaderboard</a>
+        <a href="#leaderboard">Leaderboard</a>
       </div>
     </div>
     <div class="footer-bottom">
@@ -503,25 +1070,19 @@ function updateLogoSrc(theme) {
   updateThemeIcon(saved);
   updateLogoSrc(saved);
 })();
-function updateFavicon(theme) {
-  const favicon = document.querySelector('link[rel="icon"]');
-  if (favicon) {
-    favicon.href = theme === 'dark' ? 'logo-white.svg' : 'logo-black.svg';
-  }
-}
+
 // ===== REVEAL ON SCROLL =====
 const io = new IntersectionObserver((entries) => {
   entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
 }, { threshold: 0.12 });
 document.querySelectorAll('.reveal').forEach(el => io.observe(el));
 
-// ===== ANIMATED COUNTERS (FIXED) =====
+// ===== ANIMATED COUNTERS (HERO) =====
 function fmt(n, suffix) {
-  // Snap to "1B" cleanly when reaching ~999.5M to avoid "1000M" stutter
   if (n >= 999_500_000) return '1B' + (suffix || '');
   if (n >= 1e9) return (n / 1e9).toFixed(n % 1e9 === 0 ? 0 : 1) + 'B' + (suffix || '');
-  if (n >= 1e6) return (n / 1e6).toFixed(0) + 'M' + (suffix || '');
-  if (n >= 1e3) return (n / 1e3).toFixed(0) + 'K' + (suffix || '');
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M' + (suffix || '');
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K' + (suffix || '');
   return n.toString() + (suffix || '');
 }
 const counterIO = new IntersectionObserver((entries) => {
@@ -545,6 +1106,234 @@ const counterIO = new IntersectionObserver((entries) => {
   });
 }, { threshold: 0.5 });
 document.querySelectorAll('.stat-val[data-count]').forEach(el => counterIO.observe(el));
+
+// ===== LEADERBOARD =====
+const API_BASE = 'http://localhost:3000';
+// Simulated "current user" for demo purposes. Set to a real uuid when auth is wired up.
+const CURRENT_USER_UUID = 'you-demo-uuid';
+
+let leaderboardData = [];
+let currentPeriod = 'all';
+let currentSearch = '';
+
+// ---- Fallback mock data (used if /api/leaderboard is unreachable) ----
+const MOCK_DATA = [
+  { uuid: 'u1', username: 'novaforge', country: 'FR', contributions: 4280, totalTokens: 84213000, totalSteps: 214000, trustScore: 0.98 },
+  { uuid: 'u2', username: 'kyo_zen', country: 'JP', contributions: 3912, totalTokens: 78340000, totalSteps: 195600, trustScore: 0.97 },
+  { uuid: 'u3', username: 'helvetica', country: 'CH', contributions: 3541, totalTokens: 71900000, totalSteps: 177050, trustScore: 0.96 },
+  { uuid: 'u4', username: 'nightcrawler', country: 'DE', contributions: 3128, totalTokens: 63520000, totalSteps: 156400, trustScore: 0.95 },
+  { uuid: 'u5', username: 'arc_reactor', country: 'US', contributions: 2870, totalTokens: 57800000, totalSteps: 143500, trustScore: 0.94 },
+  { uuid: 'u6', username: 'lumen', country: 'CA', contributions: 2641, totalTokens: 52100000, totalSteps: 132050, trustScore: 0.93 },
+  { uuid: 'u7', username: 'stratos', country: 'SE', contributions: 2388, totalTokens: 47650000, totalSteps: 119400, trustScore: 0.92 },
+  { uuid: 'u8', username: 'pixel_drifter', country: 'KR', contributions: 2156, totalTokens: 43210000, totalSteps: 107800, trustScore: 0.91 },
+  { uuid: 'u9', username: 'obsidian', country: 'BR', contributions: 1920, totalTokens: 38440000, totalSteps: 96000, trustScore: 0.90 },
+  { uuid: 'u10', username: 'monolith', country: 'GB', contributions: 1743, totalTokens: 34880000, totalSteps: 87150, trustScore: 0.89 },
+  { uuid: 'u11', username: 'cobalt', country: 'NL', contributions: 1567, totalTokens: 31340000, totalSteps: 78350, trustScore: 0.88 },
+  { uuid: 'u12', username: 'velvetwire', country: 'IT', contributions: 1402, totalTokens: 28040000, totalSteps: 70100, trustScore: 0.87 },
+  { uuid: 'u13', username: 'ghostframe', country: 'PL', contributions: 1248, totalTokens: 24960000, totalSteps: 62400, trustScore: 0.86 },
+  { uuid: 'u14', username: 'solarpunk', country: 'ES', contributions: 1085, totalTokens: 21700000, totalSteps: 54250, trustScore: 0.85 },
+  { uuid: 'u15', username: 'quantumleap', country: 'AU', contributions: 942, totalTokens: 18840000, totalSteps: 47100, trustScore: 0.83 },
+  { uuid: 'u16', username: 'ironlotus', country: 'SG', contributions: 816, totalTokens: 16320000, totalSteps: 40800, trustScore: 0.82 },
+  { uuid: 'u17', username: 'nightfall_dev', country: 'NO', contributions: 684, totalTokens: 13680000, totalSteps: 34200, trustScore: 0.80 },
+  { uuid: 'u18', username: 'emberline', country: 'PT', contributions: 520, totalTokens: 10400000, totalSteps: 26000, trustScore: 0.78 },
+  { uuid: 'u19', username: 'cyanwave', country: 'FI', contributions: 412, totalTokens: 8240000, totalSteps: 20600, trustScore: 0.75 },
+  { uuid: CURRENT_USER_UUID, username: 'nicolas', country: 'FR', contributions: 287, totalTokens: 5740000, totalSteps: 14350, trustScore: 0.72 },
+  { uuid: 'u21', username: 'zeroday', country: 'UA', contributions: 198, totalTokens: 3960000, totalSteps: 9900, trustScore: 0.68 },
+  { uuid: 'u22', username: 'mirage_dev', country: 'MX', contributions: 124, totalTokens: 2480000, totalSteps: 6200, trustScore: 0.65 },
+  { uuid: 'u23', username: 'halcyon', country: 'NZ', contributions: 82, totalTokens: 1640000, totalSteps: 4100, trustScore: 0.60 },
+  { uuid: 'u24', username: 'vaporbyte', country: 'IE', contributions: 41, totalTokens: 820000, totalSteps: 2050, trustScore: 0.55 },
+];
+
+function getCountryFlag(code) {
+  const map = {
+    FR:'🇫🇷', JP:'🇯🇵', CH:'🇨🇭', DE:'🇩🇪', US:'🇺🇸', CA:'🇨🇦', SE:'🇸🇪', KR:'🇰🇷',
+    BR:'🇧🇷', GB:'🇬🇧', NL:'🇳🇱', IT:'🇮🇹', PL:'🇵🇱', ES:'🇪🇸', AU:'🇦🇺', SG:'🇸🇬',
+    NO:'🇳🇴', PT:'🇵🇹', FI:'🇫🇮', UA:'🇺🇦', MX:'🇲🇽', NZ:'🇳🇿', IE:'🇮🇪'
+  };
+  return map[code] || '🌐';
+}
+
+function rankClass(rank) {
+  if (rank === 1) return 'gold';
+  if (rank === 2) return 'silver';
+  if (rank === 3) return 'bronze';
+  if (rank <= 10) return 'top10';
+  return '';
+}
+
+function renderPodium(data) {
+  const podium = document.getElementById('lb-podium');
+  if (!data || data.length === 0) {
+    podium.innerHTML = '';
+    return;
+  }
+  // Order: 2nd, 1st, 3rd for visual balance
+  const order = data.length >= 3 ? [1, 0, 2] : data.length === 2 ? [1, 0] : [0];
+  const badges = ['gold', 'silver', 'bronze'];
+  const labels = ['Champion', 'Runner-up', 'Third place'];
+
+  podium.innerHTML = order.map(i => {
+    const u = data[i];
+    if (!u) return '';
+    const isCenter = i === 0;
+    return `
+      <div class="lb-podium-card ${isCenter ? 'center' : ''}">
+        <div class="lb-podium-rank-bg">${i + 1}</div>
+        <div class="lb-podium-badge ${badges[i]}">
+          ${isCenter ? '★' : ''} #${i + 1} · ${labels[i]}
+        </div>
+        <div class="lb-podium-avatar">${u.username.charAt(0).toUpperCase()}</div>
+        <div class="lb-podium-name">${u.username}</div>
+        <div class="lb-podium-country">${getCountryFlag(u.country)} ${u.country}</div>
+        <div class="lb-podium-stats">
+          <div>
+            <div class="lb-podium-stat-value">${fmt(u.totalTokens)}</div>
+            <div class="lb-podium-stat-label">Tokens</div>
+          </div>
+          <div>
+            <div class="lb-podium-stat-value">${u.contributions.toLocaleString()}</div>
+            <div class="lb-podium-stat-label">Shards</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderTable(data) {
+  const tbody = document.getElementById('lb-table-body');
+  const empty = document.getElementById('lb-empty');
+
+  if (!data || data.length === 0) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+
+  tbody.innerHTML = data.map((u, i) => {
+    const rank = i + 1;
+    const isYou = u.uuid === CURRENT_USER_UUID;
+    const rc = rankClass(rank);
+    const trustPct = Math.round((u.trustScore || 0) * 100);
+    return `
+      <tr class="${isYou ? 'is-you' : ''}" data-uuid="${u.uuid}">
+        <td class="lb-rank-cell ${rc}">#${rank}</td>
+        <td>
+          <div class="lb-user-cell">
+            <div class="lb-user-avatar">${u.username.charAt(0).toUpperCase()}</div>
+            <div class="lb-user-info">
+              <div class="lb-user-name">
+                ${u.username}
+                ${isYou ? '<span class="lb-you-tag">YOU</span>' : ''}
+              </div>
+              <div class="lb-user-meta">${getCountryFlag(u.country)} ${u.country}</div>
+            </div>
+          </div>
+        </td>
+        <td>
+          <div class="lb-trust-bar">
+            <div class="lb-trust-track"><div class="lb-trust-fill" style="width:${trustPct}%"></div></div>
+            <span class="lb-trust-value">${(u.trustScore || 0).toFixed(2)}</span>
+          </div>
+        </td>
+        <td class="lb-mono">${u.contributions.toLocaleString()}</td>
+        <td class="lb-mono accent">${fmt(u.totalTokens)}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function renderHeroStats(data) {
+  const usersEl = document.getElementById('lb-hero-users');
+  const tokensEl = document.getElementById('lb-hero-tokens');
+  const hoursEl = document.getElementById('lb-hero-hours');
+
+  const totalUsers = data.length;
+  const totalTokens = data.reduce((s, u) => s + (u.totalTokens || 0), 0);
+  // Estimate compute hours from total steps (rough heuristic: ~500 steps/min on avg)
+  const totalSteps = data.reduce((s, u) => s + (u.totalSteps || 0), 0);
+  const estHours = Math.round(totalSteps / 30000);
+
+  usersEl.textContent = totalUsers.toLocaleString();
+  tokensEl.textContent = fmt(totalTokens);
+  hoursEl.textContent = fmt(estHours);
+}
+
+function filterAndRender() {
+  let filtered = [...leaderboardData];
+  // Period filtering (simulated; in real app, server would return period-specific data)
+  if (currentPeriod === 'month') {
+    filtered = filtered.map(u => ({ ...u, contributions: Math.round(u.contributions * 0.3), totalTokens: Math.round(u.totalTokens * 0.3) }));
+  } else if (currentPeriod === 'week') {
+    filtered = filtered.map(u => ({ ...u, contributions: Math.round(u.contributions * 0.08), totalTokens: Math.round(u.totalTokens * 0.08) }));
+  }
+  // Re-sort after scaling
+  filtered.sort((a, b) => b.totalTokens - a.totalTokens);
+  // Search
+  if (currentSearch.trim()) {
+    const q = currentSearch.trim().toLowerCase();
+    filtered = filtered.filter(u =>
+      u.username.toLowerCase().includes(q) ||
+      (u.country && u.country.toLowerCase().includes(q))
+    );
+  }
+  renderPodium(currentPeriod === 'all' ? filtered.slice(0, 3) : filtered.slice(0, 3));
+  renderTable(filtered);
+  if (currentPeriod === 'all') renderHeroStats(filtered);
+}
+
+async function fetchLeaderboard() {
+  try {
+    const r = await fetch(`${API_BASE}/api/leaderboard`, { cache: 'no-store' });
+    if (!r.ok) throw new Error('API error');
+    const data = await r.json();
+    if (Array.isArray(data) && data.length > 0) {
+      leaderboardData = data.sort((a, b) => (b.totalTokens || 0) - (a.totalTokens || 0));
+    } else {
+      leaderboardData = MOCK_DATA;
+    }
+  } catch (e) {
+    leaderboardData = MOCK_DATA;
+  }
+  filterAndRender();
+}
+
+// Filter buttons
+document.querySelectorAll('.lb-filter').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.lb-filter').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentPeriod = btn.dataset.period;
+    filterAndRender();
+  });
+});
+
+// Search
+const searchInput = document.getElementById('lb-search-input');
+let searchDebounce;
+searchInput.addEventListener('input', (e) => {
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => {
+    currentSearch = e.target.value;
+    filterAndRender();
+  }, 150);
+});
+
+// Auto-refresh every 30 seconds
+setInterval(fetchLeaderboard, 30000);
+
+// Initial load when section is in view
+const lbSection = document.getElementById('leaderboard');
+const lbObserver = new IntersectionObserver((entries) => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      fetchLeaderboard();
+      lbObserver.unobserve(e.target);
+    }
+  });
+}, { threshold: 0.1 });
+lbObserver.observe(lbSection);
 </script>
 </body>
 </html>
