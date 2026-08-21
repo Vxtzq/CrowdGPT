@@ -27,7 +27,7 @@
 CrowdGPT is a **BitTorrent-style compute framework** for training Large Language Models. Instead of relying on centralized mega-corporations, CrowdGPT turns idle GPUs into a single, decentralized supercomputer.
 
 - **Permissionless:** No sign-up required, no API keys.
-- **Byzantine Fault Tolerant:** The swarm survives poisoners and bad actors using coordinate-wise median aggregation.
+- **Fault Tolerant:** Survives poisoners and bad actors using cross-client verifications.
 - **Hardware Agnostic:** Auto-detects NVIDIA (CUDA), AMD (ROCm), Intel/AMD (DirectML), and Apple Silicon (MPS).
 
 ---
