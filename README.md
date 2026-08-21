@@ -7,13 +7,14 @@
     </picture>
   </a>
 </p>
-<h3 align="center">The best ChatGPT 0$ can buy.</h3>
+
 <p align="center">
   <a href="https://crowdgpt.org"><img src="https://img.shields.io/badge/Website-crowdgpt.org-00E5FF?style=for-the-badge&logo=vercel&logoColor=black" alt="Website"></a>
   <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/Status-Beta-orange?style=for-the-badge" alt="Status">
 </p>
+<h3 align="center">The best ChatGPT 0$ can train. Join today</h3>
 
 
 <p align="center">
