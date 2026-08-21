@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/Status-Beta-orange?style=for-the-badge" alt="Status">
 </p>
-<h3 align="center">The best ChatGPT 0$ can train.</h3>
+<h3 align="center">The best ChatGPT 0$ can train. No datacenters at all.</h3>
 
 
 <p align="center">
