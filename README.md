@@ -54,24 +54,45 @@ Instead of one datacenter doing all the work, CrowdGPT distributes training acro
 
 ## 📊 Network Status
 
-<p align="center">
-  <img src="https://crowdgpt.net/api/status-image" alt="CrowdGPT training status" width="800">
-</p>
+<div align="center">
+  <div style="
+    display: inline-block;
+    padding: 24px 40px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    color: #f0f6fc;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    text-align: center;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    min-width: 280px;
+  ">
+    <div style="font-size: 14px; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; margin-bottom: 8px;">
+      CrowdGPT Network
+    </div>
+    <div id="token-counter" style="font-size: 24px; font-weight: bold; color: #58a6ff;">
+      Tokens processed: Loading...
+    </div>
+  </div>
+</div>
 
-<!--
-The image above is dynamically generated.
-
-Example:
-
-┌───────────────────────────────────────┐
-│              CrowdGPT                 │
-│                                       │
-│       12,481,293,847 tokens           │
-│             trained                   │
-│                                       │
-│       184 active workers              │
-└───────────────────────────────────────┘
--->
+<script>
+  (function fetchTokens() {
+    fetch('res/tokens.txt')
+      .then(response => {
+        if (!response.ok) throw new Error('Network error');
+        return response.text();
+      })
+      .then(data => {
+        const count = data.trim();
+        document.getElementById('token-counter').textContent = `Tokens processed: ${count}`;
+      })
+      .catch(err => {
+        // Fallback value if local fetch fails or is restricted
+        document.getElementById('token-counter').textContent = 'Tokens processed: 1000';
+      });
+  })();
+</script>
 
 ---
 
