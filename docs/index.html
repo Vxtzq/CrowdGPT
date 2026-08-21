@@ -8,6 +8,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="icon" type="image/svg+xml" href="logo-white.svg" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/svg+xml" href="logo-black.svg" media="(prefers-color-scheme: light)">
 <style>
 :root {
   --bg: #05070a;
@@ -503,7 +505,12 @@ function updateLogoSrc(theme) {
   updateThemeIcon(saved);
   updateLogoSrc(saved);
 })();
-
+function updateFavicon(theme) {
+  const favicon = document.querySelector('link[rel="icon"]');
+  if (favicon) {
+    favicon.href = theme === 'dark' ? 'logo-white.svg' : 'logo-black.svg';
+  }
+}
 // ===== REVEAL ON SCROLL =====
 const io = new IntersectionObserver((entries) => {
   entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
