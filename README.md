@@ -33,7 +33,7 @@ CrowdGPT is a **distributed framework for training LLMs** using volunteered comp
 
 Instead of one datacenter doing all the work, CrowdGPT distributes training across participating machines.
 
-**No accounts. No API keys. No centralized GPU cluster.**
+**No accounts (unless you want it), API keys or any centralized GPU clusters.**
 
 ### How it works
 
