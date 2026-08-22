@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""
+CrowdGPT Client - Distributed LLM Training Node
+
+Contributes local GPU compute to train Crowd-v1 (500M parameter transformer).
+Fetches model weights, trains on data shards, submits weight deltas back to coordinator.
+"""
+
 import sys
 import io
 import os
@@ -12,6 +19,7 @@ import hashlib
 import math
 import gc
 import argparse
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -36,8 +44,20 @@ DATASET_URL = "https://huggingface.co/datasets/Vxtzq/CrowdGPT/resolve/main/tinys
 CHECKPOINT_DIR = Path("checkpoints")
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
-MODEL_CONFIG = {"vocabSize": 50257, "dim": 768, "nLayers": 8, "nHeads": 12,
-                "nKvHeads": 4, "headDim": 64, "maxSeqLen": 64, "architecture": "SotaGPT"}
+# Crowd-v1: 500M parameter architecture
+MODEL_CONFIG = {
+    "vocabSize": 50257,
+    "dim": 1536,
+    "nLayers": 24,
+    "nHeads": 16,
+    "nKvHeads": 4,
+    "headDim": 96,
+    "maxSeqLen": 64,
+    "mlpHidden": 2560,
+    "weightTying": True,
+    "architecture": "SotaGPT"
+}
+
 VOCAB_SIZE = MODEL_CONFIG["vocabSize"]
 DIM = MODEL_CONFIG["dim"]
 N_LAYERS = MODEL_CONFIG["nLayers"]
@@ -45,38 +65,69 @@ N_HEADS = MODEL_CONFIG["nHeads"]
 N_KV_HEADS = MODEL_CONFIG["nKvHeads"]
 HEAD_DIM = MODEL_CONFIG["headDim"]
 MAX_SEQ_LEN = MODEL_CONFIG["maxSeqLen"]
+MLP_HIDDEN = MODEL_CONFIG["mlpHidden"]
 
-ALLOWED_BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128] # 256+ est trop risqué pour l'estimateur
+ALLOWED_BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128]  # 256+ too risky for estimator
 ALLOWED_SEQ_LENS = [8, 16, 32, 64]
 
 memory_config = {"ram_gb": 12, "safety_margin_gb": 1.0, "is_auto_detected": False, "precision": "bf16"}
 train_device, train_backend = None, None
 
 BANNER = """
-[bold cyan]CrowdGPT.ai[/bold cyan] [dim]::[/dim] [magenta]Decentralized LLM Swarm Node (Optimized)[/magenta]
+[bold cyan]CrowdGPT[/bold cyan] [dim]::[/dim] [magenta]Distributed LLM Training Node (Crowd-v1)[/magenta]
 [dim]═══════════════════════════════════════════════════════════════[/dim]
 """
 
 def print_welcome():
     console.print(BANNER)
 
+# ============ CUDA AUTO-DETECTION & HINTS ============
+def check_cuda_installed():
+    """Check if CUDA is actually installed on the system (not just if PyTorch sees it)"""
+    try:
+        result = subprocess.run(['nvidia-smi'], capture_output=True, timeout=5)
+        if result.returncode == 0:
+            return True
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return False
+
+def suggest_cuda_install():
+    """Print clear CUDA installation instructions"""
+    console.print("\n[bold red]⚠ PyTorch does NOT detect your GPU![/bold red]")
+    console.print("[yellow]NVIDIA GPU detected but CUDA-enabled PyTorch not installed.[/yellow]\n")
+    console.print("[bold]Fix with one of these commands:[/bold]\n")
+    console.print("[cyan]# For CUDA 12.1 (recommended):[/cyan]")
+    console.print("[white]pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121[/white]\n")
+    console.print("[cyan]# For CUDA 11.8 (older GPUs):[/cyan]")
+    console.print("[white]pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118[/white]\n")
+    console.print("[dim]Or check requirements.txt includes the correct torch version for your system.[/dim]\n")
+
 # ============ HARDWARE & MEMORY ============
 def check_backend_available(name):
     name = name.lower()
-    if name == "cpu": return True, torch.device('cpu'), "CPU"
+    if name == "cpu":
+        return True, torch.device('cpu'), "CPU"
     if name == "cuda":
-        if torch.cuda.is_available(): return True, torch.device('cuda'), f"CUDA: {torch.cuda.get_device_name(0)}"
+        if torch.cuda.is_available():
+            return True, torch.device('cuda'), f"CUDA: {torch.cuda.get_device_name(0)}"
         return False, None, "CUDA not available"
     return False, None, f"Unknown: {name}"
 
 def detect_training_backend(force=None):
     if force and force != "auto":
         ok, dev, info = check_backend_available(force.lower())
-        if not ok: raise Exception(f"'{force}': {info}")
+        if not ok:
+            raise Exception(f"'{force}': {info}")
         return dev, force.upper()
     
     if torch.cuda.is_available():
         return torch.device('cuda'), "CUDA"
+    
+    # CUDA not available in PyTorch, but maybe nvidia-smi works?
+    if check_cuda_installed():
+        suggest_cuda_install()
+    
     return torch.device('cpu'), "CPU"
 
 def auto_detect_vram_budget():
@@ -87,37 +138,39 @@ def auto_detect_vram_budget():
             usable = max(0.0, (free_b / 1024**3) - memory_config["safety_margin_gb"])
             memory_config.update({"ram_gb": round(usable, 2), "is_auto_detected": True})
             return
-        except Exception: pass
+        except Exception:
+            pass
     try:
         import psutil
         avail = psutil.virtual_memory().available / 1024**3
         memory_config.update({"ram_gb": round(max(1.0, avail - 2.0), 2), "is_auto_detected": True})
-    except ImportError: pass
+    except ImportError:
+        pass
 
 def estimate_vram_bytes(precision="bf16", batch_size=4, seq_len=64):
-    """Estimation réaliste de la mémoire pour le Full Pretrain sur GPU."""
+    """Realistic memory estimation for full pretrain on GPU"""
     w = 2 if (precision == "bf16" and torch.cuda.is_bf16_supported()) else 4
     
-    # 1. Poids du modèle (~215 Mo pour cette config)
+    # 1. Model weights (~1GB for 500M in bf16)
     vocab_b = VOCAB_SIZE * DIM * w
-    layer_b = (DIM*2 + DIM*(N_HEADS*HEAD_DIM) + DIM*(N_KV_HEADS*HEAD_DIM)*2 + DIM*DIM + DIM*2 + DIM*4*DIM*2 + 4*DIM*DIM) * w
+    layer_b = (DIM*2 + DIM*(N_HEADS*HEAD_DIM) + DIM*(N_KV_HEADS*HEAD_DIM)*2 + DIM*DIM + DIM*2 + DIM*MLP_HIDDEN*2 + MLP_HIDDEN*DIM) * w
     model_b = vocab_b + (layer_b * N_LAYERS)
     
-    # 2. Optimiseur (AdamW = 2x la taille du modèle) + Gradients
+    # 2. Optimizer (AdamW = 2x model size) + Gradients
     optim_grad_b = model_b * 3
     
-    # 3. Activations (Estimation large mais réaliste : ~20 * B * T * D * w par couche)
+    # 3. Activations (~20 * B * T * D * w per layer)
     act_per_layer = 20 * batch_size * seq_len * DIM * w
     act_b = act_per_layer * N_LAYERS
     
-    # 4. Logits de sortie
+    # 4. Output logits
     logits_b = batch_size * seq_len * VOCAB_SIZE * 4
     
     total_raw = model_b + optim_grad_b + act_b + logits_b
-    return int(total_raw * 1.1) + int(0.2 * 1024**3) # 10% de marge + 200Mo de fixe
+    return int(total_raw * 1.1) + int(0.2 * 1024**3)  # 10% margin + 200MB fixed
 
 def recommend_optimal_config(precision="bf16", seq_len=64):
-    """Priorise le Full Pretrain et 100% des couches sur le GPU."""
+    """Prioritizes full pretrain with all layers on GPU"""
     budget = int(memory_config["ram_gb"] * 1024**3)
     safe = budget - int(0.5 * 1024**3)
     
@@ -126,11 +179,11 @@ def recommend_optimal_config(precision="bf16", seq_len=64):
         if estimate_vram_bytes(precision, bs, seq_len) <= safe:
             best_bs = bs
         else:
-            break # On a trouvé la limite, on arrête
+            break  # Found the limit, stop
             
     return 0, "full_pretrain", best_bs, N_LAYERS
 
-# ============ MODEL ARCHITECTURE (Identique, simplifiée pour l'exemple) ============
+# ============ MODEL ARCHITECTURE (Crowd-v1) ============
 def precompute_freqs(dim, sl, dev):
     inv = 1.0/(10000.0**(torch.arange(0,dim,2,dtype=torch.float32)/dim))
     t = torch.arange(sl, dtype=torch.float32)
@@ -170,15 +223,22 @@ class GroupedQueryAttention(nn.Module):
 class SwiGLU(nn.Module):
     def __init__(self):
         super().__init__()
-        h = 4*DIM
-        self.w1 = nn.Linear(DIM,h,bias=False); self.w2 = nn.Linear(DIM,h,bias=False); self.w3 = nn.Linear(h,DIM,bias=False)
-    def forward(self, x): return self.w3(F.silu(self.w1(x))*self.w2(x))
+        h = MLP_HIDDEN
+        self.w1 = nn.Linear(DIM, h, bias=False)
+        self.w2 = nn.Linear(DIM, h, bias=False)
+        self.w3 = nn.Linear(h, DIM, bias=False)
+    
+    def forward(self, x):
+        return self.w3(F.silu(self.w1(x)) * self.w2(x))
 
 class Block(nn.Module):
     def __init__(self):
         super().__init__()
-        self.ln_1 = nn.LayerNorm(DIM); self.attn = GroupedQueryAttention()
-        self.ln_2 = nn.LayerNorm(DIM); self.mlp = SwiGLU()
+        self.ln_1 = nn.LayerNorm(DIM)
+        self.attn = GroupedQueryAttention()
+        self.ln_2 = nn.LayerNorm(DIM)
+        self.mlp = SwiGLU()
+    
     def forward(self, x, cos, sin):
         x = x + self.attn(self.ln_1(x), cos, sin)
         return x + self.mlp(self.ln_2(x))
@@ -190,13 +250,19 @@ class SotaGPT(nn.Module):
         self.blocks = nn.ModuleList([Block() for _ in range(N_LAYERS)])
         self.ln_f = nn.LayerNorm(DIM)
         self.lm_head = nn.Linear(DIM, VOCAB_SIZE, bias=False)
-        self.wte.weight = self.lm_head.weight
+        
+        # Weight tying: share embedding and output projection
+        if MODEL_CONFIG["weightTying"]:
+            self.wte.weight = self.lm_head.weight
+        
         cm, sm = precompute_freqs(HEAD_DIM, MAX_SEQ_LEN, train_device)
-        self.register_buffer("freqs_cos", cm); self.register_buffer("freqs_sin", sm)
+        self.register_buffer("freqs_cos", cm)
+        self.register_buffer("freqs_sin", sm)
 
     def forward(self, idx):
         x = self.wte(idx)
-        for b in self.blocks: x = b(x, self.freqs_cos, self.freqs_sin)
+        for b in self.blocks:
+            x = b(x, self.freqs_cos, self.freqs_sin)
         return self.lm_head(self.ln_f(x))
 
     def get_flat_weights(self):
@@ -218,24 +284,34 @@ def _fetch_with_retry(url, headers=None, timeout=60, retries=3):
             r.raise_for_status()
             return r
         except Exception as e:
-            if attempt < retries - 1: time.sleep(2 ** (attempt + 1))
-            else: raise
+            if attempt < retries - 1:
+                time.sleep(2 ** (attempt + 1))
+            else:
+                raise
 
 class TinyStoriesDatasetShard:
     def __init__(self, url, ci, co, cs, seq_len=64):
-        self.url = url; self.ci = ci; self.co = co; self.cs = min(cs, 10 * 1024 * 1024)
-        self.seq_len = seq_len; self.tps = seq_len + 1
-        self.data = None; self.n = 0; self._l = False
+        self.url = url
+        self.ci = ci
+        self.co = co
+        self.cs = min(cs, 10 * 1024 * 1024)
+        self.seq_len = seq_len
+        self.tps = seq_len + 1
+        self.data = None
+        self.n = 0
+        self._l = False
 
     def load_chunk(self):
-        if self._l: return
+        if self._l:
+            return
         r = _fetch_with_retry(self.url, headers={'Range': f'bytes={self.co}-{self.co+self.cs-1}'}, timeout=60)
         self.data = r.content
         self.n = len(np.frombuffer(self.data, dtype=np.uint16)) // self.tps
         self._l = True
 
     def get_batch(self, bs, seed=None):
-        if not self._l: self.load_chunk()
+        if not self._l:
+            self.load_chunk()
         tk = np.frombuffer(self.data, dtype=np.uint16)
         rng = np.random.RandomState(seed)
         inp, tgt = [], []
@@ -246,14 +322,55 @@ class TinyStoriesDatasetShard:
         return torch.tensor(np.array(inp), dtype=torch.long), torch.tensor(np.array(tgt), dtype=torch.long)
 
 def decompress_weights(raw, fmt="bf16"):
-    if len(raw) >= 2 and raw[0] == 0x78: raw = zlib.decompress(raw)
-    if fmt == "fp16": return np.frombuffer(raw, dtype=np.uint16).view(np.float16).astype(np.float32)
+    if len(raw) >= 2 and raw[0] == 0x78:
+        raw = zlib.decompress(raw)
+    if fmt == "fp16":
+        return np.frombuffer(raw, dtype=np.uint16).view(np.float16).astype(np.float32)
     return torch.from_numpy(np.frombuffer(raw, dtype=np.uint16).copy()).view(torch.bfloat16).to(torch.float32).numpy()
+
+# ============ AUTHENTICATION ============
+def authenticate(server_url, username, password):
+    """
+    Single auth endpoint: registers if new, logs in if existing.
+    Returns auth token or None on failure.
+    """
+    if not username or not password:
+        return None
+    
+    try:
+        r = requests.post(
+            f"{server_url}/auth/login",
+            json={"username": username, "password": password},
+            timeout=30
+        )
+        
+        if r.status_code == 200:
+            data = r.json()
+            return data.get("token")
+        
+        # If login failed, try register
+        r = requests.post(
+            f"{server_url}/auth/register",
+            json={"username": username, "password": password, "email": f"{username}@crowdgpt.local"},
+            timeout=30
+        )
+        
+        if r.status_code == 200:
+            data = r.json()
+            return data.get("token")
+        
+        console.print(f"[yellow]⚠ Auth failed: {r.text[:100]}[/yellow]")
+        return None
+        
+    except Exception as e:
+        console.print(f"[yellow]⚠ Auth request failed: {e}[/yellow]")
+        return None
 
 # ============ TRAINING ============
 def create_dashboard(step, total_steps, loss, tps, lr, global_step, backend_name, batch_size, seq_len):
-    table = Table(title="🧠 Swarm Node Dashboard", expand=True, border_style="green")
-    table.add_column("Metric", style="bold cyan"); table.add_column("Value", justify="right", style="magenta")
+    table = Table(title="🧠 Training Dashboard (Crowd-v1)", expand=True, border_style="green")
+    table.add_column("Metric", style="bold cyan")
+    table.add_column("Value", justify="right", style="magenta")
     table.add_row("📈 Progress", f"{step}/{total_steps} ({step/max(1,total_steps)*100:.1f}%)")
     table.add_row("📉 Loss", f"{loss:.4f}" if loss > 0 else "—")
     table.add_row("⚡ Tokens/s", f"{tps:.0f}" if tps else "—")
@@ -263,12 +380,22 @@ def create_dashboard(step, total_steps, loss, tps, lr, global_step, backend_name
     table.add_row("📦 Batch / SeqLen", f"{batch_size} / {seq_len}")
     return table
 
-def run_single_contribution(args, session_count):
+def run_single_contribution(args, session_count, auth_token=None):
     global train_device, train_backend
 
+    headers = {}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+
     console.print(f"[cyan]📡 Requesting shard...[/cyan]")
-    task_res = requests.get(f"{args.server}/fl/task?mode={args.mode}&format={args.precision}", timeout=600)
-    if task_res.status_code != 200: raise Exception(f"Coordinator rejected: {task_res.text[:200]}")
+    task_res = requests.get(
+        f"{args.server}/fl/task?mode={args.mode}&format={args.precision}",
+        headers=headers,
+        timeout=600
+    )
+    
+    if task_res.status_code != 200:
+        raise Exception(f"Coordinator rejected: {task_res.text[:200]}")
 
     raw = task_res.content
     ml = struct.unpack('<I', raw[:4])[0]
@@ -276,25 +403,29 @@ def run_single_contribution(args, session_count):
     weights_bytes = raw[4+ml:]
 
     train_cfg = metadata.get("trainingConfig", {})
-    task_id = metadata['taskId']; global_step = metadata['globalStep']
+    task_id = metadata['taskId']
+    global_step = metadata['globalStep']
     weight_format = metadata.get('weightFormat', 'bf16')
 
     batch_size = args.batch_size if args.batch_size > 0 else train_cfg.get("batchSize", 0)
     seq_len = args.seq_len if args.seq_len > 0 else train_cfg.get("seqLen", 64)
     steps = args.steps if args.steps > 0 else train_cfg.get("localSteps", 500)
 
-    dataset_shard = TinyStoriesDatasetShard(metadata.get("datasetConfig", {}).get("url", DATASET_URL), 0, 0, 1024*1024, seq_len)
+    dataset_shard = TinyStoriesDatasetShard(
+        metadata.get("datasetConfig", {}).get("url", DATASET_URL),
+        0, 0, 1024*1024, seq_len
+    )
 
     console.print(f"[cyan]📦 Unpacking weights...[/cyan]")
     initial_weights = decompress_weights(weights_bytes, weight_format)
 
-    # 🎯 NOUVELLE LOGIQUE D'AUTO-TUNING ROBUSTE
+    # Auto-tuning logic
     if batch_size == 0:
         lora_rank, mode, best_bs, gpu_layers = recommend_optimal_config(args.precision, seq_len)
         batch_size = best_bs
-        console.print(f"[green]✅ Config Optimisée:[/green] Mode: [bold]{mode}[/bold] | BS: [bold]{batch_size}[/bold] | GPU Layers: [bold]{gpu_layers}/{N_LAYERS}[/bold]")
+        console.print(f"[green]✅ Optimized config:[/green] Mode: [bold]{mode}[/bold] | BS: [bold]{batch_size}[/bold] | GPU Layers: [bold]{gpu_layers}/{N_LAYERS}[/bold]")
     else:
-        lora_rank = 0 # Force full pretrain si BS manuel
+        lora_rank = 0  # Force full pretrain if BS manual
 
     console.print(f"[cyan]🧠 Initializing SotaGPT...[/cyan]")
     model = SotaGPT().to(train_device)
@@ -313,7 +444,8 @@ def run_single_contribution(args, session_count):
 
     with Live(create_dashboard(0, steps, 0, 0, args.lr, global_step, train_backend, batch_size, seq_len),
               console=console, refresh_per_second=4, screen=False) as live:
-        t0 = time.time(); total_tok = 0
+        t0 = time.time()
+        total_tok = 0
 
         for step in range(1, steps+1):
             x, y = dataset_shard.get_batch(batch_size, seed=hash("shard")%10000 + step)
@@ -335,7 +467,8 @@ def run_single_contribution(args, session_count):
                 optimizer.zero_grad(set_to_none=True)
                 
                 lv = float(loss.item())
-                if math.isnan(lv) or lv <= 0: lv = 10.0
+                if math.isnan(lv) or lv <= 0:
+                    lv = 10.0
                 
                 total_tok += x.numel()
                 elapsed = time.time()-t0
@@ -350,13 +483,30 @@ def run_single_contribution(args, session_count):
     avg_loss = sum(loss_history)/max(1,len(loss_history))
     delta = model.get_flat_weights() - initial_weights
     
-    payload = json.dumps({"taskId":task_id,"loss":float(avg_loss),"localSteps":steps,
-        "tokensProcessed":total_tok,"loraRank":0,"isDelta":True,"weightFormat":"fp32"}).encode()
+    payload = json.dumps({
+        "taskId": task_id,
+        "loss": float(avg_loss),
+        "localSteps": steps,
+        "tokensProcessed": total_tok,
+        "loraRank": 0,
+        "isDelta": True,
+        "weightFormat": "fp32"
+    }).encode()
+    
     binary = struct.pack('<I', len(payload)) + payload + np.ascontiguousarray(delta.astype(np.float32)).tobytes()
     compressed = gzip.compress(binary, compresslevel=2)
 
     console.print(f"[cyan]📤 Seeding delta ({len(compressed)/1024/1024:.2f} MB)...[/cyan]")
-    r = requests.post(f"{args.server}/fl/submit", headers={"Content-Type":"application/octet-stream","Content-Encoding":"gzip"}, data=compressed, timeout=120)
+    r = requests.post(
+        f"{args.server}/fl/submit",
+        headers={
+            "Content-Type": "application/octet-stream",
+            "Content-Encoding": "gzip",
+            **headers
+        },
+        data=compressed,
+        timeout=120
+    )
     
     if r.status_code == 200:
         console.print(f"[bold green]✅ Seeded successfully![/bold green]")
@@ -364,20 +514,35 @@ def run_single_contribution(args, session_count):
         raise Exception(f"Seed failed: {r.text[:300]}")
 
     gc.collect()
-    if train_backend == "CUDA": torch.cuda.empty_cache()
+    if train_backend == "CUDA":
+        torch.cuda.empty_cache()
 
 def run_swarm_node(args):
     global train_device, train_backend
     print_welcome()
+
+    # Authentication
+    auth_token = None
+    username = args.username or os.environ.get("CROWDGPT_USERNAME")
+    password = args.password or os.environ.get("CROWDGPT_PASSWORD")
+    
+    if username and password:
+        console.print(f"[cyan]🔐 Authenticating as {username}...[/cyan]")
+        auth_token = authenticate(args.server, username, password)
+        if auth_token:
+            console.print(f"[green]✅ Authenticated successfully[/green]")
+        else:
+            console.print(f"[yellow]⚠ Running anonymously (auth failed)[/yellow]")
+    else:
+        console.print(f"[dim]Running anonymously (set CROWDGPT_USERNAME/PASSWORD or use --username/--password)[/dim]")
 
     try:
         train_device, train_backend = detect_training_backend(args.backend)
         console.print(f"[green]✅ Backend:[/green] [bold]{train_backend}[/bold] ({train_device})")
         
         if train_backend == "CPU":
-            console.print("\n[bold red]🚨 WARNING: PyTorch ne détecte PAS ton GPU ![/bold red]")
-            console.print("[yellow]Installe la version CUDA :[/yellow]")
-            console.print("[bold]pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121[/bold]\n")
+            console.print("\n[yellow]⚠ Training on CPU will be extremely slow.[/yellow]")
+            console.print("[dim]Consider installing CUDA-enabled PyTorch for GPU acceleration.[/dim]\n")
     except Exception as e:
         console.print(f"[bold red]❌ Backend error: {e}[/bold red]")
         sys.exit(1)
@@ -390,7 +555,7 @@ def run_swarm_node(args):
         session_count += 1
         console.print(f"\n[bold cyan]🔄 Cycle #{session_count}[/bold cyan]")
         try:
-            run_single_contribution(args, session_count)
+            run_single_contribution(args, session_count, auth_token)
         except KeyboardInterrupt:
             raise
         except Exception as e:
@@ -404,20 +569,25 @@ def run_swarm_node(args):
         time.sleep(3)
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--server", default="http://127.0.0.1:3000")
-    parser.add_argument("--backend", default="auto", choices=["auto","cuda","cpu"])
-    parser.add_argument("--batch-size", type=int, default=0)
-    parser.add_argument("--seq-len", type=int, default=0)
-    parser.add_argument("--steps", type=int, default=0)
-    parser.add_argument("--mode", default="quick")
-    parser.add_argument("--precision", default="bf16", choices=["fp32","bf16","fp16"])
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--single", action="store_true")
+    parser = argparse.ArgumentParser(description="CrowdGPT distributed training client")
+    parser.add_argument("--server", default="https://api.crowdgpt.net", help="Coordinator URL")
+    parser.add_argument("--backend", default="auto", choices=["auto","cuda","cpu"], help="Training backend")
+    parser.add_argument("--batch-size", type=int, default=0, help="Override batch size (0=auto)")
+    parser.add_argument("--seq-len", type=int, default=0, help="Override sequence length (0=auto)")
+    parser.add_argument("--steps", type=int, default=0, help="Override local steps (0=auto)")
+    parser.add_argument("--mode", default="quick", choices=["quick","balanced","deep","ultra"], help="Training mode")
+    parser.add_argument("--precision", default="bf16", choices=["fp32","bf16","fp16"], help="Weight precision")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--username", help="Username for leaderboard (or set CROWDGPT_USERNAME)")
+    parser.add_argument("--password", help="Password for leaderboard (or set CROWDGPT_PASSWORD)")
+    parser.add_argument("--single", action="store_true", help="Run one cycle and exit")
     args = parser.parse_args()
     run_swarm_node(args)
 
 if __name__ == "__main__":
-    try: main()
-    except KeyboardInterrupt: console.print("\n[yellow]Disconnected[/yellow]")
-    except Exception as e: console.print(f"\n[red]Fatal: {e}[/red]")
+    try:
+        main()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Disconnected[/yellow]")
+    except Exception as e:
+        console.print(f"\n[red]Fatal: {e}[/red]")
