@@ -37,20 +37,7 @@ Instead of one datacenter doing all the work, CrowdGPT distributes training acro
 
 ### How it works
 
-```text
-        ┌──────────────┐
-        │   Coordinator │
-        └───────┬──────┘
-                │
-      ┌─────────┼─────────┐
-      ▼         ▼         ▼
-   GPU #1    GPU #2    GPU #3
-      │         │         │
-      └─────────┼─────────┘
-                ▼
-          Shared model
-```
----
+See [ARCHITECTURE.md](https://github.com/Vxtzq/CrowdGPT/blob/branch/other_file.md)
 
 ## ⚡ Quick Start
 
