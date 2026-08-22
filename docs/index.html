@@ -1759,7 +1759,7 @@ async function fetchStats() {
     if (failedAttempts >= 3) {
       apiReachable = false;
       const statusText = document.getElementById('home-status-text');
-      if (statusText) statusText.textContent = 'federated training protocol · open source';
+      if (statusText) statusText.textContent = '';
       document.getElementById('home-stat-clients').textContent = 'offline';
       document.getElementById('home-stat-tokens').textContent = '—';
       if (statsInterval) clearInterval(statsInterval);
