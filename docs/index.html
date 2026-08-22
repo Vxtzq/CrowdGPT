@@ -1141,22 +1141,43 @@ footer {
             <span class="terminal-title">bash</span>
             <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
           </div>
-          <div class="terminal-body">
-<span class="line"><span class="t-prompt">$ </span><span class="t-cmd">python client.py</span></span>
+          <h2>Start the client</h2>
+<div class="terminal">
+  <div class="terminal-bar">
+    <div class="terminal-dots"><span></span><span></span><span></span></div>
+    <span class="terminal-title">bash</span>
+    <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
+  </div>
+  <div class="terminal-body">
+<span class="line"><span class="t-prompt">$ </span><span class="t-cmd">python client.py --mode quick</span></span>
 <span class="line"></span>
-<span class="line"><span class="t-success">● CrowdGPT v0.1</span></span>
-<span class="line"><span class="t-info">◧ Detected:</span> NVIDIA RTX 4090 <span class="t-dim">(CUDA 12.4, 24GB VRAM)</span></span>
-<span class="line"><span class="t-success">✓</span> Connected to coordinator <span class="t-dim">·</span> Task received</span>
-<span class="line"><span class="t-info">◈</span> Training chunk <span class="t-bold">47/1024</span> <span class="t-dim">(mode: balanced, 5000 local steps)</span></span>
+<span class="line"><span class="t-success t-bold">CrowdGPT.ai</span> <span class="t-dim">::</span> <span class="t-info">Decentralized LLM Swarm Node (Optimized)</span></span>
+<span class="line"><span class="t-dim">═══════════════════════════════════════════════════</span></span>
 <span class="line"></span>
-<span class="line line-group"><span class="t-dim">Step</span> <span class="t-bold">100/5000</span>   <span class="t-dim">loss=</span>3.42  <span class="t-dim">grad_norm=</span>0.089</span>
-<span class="line"><span class="t-dim">Step</span> <span class="t-bold">1000/5000</span>  <span class="t-dim">loss=</span>2.98  <span class="t-dim">grad_norm=</span>0.076</span>
-<span class="line"><span class="t-dim">Step</span> <span class="t-bold">5000/5000</span>  <span class="t-dim">loss=</span>2.71  <span class="t-dim">grad_norm=</span>0.081</span>
+<span class="line"><span class="t-success">✅ Backend:</span> <span class="t-bold">CUDA</span> <span class="t-dim">(NVIDIA RTX 4090)</span></span>
+<span class="line"><span class="t-success">💾 VRAM Budget:</span> <span class="t-bold">22.3 GB</span> <span class="t-dim">usable</span></span>
 <span class="line"></span>
-<span class="line line-group"><span class="t-warn">↑</span> Submitting delta <span class="t-dim">(1.0GB bf16)...</span> <span class="t-success">done</span></span>
-<span class="line"><span class="t-info">◈</span> Global step: <span class="t-bold">1284</span> <span class="t-dim">· Fetching next task...</span></span>
-          </div>
-        </div>
+<span class="line"><span class="t-info t-bold">🔄 Cycle #1</span></span>
+<span class="line"><span class="t-info">📡 Requesting shard...</span></span>
+<span class="line"><span class="t-info">📦 Unpacking weights...</span></span>
+<span class="line"><span class="t-success">✅ Config Optimisée:</span> Mode: <span class="t-bold">full_pretrain</span> | BS: <span class="t-bold">8</span> | GPU Layers: <span class="t-bold">8/8</span></span>
+<span class="line"><span class="t-info">🧠 Initializing SotaGPT...</span></span>
+<span class="line"><span class="t-success t-bold">🚀 Training (500 steps, BS=8, SeqLen=64)</span></span>
+<span class="line"></span>
+<span class="line"><span class="t-dim">🧠 Swarm Node Dashboard</span></span>
+<span class="line"><span class="t-info">📈 Progress</span>      <span class="t-warn">500/500 (100.0%)</span></span>
+<span class="line"><span class="t-info">📉 Loss</span>          <span class="t-warn">2.7144</span></span>
+<span class="line"><span class="t-info">⚡ Tokens/s</span>      <span class="t-warn">14520</span></span>
+<span class="line"><span class="t-info">🎛️ LR</span>            <span class="t-warn">1.00e-04</span></span>
+<span class="line"><span class="t-info">🌍 Global Step</span>   <span class="t-warn">1284</span></span>
+<span class="line"><span class="t-info">🖥️ Backend</span>       <span class="t-warn">CUDA</span></span>
+<span class="line"><span class="t-info">📦 Batch/SeqLen</span>  <span class="t-warn">8 / 64</span></span>
+<span class="line"></span>
+<span class="line"><span class="t-info">📤 Seeding delta (412.30 MB)...</span></span>
+<span class="line"><span class="t-success t-bold">✅ Seeded successfully!</span></span>
+  </div>
+</div>
+
 
         <p>
           The client loops: fetch task, download data chunk from HuggingFace, train locally,
