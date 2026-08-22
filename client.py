@@ -3,7 +3,8 @@
 CrowdGPT Client - Distributed LLM Training Node
 
 Contributes local GPU compute to train Crowd-v1 (500M parameter transformer).
-Fetches model weights, trains on data shards, submits weight deltas back to coordinator.
+Fetches model weights from HuggingFace (first run) or coordinator, trains on data
+shards, submits weight deltas back to coordinator.
 """
 
 import sys
@@ -44,6 +45,13 @@ DATASET_URL = "https://huggingface.co/datasets/Vxtzq/CrowdGPT/resolve/main/tinys
 CHECKPOINT_DIR = Path("checkpoints")
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
+# HuggingFace sources (cuts server bandwidth for new clients)
+HF_REPO_ID = "Vxtzq/Crowd-v1"
+HF_WEIGHTS_URL_BF16 = f"https://huggingface.co/{HF_REPO_ID}/resolve/main/model_bf16.safetensors"
+HF_WEIGHTS_URL_FP32 = f"https://huggingface.co/{HF_REPO_ID}/resolve/main/model_fp32.safetensors"
+LOCAL_SAFETENSORS_CACHE = CHECKPOINT_DIR / "hf_weights_bf16.safetensors"
+LOCAL_FP32_CACHE = CHECKPOINT_DIR / "hf_weights_fp32.bin"
+
 # Crowd-v1: 500M parameter architecture
 MODEL_CONFIG = {
     "vocabSize": 50257,
@@ -67,7 +75,25 @@ HEAD_DIM = MODEL_CONFIG["headDim"]
 MAX_SEQ_LEN = MODEL_CONFIG["maxSeqLen"]
 MLP_HIDDEN = MODEL_CONFIG["mlpHidden"]
 
-ALLOWED_BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128]  # 256+ too risky for estimator
+# Calculate expected parameter count for validation
+def _calc_model_size():
+    size = VOCAB_SIZE * DIM
+    for _ in range(N_LAYERS):
+        size += DIM * 2  # ln_1
+        size += DIM * (N_HEADS * HEAD_DIM)  # wq
+        size += DIM * (N_KV_HEADS * HEAD_DIM)  # wk
+        size += DIM * (N_KV_HEADS * HEAD_DIM)  # wv
+        size += DIM * DIM  # wo
+        size += DIM * 2  # ln_2
+        size += DIM * MLP_HIDDEN  # w1
+        size += DIM * MLP_HIDDEN  # w2
+        size += MLP_HIDDEN * DIM  # w3
+    size += DIM * 2  # ln_f
+    return size
+
+EXPECTED_MODEL_SIZE = _calc_model_size()
+
+ALLOWED_BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128]
 ALLOWED_SEQ_LENS = [8, 16, 32, 64]
 
 memory_config = {"ram_gb": 12, "safety_margin_gb": 1.0, "is_auto_detected": False, "precision": "bf16"}
@@ -124,7 +150,6 @@ def detect_training_backend(force=None):
     if torch.cuda.is_available():
         return torch.device('cuda'), "CUDA"
     
-    # CUDA not available in PyTorch, but maybe nvidia-smi works?
     if check_cuda_installed():
         suggest_cuda_install()
     
@@ -151,23 +176,19 @@ def estimate_vram_bytes(precision="bf16", batch_size=4, seq_len=64):
     """Realistic memory estimation for full pretrain on GPU"""
     w = 2 if (precision == "bf16" and torch.cuda.is_bf16_supported()) else 4
     
-    # 1. Model weights (~1GB for 500M in bf16)
     vocab_b = VOCAB_SIZE * DIM * w
     layer_b = (DIM*2 + DIM*(N_HEADS*HEAD_DIM) + DIM*(N_KV_HEADS*HEAD_DIM)*2 + DIM*DIM + DIM*2 + DIM*MLP_HIDDEN*2 + MLP_HIDDEN*DIM) * w
     model_b = vocab_b + (layer_b * N_LAYERS)
     
-    # 2. Optimizer (AdamW = 2x model size) + Gradients
     optim_grad_b = model_b * 3
     
-    # 3. Activations (~20 * B * T * D * w per layer)
     act_per_layer = 20 * batch_size * seq_len * DIM * w
     act_b = act_per_layer * N_LAYERS
     
-    # 4. Output logits
     logits_b = batch_size * seq_len * VOCAB_SIZE * 4
     
     total_raw = model_b + optim_grad_b + act_b + logits_b
-    return int(total_raw * 1.1) + int(0.2 * 1024**3)  # 10% margin + 200MB fixed
+    return int(total_raw * 1.1) + int(0.2 * 1024**3)
 
 def recommend_optimal_config(precision="bf16", seq_len=64):
     """Prioritizes full pretrain with all layers on GPU"""
@@ -179,7 +200,7 @@ def recommend_optimal_config(precision="bf16", seq_len=64):
         if estimate_vram_bytes(precision, bs, seq_len) <= safe:
             best_bs = bs
         else:
-            break  # Found the limit, stop
+            break
             
     return 0, "full_pretrain", best_bs, N_LAYERS
 
@@ -251,7 +272,6 @@ class SotaGPT(nn.Module):
         self.ln_f = nn.LayerNorm(DIM)
         self.lm_head = nn.Linear(DIM, VOCAB_SIZE, bias=False)
         
-        # Weight tying: share embedding and output projection
         if MODEL_CONFIG["weightTying"]:
             self.wte.weight = self.lm_head.weight
         
@@ -328,6 +348,148 @@ def decompress_weights(raw, fmt="bf16"):
         return np.frombuffer(raw, dtype=np.uint16).view(np.float16).astype(np.float32)
     return torch.from_numpy(np.frombuffer(raw, dtype=np.uint16).copy()).view(torch.bfloat16).to(torch.float32).numpy()
 
+# ============ HUGGINGFACE WEIGHT LOADING ============
+def parse_safetensors(filepath):
+    """
+    Minimal safetensors parser — no external library required.
+    Extracts the 'weights' tensor (or first tensor) as a flat fp32 numpy array.
+    
+    Format: [8 bytes: uint64 header_size][header_size bytes: JSON][raw tensor data]
+    JSON contains: {"weights": {"dtype": "BF16", "shape": [N], "data_offsets": [start, end]}, ...}
+    """
+    with open(filepath, 'rb') as f:
+        header_size_bytes = f.read(8)
+        if len(header_size_bytes) < 8:
+            raise ValueError("File too small to be a safetensors file")
+        header_size = struct.unpack('<Q', header_size_bytes)[0]
+        
+        if header_size > 100 * 1024 * 1024:  # sanity check: header shouldn't be >100MB
+            raise ValueError(f"Suspicious header size: {header_size}")
+        
+        header_json = f.read(header_size)
+        header = json.loads(header_json.decode('utf-8'))
+        
+        # Find the tensor key (skip __metadata__)
+        tensor_key = None
+        if 'weights' in header:
+            tensor_key = 'weights'
+        else:
+            for key in header:
+                if not key.startswith('__'):
+                    tensor_key = key
+                    break
+        
+        if tensor_key is None:
+            raise ValueError("No tensor found in safetensors file")
+        
+        tensor_info = header[tensor_key]
+        dtype = tensor_info['dtype']
+        shape = tensor_info['shape']
+        data_offsets = tensor_info['data_offsets']
+        start, end = data_offsets
+        
+        # Seek to tensor data: 8 (header size field) + header_size + start offset
+        f.seek(8 + header_size + start)
+        raw_bytes = f.read(end - start)
+        
+        expected_bytes = end - start
+        if len(raw_bytes) != expected_bytes:
+            raise ValueError(f"Read {len(raw_bytes)} bytes, expected {expected_bytes}")
+        
+        total_elements = 1
+        for s in shape:
+            total_elements *= s
+        
+        if dtype == 'F32':
+            weights = np.frombuffer(raw_bytes, dtype=np.float32).copy()
+        elif dtype == 'BF16':
+            weights = torch.from_numpy(
+                np.frombuffer(raw_bytes, dtype=np.uint16).copy()
+            ).view(torch.bfloat16).to(torch.float32).numpy()
+        elif dtype == 'F16':
+            weights = np.frombuffer(raw_bytes, dtype=np.float16).astype(np.float32).copy()
+        else:
+            raise ValueError(f"Unsupported safetensors dtype: {dtype}")
+        
+        if len(weights) != total_elements:
+            raise ValueError(f"Element count mismatch: {len(weights)} vs {total_elements}")
+        
+        return weights
+
+def download_from_huggingface(precision="bf16"):
+    """
+    Download model weights from HuggingFace, parse safetensors, return fp32 numpy array.
+    Caches the parsed fp32 weights locally for fast subsequent loads.
+    Returns None on failure.
+    """
+    # Check for cached fp32 weights first (fast path)
+    if LOCAL_FP32_CACHE.exists():
+        file_size = LOCAL_FP32_CACHE.stat().st_size
+        expected_size = EXPECTED_MODEL_SIZE * 4  # fp32 = 4 bytes per param
+        if file_size == expected_size:
+            console.print(f"[cyan]📦 Loading cached weights from {LOCAL_FP32_CACHE.name}...[/cyan]")
+            try:
+                weights = np.fromfile(LOCAL_FP32_CACHE, dtype=np.float32, count=EXPECTED_MODEL_SIZE)
+                if len(weights) == EXPECTED_MODEL_SIZE:
+                    console.print(f"[green]✅ Loaded {len(weights):,} parameters from cache[/green]")
+                    return weights
+            except Exception as e:
+                console.print(f"[yellow]⚠ Cache read failed: {e}[/yellow]")
+                LOCAL_FP32_CACHE.unlink(missing_ok=True)
+    
+    url = HF_WEIGHTS_URL_BF16 if precision == "bf16" else HF_WEIGHTS_URL_FP32
+    console.print(f"[cyan]🤗 Downloading weights from HuggingFace ({precision})...[/cyan]")
+    console.print(f"[dim]   Source: {HF_REPO_ID}[/dim]")
+    
+    try:
+        r = requests.get(url, stream=True, timeout=600, allow_redirects=True)
+        r.raise_for_status()
+        
+        total = int(r.headers.get('content-length', 0))
+        downloaded = 0
+        chunk_size = 1024 * 1024  # 1MB chunks
+        
+        with open(LOCAL_SAFETENSORS_CACHE, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=chunk_size):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total > 0:
+                        mb_done = downloaded / 1024 / 1024
+                        mb_total = total / 1024 / 1024
+                        pct = downloaded / total * 100
+                        # Use rich's print for in-place update
+                        console.print(f"\r[ cyan]  ↓ {mb_done:.1f}MB / {mb_total:.1f}MB ({pct:.0f}%)[/cyan]", end="")
+        
+        console.print("")  # newline after progress
+        
+        console.print(f"[cyan]📦 Parsing safetensors...[/cyan]")
+        weights = parse_safetensors(LOCAL_SAFETENSORS_CACHE)
+        
+        if len(weights) != EXPECTED_MODEL_SIZE:
+            raise ValueError(f"Weight count mismatch: got {len(weights):,}, expected {EXPECTED_MODEL_SIZE:,}")
+        
+        # Cache as raw fp32 for instant loading next time
+        console.print(f"[cyan]💾 Caching fp32 weights for fast reload...[/cyan]")
+        weights.astype(np.float32).tofile(LOCAL_FP32_CACHE)
+        
+        console.print(f"[green]✅ Downloaded {len(weights):,} parameters from HuggingFace[/green]")
+        
+        # Cleanup the safetensors file (we have the fp32 cache now)
+        LOCAL_SAFETENSORS_CACHE.unlink(missing_ok=True)
+        
+        return weights
+        
+    except requests.exceptions.RequestException as e:
+        console.print(f"[yellow]⚠ HF download failed: {e}[/yellow]")
+        LOCAL_SAFETENSORS_CACHE.unlink(missing_ok=True)
+        return None
+    except Exception as e:
+        console.print(f"[yellow]⚠ HF weight loading failed: {e}[/yellow]")
+        LOCAL_SAFETENSORS_CACHE.unlink(missing_ok=True)
+        LOCAL_FP32_CACHE.unlink(missing_ok=True)
+        return None
+
 # ============ AUTHENTICATION ============
 def authenticate(server_url, username, password):
     """
@@ -367,8 +529,8 @@ def authenticate(server_url, username, password):
         return None
 
 # ============ TRAINING ============
-def create_dashboard(step, total_steps, loss, tps, lr, global_step, backend_name, batch_size, seq_len):
-    table = Table(title="🧠 Training Dashboard (Crowd-v1)", expand=True, border_style="green")
+def create_dashboard(step, total_steps, loss, tps, lr, global_step, backend_name, batch_size, seq_len, weight_source="server"):
+    table = Table(title=f"🧠 Training Dashboard (Crowd-v1) [{weight_source}]", expand=True, border_style="green")
     table.add_column("Metric", style="bold cyan")
     table.add_column("Value", justify="right", style="magenta")
     table.add_row("📈 Progress", f"{step}/{total_steps} ({step/max(1,total_steps)*100:.1f}%)")
@@ -380,19 +542,38 @@ def create_dashboard(step, total_steps, loss, tps, lr, global_step, backend_name
     table.add_row("📦 Batch / SeqLen", f"{batch_size} / {seq_len}")
     return table
 
-def run_single_contribution(args, session_count, auth_token=None):
+def run_single_contribution(args, session_count, auth_token=None, force_hf=False):
+    """
+    Run one training cycle.
+    
+    Weight source priority:
+      1. If force_hf or first run: try HuggingFace → call /fl/task?skip_weights=true
+      2. Fallback: fetch weights from coordinator via /fl/task (full payload)
+    """
     global train_device, train_backend
 
     headers = {}
     if auth_token:
         headers["Authorization"] = f"Bearer {auth_token}"
 
-    console.print(f"[cyan]📡 Requesting shard...[/cyan]")
-    task_res = requests.get(
-        f"{args.server}/fl/task?mode={args.mode}&format={args.precision}",
-        headers=headers,
-        timeout=600
-    )
+    # Determine if we should try HF weights
+    use_hf = force_hf or (session_count == 1 and not LOCAL_FP32_CACHE.exists())
+    hf_weights = None
+    weight_source = "server"
+    
+    if use_hf:
+        hf_weights = download_from_huggingface(args.precision)
+        if hf_weights is not None:
+            weight_source = "huggingface"
+
+    # Request task from coordinator
+    skip_weights = hf_weights is not None
+    task_url = f"{args.server}/fl/task?mode={args.mode}&format={args.precision}"
+    if skip_weights:
+        task_url += "&skip_weights=true"
+    
+    console.print(f"[cyan]📡 Requesting shard{' (weights from HF)' if skip_weights else ''}...[/cyan]")
+    task_res = requests.get(task_url, headers=headers, timeout=600)
     
     if task_res.status_code != 200:
         raise Exception(f"Coordinator rejected: {task_res.text[:200]}")
@@ -400,7 +581,12 @@ def run_single_contribution(args, session_count, auth_token=None):
     raw = task_res.content
     ml = struct.unpack('<I', raw[:4])[0]
     metadata = json.loads(raw[4:4+ml].decode('utf-8'))
-    weights_bytes = raw[4+ml:]
+    
+    if skip_weights:
+        # Weights came from HF, no weight bytes in response
+        weights_bytes = None
+    else:
+        weights_bytes = raw[4+ml:]
 
     train_cfg = metadata.get("trainingConfig", {})
     task_id = metadata['taskId']
@@ -416,8 +602,13 @@ def run_single_contribution(args, session_count, auth_token=None):
         0, 0, 1024*1024, seq_len
     )
 
-    console.print(f"[cyan]📦 Unpacking weights...[/cyan]")
-    initial_weights = decompress_weights(weights_bytes, weight_format)
+    # Get initial weights
+    if hf_weights is not None:
+        console.print(f"[cyan]📦 Using weights from HuggingFace[/cyan]")
+        initial_weights = hf_weights
+    else:
+        console.print(f"[cyan]📦 Unpacking weights from coordinator...[/cyan]")
+        initial_weights = decompress_weights(weights_bytes, weight_format)
 
     # Auto-tuning logic
     if batch_size == 0:
@@ -425,7 +616,7 @@ def run_single_contribution(args, session_count, auth_token=None):
         batch_size = best_bs
         console.print(f"[green]✅ Optimized config:[/green] Mode: [bold]{mode}[/bold] | BS: [bold]{batch_size}[/bold] | GPU Layers: [bold]{gpu_layers}/{N_LAYERS}[/bold]")
     else:
-        lora_rank = 0  # Force full pretrain if BS manual
+        lora_rank = 0
 
     console.print(f"[cyan]🧠 Initializing SotaGPT...[/cyan]")
     model = SotaGPT().to(train_device)
@@ -442,7 +633,7 @@ def run_single_contribution(args, session_count, auth_token=None):
 
     console.print(f"[bold green]🚀 Training ({steps} steps, BS={batch_size}, SeqLen={seq_len})[/bold green]")
 
-    with Live(create_dashboard(0, steps, 0, 0, args.lr, global_step, train_backend, batch_size, seq_len),
+    with Live(create_dashboard(0, steps, 0, 0, args.lr, global_step, train_backend, batch_size, seq_len, weight_source),
               console=console, refresh_per_second=4, screen=False) as live:
         t0 = time.time()
         total_tok = 0
@@ -475,7 +666,7 @@ def run_single_contribution(args, session_count, auth_token=None):
                 current_tps = int(total_tok/max(elapsed,0.01))
                 loss_history.append(lv)
 
-                live.update(create_dashboard(step, steps, lv, current_tps, optimizer.param_groups[0]['lr'], global_step, train_backend, batch_size, seq_len))
+                live.update(create_dashboard(step, steps, lv, current_tps, optimizer.param_groups[0]['lr'], global_step, train_backend, batch_size, seq_len, weight_source))
             except Exception as e:
                 console.print(f"[bold red]❌ Error: {e}[/bold red]")
                 break
@@ -555,7 +746,9 @@ def run_swarm_node(args):
         session_count += 1
         console.print(f"\n[bold cyan]🔄 Cycle #{session_count}[/bold cyan]")
         try:
-            run_single_contribution(args, session_count, auth_token)
+            # Force HF on first cycle or when --from-hf flag is set
+            force_hf = args.from_hf or (session_count == 1)
+            run_single_contribution(args, session_count, auth_token, force_hf=force_hf)
         except KeyboardInterrupt:
             raise
         except Exception as e:
@@ -580,6 +773,7 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--username", help="Username for leaderboard (or set CROWDGPT_USERNAME)")
     parser.add_argument("--password", help="Password for leaderboard (or set CROWDGPT_PASSWORD)")
+    parser.add_argument("--from-hf", action="store_true", help="Force download weights from HuggingFace every cycle")
     parser.add_argument("--single", action="store_true", help="Run one cycle and exit")
     args = parser.parse_args()
     run_swarm_node(args)
