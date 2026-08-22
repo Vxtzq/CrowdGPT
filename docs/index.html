@@ -5,24 +5,46 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CrowdGPT</title>
 <link rel="icon" type="image/svg+xml" href="logo-white.svg">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@1,9..144,400;1,9..144,500&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #0a0a0a;
-  --bg-soft: #0f0f0f;
-  --bg-softer: #141414;
-  --bg-card: #111111;
-  --text: #e5e5e5;
-  --text-dim: #a3a3a3;
-  --text-muted: #666666;
-  --border: #1f1f1f;
-  --border-strong: #2a2a2a;
-  --accent: #4ade80;
-  --accent-dim: #22c55e;
-  --info: #38bdf8;
+  --bg: #0a0a0b;
+  --bg-soft: #111113;
+  --bg-softer: #16161a;
+  --text: #f5f5f7;
+  --text-dim: #c7c7cc;
+  --text-muted: #8a8a92;
+  --border: #1f1f23;
+  --border-strong: #2a2a30;
+  --accent: #22c55e;
+  --accent-dim: #16a34a;
+  --info: #60a5fa;
   --warn: #fbbf24;
-  --radius: 8px;
-  --radius-sm: 4px;
+  --serif: 'Fraunces', 'Times New Roman', serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --radius: 6px;
+  --radius-sm: 3px;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #fafaf9;
+    --bg-soft: #ffffff;
+    --bg-softer: #f0f0ee;
+    --text: #111113;
+    --text-dim: #3a3a40;
+    --text-muted: #6b6b73;
+    --border: #e4e4e1;
+    --border-strong: #d0d0cb;
+    --accent: #16a34a;
+    --accent-dim: #15803d;
+    --info: #2563eb;
+    color-scheme: light;
+  }
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -31,15 +53,17 @@ html { scroll-behavior: smooth; }
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-family: var(--sans);
   line-height: 1.6;
-  font-size: 15px;
+  font-size: 16px;
   -webkit-font-smoothing: antialiased;
+  font-feature-settings: "kern" 1, "liga" 1;
 }
 
-code, pre, .mono { font-family: 'JetBrains Mono', 'Courier New', monospace; }
+code, pre, .mono { font-family: var(--mono); font-size: 0.9em; }
+.serif { font-family: var(--serif); font-style: italic; font-weight: 400; }
 
-a { color: var(--accent); text-decoration: none; transition: color 0.15s; }
+a { color: var(--accent); text-decoration: none; }
 a:hover { color: var(--accent-dim); text-decoration: underline; }
 
 /* ===== HEADER ===== */
@@ -48,18 +72,17 @@ header {
   top: 0;
   z-index: 100;
   border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 92%, transparent);
-  backdrop-filter: blur(12px);
+  background: var(--bg);
 }
 
 .header-inner {
-  max-width: 960px;
+  max-width: 1080px;
   margin: 0 auto;
   padding: 0 24px;
-  height: 56px;
+  height: 58px;
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 28px;
 }
 
 .logo {
@@ -67,27 +90,20 @@ header {
   align-items: center;
   gap: 10px;
   cursor: pointer;
-  flex-shrink: 0;
   user-select: none;
 }
 
-.logo-img {
-  height: 22px;
-  width: auto;
-  display: block;
-}
+.logo-img { height: 22px; width: auto; display: block; }
 
 .logo-fallback {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  background: var(--accent);
+  width: 24px; height: 24px;
+  border: 1px solid var(--border-strong);
   display: none;
   place-items: center;
-  color: #0a0a0a;
-  font-weight: 700;
-  font-size: 13px;
-  font-family: 'Inter', sans-serif;
+  color: var(--text);
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 16px;
 }
 
 .logo-img-failed .logo-img { display: none; }
@@ -95,144 +111,121 @@ header {
 
 .logo-text {
   font-size: 16px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text);
-  letter-spacing: -0.02em;
 }
 
 .logo-ver {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-family: var(--mono);
+  font-size: 11px;
   color: var(--text-muted);
-  padding: 2px 6px;
+  padding: 1px 6px;
   border: 1px solid var(--border);
-  border-radius: 4px;
-  font-weight: 500;
+  border-radius: 3px;
 }
 
 nav {
   display: flex;
-  gap: 2px;
+  gap: 4px;
   margin-left: auto;
 }
 
 nav a {
   padding: 6px 12px;
   border-radius: var(--radius-sm);
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 14px;
   color: var(--text-dim);
-  transition: all 0.15s;
+  text-decoration: none;
   cursor: pointer;
-  text-decoration: none;
 }
 
-nav a:hover {
-  color: var(--text);
-  background: var(--bg-softer);
-  text-decoration: none;
-}
-
-nav a.active {
-  color: var(--text);
-  background: var(--bg-softer);
-}
+nav a:hover { color: var(--text); background: var(--bg-softer); text-decoration: none; }
+nav a.active { color: var(--text); }
 
 .gh-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 5px 11px;
-  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: var(--bg-soft);
+  background: transparent;
   color: var(--text-dim);
-  font-size: 12px;
-  font-weight: 500;
-  transition: all 0.15s;
+  font-size: 13px;
   text-decoration: none;
   margin-left: 8px;
 }
 
-.gh-btn:hover {
-  color: var(--text);
-  border-color: var(--border-strong);
-  text-decoration: none;
-}
-
+.gh-btn:hover { color: var(--text); border-color: var(--border-strong); text-decoration: none; }
 .gh-btn svg { width: 14px; height: 14px; }
 
 /* ===== VIEWS ===== */
 .view { display: none; }
-.view.active { display: block; animation: fadeUp 0.3s ease; }
-@keyframes fadeUp {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: none; }
-}
+.view.active { display: block; }
 
-/* ===== LAYOUT ===== */
 .container {
-  max-width: 960px;
+  max-width: 1080px;
   margin: 0 auto;
   padding: 0 24px;
 }
 
-.page-pad { padding: 50px 0 80px; }
+.page-pad { padding: 60px 0 100px; }
 
-/* ===== HERO (HOME) ===== */
+/* ===== HERO ===== */
 .hero {
-  padding: 70px 0 50px;
+  padding: 40px 0 60px;
   border-bottom: 1px solid var(--border);
 }
 
-.hero-badge {
+.hero-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  gap: 56px;
+  align-items: start;
+}
+
+.hero-copy {
+  text-align: left;
+  padding-top: 10%;
+}
+.hero-status {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 12px;
-  border-radius: 100px;
-  background: var(--bg-softer);
-  border: 1px solid var(--border);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-dim);
-  margin-bottom: 20px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 28px;
 }
 
-.hero-badge .dot {
-  width: 6px;
-  height: 6px;
+.hero-status .dot {
+  width: 7px; height: 7px;
   border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 8px var(--accent);
 }
 
 .hero h1 {
-  font-size: clamp(32px, 5vw, 44px);
-  font-weight: 700;
-  letter-spacing: -0.035em;
-  line-height: 1.1;
+  font-size: clamp(36px, 5.2vw, 52px);
+  font-weight: 600;
+  line-height: 1.05;
   color: var(--text);
-  margin-bottom: 16px;
-  max-width: 700px;
-  border: none;
-  padding-bottom: 0;
+  margin-bottom: 24px;
+  max-width: 560px;
 }
 
-.hero h1 .accent {
-  background: linear-gradient(135deg, var(--accent), var(--info));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+.hero h1 .em {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  color: var(--accent);
 }
 
 .hero-sub {
   font-size: 17px;
   color: var(--text-dim);
-  max-width: 600px;
-  margin-bottom: 28px;
-  line-height: 1.6;
+  max-width: 500px;
+  margin-bottom: 32px;
+  line-height: 1.55;
 }
 
 .hero-btns {
@@ -241,180 +234,229 @@ nav a.active {
   flex-wrap: wrap;
 }
 
-/* ===== BUTTONS ===== */
 .btn {
-  padding: 9px 18px;
-  border-radius: var(--radius);
+  padding: 10px 18px;
   font-size: 14px;
   font-weight: 500;
-  cursor: pointer;
   border: none;
   font-family: inherit;
-  transition: all 0.15s;
   display: inline-flex;
   align-items: center;
   gap: 8px;
   text-decoration: none;
+  cursor: pointer;
 }
 
-.btn-primary {
-  background: var(--accent);
-  color: #0a0a0a;
-  font-weight: 600;
-}
-
-.btn-primary:hover {
-  filter: brightness(1.1);
-  text-decoration: none;
-  color: #0a0a0a;
-}
+.btn-primary { background: var(--text); color: var(--bg); }
+.btn-primary:hover { background: var(--text-dim); color: var(--bg); text-decoration: none; }
 
 .btn-ghost {
-  background: var(--bg-soft);
+  background: transparent;
   color: var(--text);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
 }
 
-.btn-ghost:hover {
-  border-color: var(--border-strong);
-  background: var(--bg-softer);
-  text-decoration: none;
-}
+.btn-ghost:hover { border-color: var(--text-muted); text-decoration: none; }
 
 .btn svg { width: 14px; height: 14px; }
+
+/* ===== HERO TERMINAL ===== */
+.hero-terminal {
+  background: #000;
+  border: 1px solid var(--border-strong);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.7;
+  overflow: hidden;
+}
+
+@media (prefers-color-scheme: light) {
+  .hero-terminal { background: #1a1a1e; color: #f0f0f0; }
+}
+
+.term-bar {
+  padding: 10px 14px;
+  background: var(--bg-softer);
+  border-bottom: 1px solid var(--border-strong);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.term-dots { display: flex; gap: 5px; }
+.term-dots span { width: 10px; height: 10px; border-radius: 50%; }
+.term-dots span:nth-child(1) { background: #ef4444; }
+.term-dots span:nth-child(2) { background: #eab308; }
+.term-dots span:nth-child(3) { background: #22c55e; }
+
+.term-body {
+  padding: 16px 18px;
+  overflow-x: auto;
+}
+
+.term-line { display: block; white-space: pre; }
+.term-prompt { color: #8a8a92; }
+.term-cmd { color: #f5f5f7; }
+.term-out { color: #22c55e; }
+.term-dim { color: #6b6b73; }
+.term-callout {
+  position: relative;
+  background: rgba(34, 197, 94, 0.08);
+  border-left: 2px solid var(--accent);
+  padding: 2px 0 2px 10px;
+  margin: 4px 0;
+  color: var(--text);
+}
 
 /* ===== STATS STRIP ===== */
 .stats-strip {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 1px;
-  background: var(--border);
+  gap: 0;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-  margin-top: 50px;
+  margin-top: 60px;
 }
 
 .stat-item {
-  background: var(--bg-soft);
-  padding: 22px 20px;
+  padding: 24px 20px;
+  border-right: 1px solid var(--border);
 }
 
+.stat-item:last-child { border-right: none; }
+
 .stat-val {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 22px;
-  font-weight: 600;
+  font-family: var(--mono);
+  font-size: 24px;
+  font-weight: 500;
   color: var(--text);
   margin-bottom: 4px;
-  letter-spacing: -0.02em;
 }
 
 .stat-lbl {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-weight: 500;
 }
 
-/* ===== FEATURE CARDS ===== */
-.features {
+/* ===== PRODUCT SECTION ===== */
+.product-section {
+  padding: 80px 0 60px;
+  border-bottom: 1px solid var(--border);
+}
+
+.product-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1px;
-  background: var(--border);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-  margin-top: 50px;
+  grid-template-columns: 1fr 1fr;
+  gap: 64px;
+  align-items: start;
 }
 
-.feature {
-  background: var(--bg-soft);
-  padding: 28px;
-  transition: background 0.2s;
+.product-head {
+  margin-bottom: 32px;
 }
 
-.feature:hover { background: var(--bg-softer); }
+.product-head h2 {
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 12px;
+  line-height: 1.2;
+}
 
-.feature-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius);
-  background: var(--bg-softer);
-  border: 1px solid var(--border);
+.product-head p {
+  font-size: 15px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+.feature-list {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.feature-item {
   display: grid;
-  place-items: center;
-  margin-bottom: 16px;
-  color: var(--accent);
+  grid-template-columns: 28px 1fr;
+  gap: 14px;
 }
 
-.feature-icon svg { width: 20px; height: 20px; }
+.feature-num {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  padding-top: 3px;
+}
 
-.feature h3 {
+.feature-item h3 {
   font-size: 15px;
   font-weight: 600;
   color: var(--text);
-  margin-bottom: 8px;
-  margin-top: 0;
+  margin-bottom: 4px;
 }
 
-.feature p {
-  font-size: 13.5px;
+.feature-item p {
+  font-size: 14px;
   color: var(--text-dim);
-  margin-bottom: 0;
   line-height: 1.55;
+}
+
+/* Terminal with annotations */
+.terminal-annotated {
+  background: #000;
+  border: 1px solid var(--border-strong);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.7;
+  position: relative;
+}
+
+@media (prefers-color-scheme: light) {
+  .terminal-annotated { background: #1a1a1e; color: #f0f0f0; }
 }
 
 /* ===== PAGE HEAD ===== */
 .page-head {
-  margin-bottom: 40px;
-  padding-bottom: 20px;
+  margin-bottom: 48px;
+  padding-bottom: 24px;
   border-bottom: 1px solid var(--border);
 }
 
 .page-head .crumb {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-family: var(--mono);
+  font-size: 12px;
   color: var(--text-muted);
-  margin-bottom: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-weight: 500;
+  margin-bottom: 12px;
 }
 
 .page-head h1 {
-  font-size: 30px;
-  font-weight: 700;
-  letter-spacing: -0.025em;
-  margin-bottom: 10px;
+  font-size: 32px;
+  font-weight: 600;
+  margin-bottom: 12px;
   color: var(--text);
-  border: none;
-  padding-bottom: 0;
 }
 
 .page-head p {
-  font-size: 15px;
+  font-size: 16px;
   color: var(--text-dim);
-  max-width: 620px;
-  margin-bottom: 0;
+  max-width: 640px;
 }
 
 /* ===== CONTENT ===== */
 .content h2 {
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 600;
   color: var(--text);
-  margin-top: 44px;
+  margin-top: 48px;
   margin-bottom: 14px;
-  letter-spacing: -0.015em;
 }
 
 .content h3 {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text);
-  margin-top: 28px;
+  margin-top: 32px;
   margin-bottom: 10px;
 }
 
@@ -437,21 +479,23 @@ nav a.active {
 
 .content code {
   background: var(--bg-softer);
-  padding: 2px 7px;
-  border-radius: var(--radius-sm);
-  font-size: 12.5px;
-  color: var(--warn);
+  padding: 1px 6px;
   border: 1px solid var(--border);
+  color: var(--warn);
+  font-size: 13px;
 }
 
-/* ===== TERMINAL ===== */
+/* ===== TERMINAL (content) ===== */
 .terminal {
   position: relative;
   background: #000;
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  overflow: hidden;
   margin-bottom: 24px;
+  overflow: hidden;
+}
+
+@media (prefers-color-scheme: light) {
+  .terminal { background: #1a1a1e; color: #f0f0f0; }
 }
 
 .terminal-bar {
@@ -463,71 +507,70 @@ nav a.active {
   border-bottom: 1px solid var(--border);
 }
 
-.terminal-dots { display: flex; gap: 6px; }
-.terminal-dots span { width: 11px; height: 11px; border-radius: 50%; }
+.terminal-dots { display: flex; gap: 5px; }
+.terminal-dots span { width: 10px; height: 10px; border-radius: 50%; }
 .terminal-dots span:nth-child(1) { background: #ef4444; }
 .terminal-dots span:nth-child(2) { background: #eab308; }
 .terminal-dots span:nth-child(3) { background: #22c55e; }
 
 .terminal-title {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-family: var(--mono);
+  font-size: 11px;
   color: var(--text-muted);
   margin-left: 6px;
 }
 
 .terminal-copy {
   margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 9px;
-  border-radius: var(--radius-sm);
+  padding: 4px 10px;
   border: 1px solid var(--border);
-  background: var(--bg-soft);
+  background: transparent;
   color: var(--text-muted);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--mono);
   font-size: 11px;
-  font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s;
 }
 
-.terminal-copy:hover {
-  color: var(--text);
-  border-color: var(--border-strong);
-}
-
-.terminal-copy.copied {
-  color: var(--accent);
-  border-color: var(--accent-dim);
-}
-
-.terminal-copy svg { width: 12px; height: 12px; }
+.terminal-copy:hover { color: var(--text); border-color: var(--border-strong); }
+.terminal-copy.copied { color: var(--accent); border-color: var(--accent); }
 
 .terminal-body {
   padding: 18px 20px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--mono);
   font-size: 13px;
   line-height: 1.9;
   overflow-x: auto;
 }
 
-.terminal-body .line { display: block; }
-.t-prompt { color: var(--text-muted); user-select: none; }
+.terminal-body .line { display: block; white-space: pre; }
+.t-prompt { color: #8a8a92; user-select: none; }
 .t-cmd { color: var(--text); }
-.t-comment { color: var(--text-muted); user-select: none; }
+.t-comment { color: #6b6b73; user-select: none; }
 .t-flag { color: var(--info); }
-.t-output { color: var(--accent); user-select: none; }
+.t-output { color: #22c55e; user-select: none; }
+
+@media (prefers-color-scheme: light) {
+  .terminal-body .t-cmd, .term-cmd { color: #f0f0f0; }
+}
+
+pre {
+  background: var(--bg-softer);
+  border: 1px solid var(--border);
+  padding: 16px 20px;
+  overflow-x: auto;
+  margin-bottom: 20px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
 
 /* ===== INFO BOX ===== */
 .info {
-  background: color-mix(in srgb, var(--info) 8%, transparent);
-  border: 1px solid color-mix(in srgb, var(--info) 25%, transparent);
-  padding: 16px 18px;
+  background: var(--bg-soft);
+  border-left: 2px solid var(--info);
+  padding: 14px 18px;
   margin-bottom: 24px;
   font-size: 14px;
-  border-radius: var(--radius);
   color: var(--text-dim);
   display: flex;
   gap: 10px;
@@ -535,8 +578,8 @@ nav a.active {
 }
 
 .info-icon {
-  font-family: 'JetBrains Mono', monospace;
-  font-weight: 700;
+  font-family: var(--mono);
+  font-weight: 600;
   color: var(--info);
   flex-shrink: 0;
 }
@@ -545,49 +588,43 @@ nav a.active {
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 1px;
-  background: var(--border);
+  gap: 0;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
   margin-bottom: 32px;
 }
 
 .stat-cell {
-  background: var(--bg-soft);
-  padding: 22px;
+  padding: 22px 20px;
+  border-right: 1px solid var(--border);
 }
 
+.stat-cell:last-child { border-right: none; }
+
 .stat-cell .val {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--mono);
   font-size: 22px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text);
   margin-bottom: 4px;
-  letter-spacing: -0.02em;
 }
 
 .stat-cell .lbl {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-weight: 500;
   margin-bottom: 4px;
 }
 
 .stat-cell .sub {
   font-size: 11px;
   color: var(--text-muted);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--mono);
 }
 
 /* ===== TABLE ===== */
 .table-wrap {
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
   margin-bottom: 20px;
+  overflow-x: auto;
 }
 
 table {
@@ -604,11 +641,9 @@ thead {
 th {
   text-align: left;
   padding: 12px 16px;
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
 }
 
 th.right { text-align: right; }
@@ -620,16 +655,15 @@ td {
 }
 
 tbody tr:last-child td { border-bottom: none; }
-tbody tr { transition: background 0.15s; }
-tbody tr:hover { background: var(--bg-softer); }
+tbody tr:hover { background: var(--bg-soft); }
 
 td code {
   font-size: 12px;
-  padding: 2px 7px;
+  padding: 1px 6px;
 }
 
 td.mono {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--mono);
   text-align: right;
   font-size: 13px;
   color: var(--text);
@@ -647,19 +681,16 @@ td.mono {
   width: 50px;
   height: 3px;
   background: var(--border);
-  border-radius: 100px;
   overflow: hidden;
 }
 
 .trust-fill {
   height: 100%;
   background: var(--accent);
-  border-radius: 100px;
-  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .trust-val {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--mono);
   font-size: 12px;
   color: var(--text-muted);
   min-width: 32px;
@@ -669,17 +700,15 @@ td.mono {
 /* ===== CAPABILITY LIST ===== */
 .cap-list {
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
   margin-bottom: 24px;
 }
 
 .cap-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: 20px 1fr;
   gap: 14px;
   padding: 14px 18px;
   border-bottom: 1px solid var(--border);
-  background: var(--bg-soft);
   font-size: 14px;
   line-height: 1.5;
 }
@@ -687,42 +716,43 @@ td.mono {
 .cap-item:last-child { border-bottom: none; }
 
 .cap-marker {
-  font-family: 'JetBrains Mono', monospace;
-  font-weight: 700;
+  font-family: var(--mono);
+  font-weight: 600;
   color: var(--accent);
-  flex-shrink: 0;
-  width: 16px;
-  padding-top: 1px;
 }
-
+.fit-image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 50px;
+  overflow: hidden;
+  display: block;
+}
 .cap-text { color: var(--text-dim); }
 
 /* ===== CONTACT GRID ===== */
 .contact-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 1px;
-  background: var(--border);
+  gap: 0;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
   margin-bottom: 32px;
 }
 
 .contact-card {
-  background: var(--bg-soft);
   padding: 26px;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
 }
 
+.contact-card:nth-child(2n) { border-right: none; }
+.contact-card:nth-last-child(-n+2) { border-bottom: none; }
+
 .contact-card h3 {
-  font-size: 11px;
-  font-family: 'JetBrains Mono', monospace;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--text-muted);
   margin-bottom: 10px;
-  margin-top: 0;
-  font-weight: 600;
 }
 
 .contact-card p {
@@ -733,11 +763,11 @@ td.mono {
 }
 
 .contact-card a.link {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--mono);
   font-size: 13px;
   color: var(--accent);
   border-bottom: 1px solid var(--border);
-  padding-bottom: 2px;
+  padding-bottom: 1px;
 }
 
 .contact-card a.link:hover { border-color: var(--accent); }
@@ -770,31 +800,6 @@ td.mono {
   line-height: 1.6;
 }
 
-/* ===== EMPTY STATE ===== */
-.empty-state {
-  padding: 40px 20px;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 13px;
-  font-family: 'JetBrains Mono', monospace;
-}
-
-/* ===== LOADING ===== */
-.loading-dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  margin-right: 6px;
-  animation: pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 0.3; }
-  50% { opacity: 1; }
-}
-
 /* ===== FOOTER ===== */
 footer {
   border-top: 1px solid var(--border);
@@ -803,7 +808,7 @@ footer {
 }
 
 .footer-inner {
-  max-width: 960px;
+  max-width: 1080px;
   margin: 0 auto;
   padding: 0 24px;
   display: flex;
@@ -815,11 +820,7 @@ footer {
   color: var(--text-muted);
 }
 
-.footer-links {
-  display: flex;
-  gap: 18px;
-}
-
+.footer-links { display: flex; gap: 18px; }
 .footer-links a { color: var(--text-muted); }
 .footer-links a:hover { color: var(--text); }
 
@@ -829,42 +830,68 @@ footer {
   margin-top: 20px;
   padding-top: 18px;
   border-top: 1px solid var(--border);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--mono);
   font-size: 11px;
   color: var(--text-muted);
 }
 
+/* ===== EMPTY/LOADING ===== */
+.empty-state {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-family: var(--mono);
+}
+
+.loading-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-right: 6px;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
 /* ===== RESPONSIVE ===== */
-@media (max-width: 768px) {
+@media (max-width: 820px) {
+  .hero-grid { grid-template-columns: 1fr; gap: 40px; }
+  .product-grid { grid-template-columns: 1fr; gap: 40px; }
   .stats-strip { grid-template-columns: repeat(2, 1fr); }
-  .features { grid-template-columns: 1fr; }
+  .stats-strip .stat-item:nth-child(2) { border-right: none; }
+  .stats-strip .stat-item:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .stats-grid .stat-cell:nth-child(2n) { border-right: none; }
+  .stats-grid .stat-cell:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
   .contact-grid { grid-template-columns: 1fr; }
-  table { font-size: 12px; }
-  th, td { padding: 10px 12px; }
+  .contact-card { border-right: none !important; }
+  .contact-card:last-child { border-bottom: none; }
   .hero { padding: 50px 0 40px; }
-  nav a { padding: 6px 8px; font-size: 12px; }
 }
 
 @media (max-width: 520px) {
   .stats-strip { grid-template-columns: 1fr; }
+  .stats-strip .stat-item { border-right: none; border-bottom: 1px solid var(--border); }
+  .stats-strip .stat-item:last-child { border-bottom: none; }
   .stats-grid { grid-template-columns: 1fr; }
-  nav { gap: 0; }
-  nav a { padding: 4px 6px; font-size: 11px; }
+  .stats-grid .stat-cell { border-right: none; border-bottom: 1px solid var(--border); }
+  .stats-grid .stat-cell:last-child { border-bottom: none; }
   .header-inner { padding: 0 16px; }
   .container { padding: 0 16px; }
+  nav a { padding: 4px 8px; font-size: 13px; }
   .gh-btn { display: none; }
-  .lb-table th:nth-child(4),
-  .lb-table td:nth-child(4),
-  .lb-table th:nth-child(6),
-  .lb-table td:nth-child(6) { display: none; }
+  .lb-table th:nth-child(4), .lb-table td:nth-child(4),
+  .lb-table th:nth-child(6), .lb-table td:nth-child(6) { display: none; }
 }
 
-/* Scrollbar */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
-::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+::-webkit-scrollbar-thumb { background: var(--border-strong); }
 </style>
 </head>
 <body>
@@ -887,33 +914,37 @@ footer {
     </nav>
     <a href="https://github.com/Vxtzq/CrowdGPT" target="_blank" class="gh-btn">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.21 11.39.6.11.79-.26.79-.58v-2.23c-3.34.73-4.03-1.42-4.03-1.42-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49.99.11-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.3 1.23.96-.27 1.98-.4 3-.4s2.05.13 3.01.4c2.29-1.55 3.3-1.23 3.3-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.8 5.62-5.48 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.19.69.8.58C20.57 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
-      <span>Source</span>
+      source
     </a>
   </div>
 </header>
 
-<!-- ===== HOME VIEW ===== -->
+<!-- ===== HOME ===== -->
 <div id="view-home" class="view active">
   <div class="hero">
     <div class="container">
-      <div class="hero-badge">
-        <span class="dot"></span>
-        <span id="home-badge-text">Training a 500M parameter transformer in public</span>
-      </div>
-      <h1>Train a language model<br>with <span class="accent">your GPU</span>.</h1>
-      <p class="hero-sub">
-        CrowdGPT is an open federated training protocol. You run a client on your machine,
-        train a chunk of data locally, submit the weight delta, and the global model gets better.
-        No datacenters required.
-      </p>
-      <div class="hero-btns">
-        <a class="btn btn-primary" data-view="install">
-          Run a client
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-        </a>
-        <a class="btn btn-ghost" data-view="protocol">Read the protocol</a>
-        <a class="btn btn-ghost" href="https://github.com/Vxtzq/CrowdGPT" target="_blank">View source</a>
-      </div>
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <div class="hero-status">
+            
+            <span id="home-status-text"></span>
+          </div>
+          <h1>Train a language model with <span class="em">your GPU</span>.</h1>
+          <p class="hero-sub">
+            CrowdGPT is an open federated training protocol. You run a client on your machine,
+            train on a data chunk locally, submit the weight delta, and the global 500M-parameter
+            transformer gets better. No datacenters required.
+          </p>
+          <div class="hero-btns">
+            <a class="btn btn-primary" data-view="install">
+              Run a client
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </a>
+            <a class="btn btn-ghost" data-view="protocol">Read the protocol</a>
+          </div>
+        </div>
+
+        <img src="greet.png" class="fit-image" alt="Description">
 
       <div class="stats-strip">
         <div class="stat-item">
@@ -936,68 +967,73 @@ footer {
     </div>
   </div>
 
-  <div class="container" style="padding: 50px 24px 0;">
-    <div class="features">
-      <div class="feature">
-        <div class="feature-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
-            <line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>
-          </svg>
+  <section class="product-section">
+    <div class="container">
+      <div class="product-grid">
+        <div>
+          <div class="product-head">
+            <h2>Federated pretraining, in the open.</h2>
+            <p>
+              A single company training a frontier model uses thousands of A100s in a datacenter.
+              Most people don't have that hardware. But millions of people have gaming PCs with
+              RTX cards sitting idle. CrowdGPT pools that compute, and the model that gets
+              trained belongs to everyone who helped build it.
+            </p>
+          </div>
+
+          <div class="feature-list">
+            <div class="feature-item">
+              <div class="feature-num">01</div>
+              <div>
+                <h3>Local training, local data.</h3>
+                <p>Your GPU trains on a 1MB data chunk fetched from HuggingFace. The weight delta is the only thing that leaves your machine. Nothing else.</p>
+              </div>
+            </div>
+            <div class="feature-item">
+              <div class="feature-num">02</div>
+              <div>
+                <h3>A real architecture.</h3>
+                <p>500M-parameter dense transformer with grouped-query attention, SwiGLU, and RoPE. Same building blocks as Llama and Mistral, just scaled to run on consumer hardware.</p>
+              </div>
+            </div>
+            <div class="feature-item">
+              <div class="feature-num">03</div>
+              <div>
+                <h3>Auditable end to end.</h3>
+                <p>The client is a single Python file. No binaries, no telemetry. Read it, fork it, run your own coordinator. The model weights are downloadable.</p>
+              </div>
+            </div>
+          </div>
         </div>
-        <h3>Local training</h3>
-        <p>Your GPU trains on a 1MB data chunk, computes gradients, submits a delta. Weights never leave your machine unencrypted.</p>
-      </div>
-      <div class="feature">
-        <div class="feature-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-          </svg>
+
+        <div class="terminal-annotated">
+          <div class="term-bar">
+            <div class="term-dots"><span></span><span></span><span></span></div>
+            <span>coordinator log</span>
+          </div>
+          <div class="term-body">
+<span class="term-line term-dim">22:14:03 [INFO] 🚀 coordinator listening on :3000</span>
+<span class="term-line term-dim">22:14:03 [INFO] 🧮 model: 500,000,000 params (~1.9GB)</span>
+<span class="term-line term-dim">22:14:03 [INFO] 🧩 consensus=3 · shard_timeout=1800s</span>
+<span class="term-line"></span>
+<span class="term-line">22:15:12 [INFO] 📤 task assigned</span>
+<span class="term-line term-dim">         shard=shard_3_47_... chunk=47</span>
+<span class="term-line term-dim">         client=82.41.xx.xx · mode=balanced</span>
+<span class="term-line"></span>
+<span class="term-line">22:17:44 [INFO] 📥 delta received</span>
+<span class="term-line term-dim">         norm=12.41 · rank=2048 · loss=2.71</span>
+<span class="term-line term-dim">         applied · global step=1284</span>
+<span class="term-line"></span>
+<span class="term-line term-dim">22:17:44 [INFO] 💾 checkpoint saved</span>
+<span class="term-line term-dim">         checkpoints/model_step_1284.bin</span>
+          </div>
         </div>
-        <h3>Real model</h3>
-        <p>500M parameter dense transformer with grouped-query attention, SwiGLU, and RoPE. Same architecture as modern production models.</p>
-      </div>
-      <div class="feature">
-        <div class="feature-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
-          </svg>
-        </div>
-        <h3>Auditable code</h3>
-        <p>The client is a single Python file. No binaries, no hidden telemetry. Read it, fork it, run your own coordinator.</p>
       </div>
     </div>
-  </div>
-
-  <div class="container" style="padding: 60px 24px 0;">
-    <div class="content">
-      <h2>What is this?</h2>
-      <p>
-        CrowdGPT lets anyone with a GPU contribute to training a 500M parameter transformer.
-        The coordinator assigns data chunks, sends out current weights, collects
-        deltas from clients, and aggregates them. Each client trains locally on their assigned
-        chunk and submits the resulting weight update.
-      </p>
-      <p>
-        It's federated learning applied to language model pretraining. The model is open,
-        the protocol is open, and anyone can run their own instance.
-      </p>
-
-      <h2>Why federated instead of centralized?</h2>
-      <p>
-        A single company training a frontier model uses thousands of A100s in a datacenter.
-        Most people don't have access to that hardware. But millions of people have gaming PCs
-        with RTX cards sitting idle most of the day. CrowdGPT pools that idle compute.
-      </p>
-      <p>
-        Each participant gets credit for their contribution on the leaderboard. The model
-        that gets trained belongs to everyone who helped build it.
-      </p>
-    </div>
-  </div>
+  </section>
 </div>
 
-<!-- ===== INSTALL VIEW ===== -->
+<!-- ===== INSTALL ===== -->
 <div id="view-install" class="view">
   <div class="page-pad">
     <div class="container">
@@ -1023,19 +1059,16 @@ footer {
           <div class="terminal-bar">
             <div class="terminal-dots"><span></span><span></span><span></span></div>
             <span class="terminal-title">bash</span>
-            <button class="terminal-copy" onclick="copyTerminal(this)">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              <span>Copy</span>
-            </button>
+            <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
           </div>
           <div class="terminal-body">
 <span class="line"><span class="t-comment"># Clone the repository</span></span>
 <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">git clone https://github.com/Vxtzq/CrowdGPT.git</span></span>
 <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">cd CrowdGPT</span></span>
-<span class="line">&nbsp;</span>
+<span class="line"></span>
 <span class="line"><span class="t-comment"># (Optional) virtual environment</span></span>
 <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">python -m venv venv && source venv/bin/activate</span></span>
-<span class="line">&nbsp;</span>
+<span class="line"></span>
 <span class="line"><span class="t-comment"># Install dependencies</span></span>
 <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">pip install -r requirements.txt</span></span>
           </div>
@@ -1046,14 +1079,11 @@ footer {
           <div class="terminal-bar">
             <div class="terminal-dots"><span></span><span></span><span></span></div>
             <span class="terminal-title">bash</span>
-            <button class="terminal-copy" onclick="copyTerminal(this)">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              <span>Copy</span>
-            </button>
+            <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
           </div>
           <div class="terminal-body">
 <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">python crowdgpt.py</span></span>
-<span class="line">&nbsp;</span>
+<span class="line"></span>
 <span class="line"><span class="t-output">CrowdGPT v0.1</span></span>
 <span class="line"><span class="t-output">Detected: NVIDIA RTX 4090 (CUDA 12.4, 24GB VRAM)</span></span>
 <span class="line"><span class="t-output">Connected to coordinator. Task received.</span></span>
@@ -1084,7 +1114,7 @@ footer {
           <li><code>--username X --password Y</code>: authenticate for leaderboard tracking</li>
         </ul>
 
-        <h2>Account & leaderboard</h2>
+        <h2>Account and leaderboard</h2>
         <p>
           Registering is optional. The client works anonymously. But if you create an account,
           your contributions, tokens processed, and trust score get tracked on the public
@@ -1095,7 +1125,7 @@ footer {
   </div>
 </div>
 
-<!-- ===== PROTOCOL VIEW ===== -->
+<!-- ===== PROTOCOL ===== -->
 <div id="view-protocol" class="view">
   <div class="page-pad">
     <div class="container">
@@ -1108,13 +1138,13 @@ footer {
       <div class="content">
         <h2>Architecture</h2>
         <p>
-          CrowdGPT uses a <strong>coordinator server</strong> that holds global model weights and
-          assigns training tasks to clients. This is classic federated learning, the same approach
-          Google pioneered for keyboard prediction, now applied to language model pretraining.
+          CrowdGPT uses a <strong>coordinator</strong> that holds global model weights and assigns
+          training tasks to clients. This is classic federated learning, the same approach Google
+          pioneered for keyboard prediction, now applied to language model pretraining.
         </p>
         <p>
-          The coordinator is a small FastAPI application. The client is a single
-          Python file (<code>crowdgpt.py</code>). No opaque binaries, no hidden services.
+          The coordinator is a small Python application. The client is a single Python file
+          (<code>crowdgpt.py</code>). No opaque binaries, no hidden services.
         </p>
 
         <h2>Training loop</h2>
@@ -1153,10 +1183,6 @@ footer {
           different chunks and don't repeat work. When the full dataset is covered, the epoch
           counter increments and training continues.
         </p>
-        <p>
-          Clients fetch data directly from HuggingFace's CDN rather than from the coordinator,
-          so the coordinator doesn't become a bandwidth bottleneck.
-        </p>
 
         <h2>Aggregation</h2>
         <p>
@@ -1165,7 +1191,6 @@ footer {
           decay (default: 1e-4) is applied on each step. The global weight norm is clipped to a
           maximum value to prevent runaway updates.
         </p>
-        <p>The update rule:</p>
         <pre><code>w_new = w_old * (1 - decay) + delta * learning_rate
 if ||w_new|| > max_norm:
     w_new = w_new * (max_norm / ||w_new||)</code></pre>
@@ -1173,8 +1198,8 @@ if ||w_new|| > max_norm:
         <h2>Consensus</h2>
         <p>
           The coordinator tracks which clients are working on which chunk and advances the chunk
-          pointer when enough clients have contributed (default: 3). This is loose consensus,
-          a solo client can still make progress on a chunk on their own. The system adapts to
+          pointer when enough clients have contributed (default: 3). This is loose consensus; a
+          solo client can still make progress on a chunk on their own. The system adapts to
           however many nodes are currently online.
         </p>
 
@@ -1185,40 +1210,27 @@ if ||w_new|| > max_norm:
           <li><strong>Norm bounds</strong>: deltas that are too large for the number of local steps are either normalized or rejected</li>
           <li><strong>Size matching</strong>: deltas must match the exact parameter count of the global model</li>
         </ul>
-        <p>
-          The maximum allowed delta norm scales with the number of local steps (more steps = larger
-          legitimate delta) and with the LoRA rank if low-rank training is used. This prevents
-          accidental gradient explosions from corrupting the model.
-        </p>
 
         <h2>Quantization</h2>
-        <p>
-          Weights are transferred in compressed formats to reduce bandwidth:
-        </p>
+        <p>Weights are transferred in compressed formats to reduce bandwidth:</p>
         <ul>
           <li><strong>bf16</strong> (default): bfloat16, 2 bytes per param, ~1GB per transfer</li>
           <li><strong>fp16</strong>: float16, slightly better compression on some workloads</li>
           <li><strong>fp8</strong>: float8_e4m3fn, ~500MB per transfer, some precision loss</li>
         </ul>
-        <p>
-          The coordinator stores global weights in fp32 internally. Quantization is applied only
-          during transfer to and from clients.
-        </p>
 
         <h2>LoRA support</h2>
         <p>
           The protocol supports low-rank adaptation training. Clients can train a LoRA adapter
           at any rank from 32 up to full rank (2048). Lower-rank updates get weighted less during
-          aggregation, reflecting their smaller expressive capacity. Rank distribution is tracked
-          and reported in the coordinator stats.
+          aggregation, reflecting their smaller expressive capacity.
         </p>
 
-        <h2>Accounts & trust</h2>
+        <h2>Accounts and trust</h2>
         <p>
           Clients can optionally authenticate with a registered account. Per-user stats are
-          tracked: number of contributions, tokens processed, training steps. A trust score is
-          derived from contribution history and displayed on the leaderboard. Authentication
-          uses Bearer tokens and PBKDF2-hashed passwords with per-user salts.
+          tracked: contributions, tokens processed, training steps. A trust score is derived
+          from contribution history and displayed on the leaderboard.
         </p>
 
         <h2>Checkpointing</h2>
@@ -1232,7 +1244,7 @@ if ||w_new|| > max_norm:
   </div>
 </div>
 
-<!-- ===== STATUS VIEW ===== -->
+<!-- ===== STATUS ===== -->
 <div id="view-status" class="view">
   <div class="page-pad">
     <div class="container">
@@ -1303,47 +1315,20 @@ if ||w_new|| > max_norm:
           <li>Max sequence length: 64</li>
           <li>Activations: SwiGLU</li>
           <li>Position encoding: Rotary (RoPE)</li>
-          <li>Weight tying: input embedding ↔ output projection</li>
+          <li>Weight tying: input embedding to output projection</li>
         </ul>
 
         <h2>What's implemented</h2>
         <div class="cap-list">
-          <div class="cap-item">
-            <span class="cap-marker">✓</span>
-            <span class="cap-text">Full client-server training loop with sequential aggregation</span>
-          </div>
-          <div class="cap-item">
-            <span class="cap-marker">✓</span>
-            <span class="cap-text">Hardware auto-detection: CUDA, ROCm, MPS, CPU fallback</span>
-          </div>
-          <div class="cap-item">
-            <span class="cap-marker">✓</span>
-            <span class="cap-text">Weight quantization (bf16, fp16, fp8) with fp32 server-side storage</span>
-          </div>
-          <div class="cap-item">
-            <span class="cap-marker">✓</span>
-            <span class="cap-text">LoRA training at any rank from 32 to full rank (2048)</span>
-          </div>
-          <div class="cap-item">
-            <span class="cap-marker">✓</span>
-            <span class="cap-text">User accounts, authentication, and public leaderboard</span>
-          </div>
-          <div class="cap-item">
-            <span class="cap-marker">✓</span>
-            <span class="cap-text">Checkpointing with resume-from-latest on coordinator restart</span>
-          </div>
-          <div class="cap-item">
-            <span class="cap-marker">✓</span>
-            <span class="cap-text">Delta validation: NaN/Inf detection, norm bounds, size matching</span>
-          </div>
-          <div class="cap-item">
-            <span class="cap-marker">✓</span>
-            <span class="cap-text">Subnet-level rate limiting and banning for malicious submissions</span>
-          </div>
-          <div class="cap-item">
-            <span class="cap-marker">✓</span>
-            <span class="cap-text">Data position tracking across epochs to avoid redundant work</span>
-          </div>
+          <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">Full client-coordinator training loop with sequential aggregation</span></div>
+          <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">Hardware auto-detection: CUDA, ROCm, MPS, CPU fallback</span></div>
+          <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">Weight quantization (bf16, fp16, fp8) with fp32 coordinator-side storage</span></div>
+          <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">LoRA training at any rank from 32 to full rank (2048)</span></div>
+          <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">User accounts, authentication, and public leaderboard</span></div>
+          <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">Checkpointing with resume-from-latest on coordinator restart</span></div>
+          <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">Delta validation: NaN/Inf detection, norm bounds, size matching</span></div>
+          <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">Subnet-level rate limiting and banning for malicious submissions</span></div>
+          <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">Data position tracking across epochs to avoid redundant work</span></div>
         </div>
 
         <h2>API endpoints</h2>
@@ -1375,7 +1360,7 @@ if ||w_new|| > max_norm:
   </div>
 </div>
 
-<!-- ===== CONTRIBUTORS VIEW ===== -->
+<!-- ===== CONTRIBUTORS ===== -->
 <div id="view-contributors" class="view">
   <div class="page-pad">
     <div class="container">
@@ -1410,7 +1395,7 @@ if ||w_new|| > max_norm:
         </div>
 
         <div class="info">
-          <span class="info-icon">ℹ</span>
+          <span class="info-icon">i</span>
           <span>Live stats are served by <code>GET /api/leaderboard</code> at api.crowdgpt.net. Trust scores are computed from contribution counts (base 0.5 + contributions/200, capped at 1.0).</span>
         </div>
 
@@ -1440,13 +1425,13 @@ if ||w_new|| > max_norm:
   </div>
 </div>
 
-<!-- ===== CONTACT VIEW ===== -->
+<!-- ===== CONTACT ===== -->
 <div id="view-contact" class="view">
   <div class="page-pad">
     <div class="container">
       <div class="page-head">
         <div class="crumb">project / contact</div>
-        <h1>Contact & contributing</h1>
+        <h1>Contact and contributing</h1>
         <p>Independent open-source project. Maintained by one person, built with contributions from anyone who wants to run a client.</p>
       </div>
 
@@ -1504,12 +1489,12 @@ if ||w_new|| > max_norm:
 
         <div class="faq">
           <div class="faq-item">
-            <div class="faq-q">Why a coordinator server instead of P2P?</div>
+            <div class="faq-q">Why a coordinator instead of P2P?</div>
             <div class="faq-a">
               Simplicity. A coordinator makes aggregation deterministic, coordination trivial,
               and debugging straightforward. P2P federated learning is a fascinating research
               problem, but a central coordinator is the pragmatic choice for actually shipping
-              a working training run. The coordinator code is MIT licensed, anyone can fork it and
+              a working training run. The coordinator code is MIT licensed; anyone can fork it and
               build a P2P version if they want.
             </div>
           </div>
@@ -1533,7 +1518,7 @@ if ||w_new|| > max_norm:
           <div class="faq-item">
             <div class="faq-q">What hardware is recommended?</div>
             <div class="faq-a">
-              Minimum: 8GB VRAM GPU, 16GB RAM, stable 20Mbps+ connection.<br>
+              Minimum: 8GB VRAM GPU, 16GB RAM, stable 20Mbps+ connection.
               Recommended: 12GB+ VRAM GPU, 32GB RAM, fast connection (50Mbps+).
               Higher VRAM allows training at higher batch sizes and with longer local step counts.
             </div>
@@ -1544,16 +1529,15 @@ if ||w_new|| > max_norm:
               Every submitted delta goes through validation: NaN/Inf checks, norm bounds that
               scale with the number of local steps and the LoRA rank, and size matching against
               the global parameter count. Deltas that exceed the bounds are either normalized or
-              rejected. Malicious subnets get banned. This is sufficient to catch both bugs and
-              most deliberate attacks.
+              rejected. Malicious subnets get banned.
             </div>
           </div>
           <div class="faq-item">
             <div class="faq-q">Can I train on my own dataset?</div>
             <div class="faq-a">
               Yes, if you host your own coordinator. The dataset URL is a configuration option.
-              You can point it at any HuggingFace dataset or
-              self-hosted binary file in the same format. The public instance uses TinyStories.
+              You can point it at any HuggingFace dataset or self-hosted binary file in the same
+              format. The public instance uses TinyStories.
             </div>
           </div>
         </div>
@@ -1564,22 +1548,18 @@ if ||w_new|| > max_norm:
 
 <footer>
   <div class="footer-inner">
-    <div>CrowdGPT &middot; MIT License</div>
+    <div>CrowdGPT · MIT License</div>
     <div class="footer-links">
       <a href="https://github.com/Vxtzq/CrowdGPT" target="_blank">GitHub</a>
       <a href="https://github.com/Vxtzq/CrowdGPT/tree/main/docs" target="_blank">Docs</a>
       <a href="mailto:vxtzqmc@gmail.com">Contact</a>
     </div>
-    <div class="footer-note">
-      If you find a bug, file it. Don't DM me.
-    </div>
-  </div>
+     </div>
 </footer>
 
 <script>
 const API_BASE = 'https://api.crowdgpt.net';
 
-// ===== VIEW ROUTER =====
 function showView(viewName) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   const target = document.getElementById('view-' + viewName);
@@ -1600,24 +1580,21 @@ document.querySelectorAll('[data-view]').forEach(el => {
   });
 });
 
-// ===== TERMINAL COPY =====
 function copyTerminal(btn) {
   const terminal = btn.closest('.terminal');
   const cmds = terminal.querySelectorAll('.t-cmd');
   const text = Array.from(cmds).map(c => c.textContent).join('\n');
   navigator.clipboard.writeText(text).then(() => {
-    const label = btn.querySelector('span');
-    const original = label.textContent;
-    label.textContent = 'Copied';
+    const original = btn.textContent;
+    btn.textContent = 'copied';
     btn.classList.add('copied');
     setTimeout(() => {
-      label.textContent = original;
+      btn.textContent = original;
       btn.classList.remove('copied');
     }, 1500);
   });
 }
 
-// ===== FORMATTING =====
 function fmtNum(n) {
   if (n == null || isNaN(n)) return '—';
   if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
@@ -1634,14 +1611,12 @@ function fmtParams(n) {
   return n.toString();
 }
 
-// ===== STATS =====
 async function fetchStats() {
   try {
     const r = await fetch(`${API_BASE}/api/stats`, { cache: 'no-store' });
     if (!r.ok) throw new Error('stats fetch failed');
     const d = await r.json();
 
-    // Home stats
     const homeParams = document.getElementById('home-stat-params');
     if (d.modelSize) homeParams.textContent = fmtParams(d.modelSize);
 
@@ -1651,10 +1626,8 @@ async function fetchStats() {
     document.getElementById('home-stat-step').textContent =
       (d.globalStep || 0).toLocaleString();
 
-    // Status page
     if (d.modelSize) document.getElementById('status-params').textContent = fmtParams(d.modelSize);
-    document.getElementById('status-step').textContent =
-      (d.globalStep || 0).toLocaleString();
+    document.getElementById('status-step').textContent = (d.globalStep || 0).toLocaleString();
     document.getElementById('status-tokens').textContent = fmtNum(d.totalTokens);
     document.getElementById('status-clients').textContent =
       (d.activeContributors || d.activeNow || 0).toLocaleString();
@@ -1669,28 +1642,21 @@ async function fetchStats() {
     document.getElementById('status-epoch').textContent =
       ds.currentEpoch != null ? ds.currentEpoch.toString() : '—';
     document.getElementById('status-chunk').textContent =
-      ds.currentChunk != null
-        ? `chunk ${ds.currentChunk}/${ds.totalChunks || '?'}`
-        : '—';
-    document.getElementById('status-totalsteps').textContent =
-      fmtNum(d.totalSteps);
+      ds.currentChunk != null ? `chunk ${ds.currentChunk}/${ds.totalChunks || '?'}` : '—';
+    document.getElementById('status-totalsteps').textContent = fmtNum(d.totalSteps);
     document.getElementById('status-avgloss').textContent =
       d.avgLoss != null && isFinite(d.avgLoss) ? d.avgLoss.toFixed(3) : '—';
     document.getElementById('status-norm').textContent =
       d.weightNorm != null && isFinite(d.weightNorm) ? d.weightNorm.toFixed(1) : '—';
 
-    // Leaderboard summary
-    document.getElementById('lb-clients').textContent =
-      (d.totalUsers || 0).toLocaleString();
+    document.getElementById('lb-clients').textContent = (d.totalUsers || 0).toLocaleString();
     document.getElementById('lb-tokens').textContent = fmtNum(d.totalTokens);
     document.getElementById('lb-steps').textContent = fmtNum(d.totalSteps);
-    document.getElementById('lb-epochs').textContent =
-      (ds.epochsCompleted || 0).toString();
+    document.getElementById('lb-epochs').textContent = (ds.epochsCompleted || 0).toString();
 
-    // Badge live text
-    const badgeText = document.getElementById('home-badge-text');
+    const statusText = document.getElementById('home-status-text');
     if (d.globalStep && d.activeContributors) {
-      badgeText.textContent = `Step ${d.globalStep.toLocaleString()} · ${d.activeContributors} active clients`;
+      statusText.textContent = `step ${d.globalStep.toLocaleString()} · ${d.activeContributors} clients online`;
     }
 
   } catch (e) {
@@ -1698,7 +1664,6 @@ async function fetchStats() {
   }
 }
 
-// ===== LEADERBOARD =====
 async function fetchLeaderboard() {
   const tbody = document.getElementById('lb-body');
   try {
@@ -1747,7 +1712,6 @@ function escapeHtml(s) {
   }[c]));
 }
 
-// ===== INIT =====
 fetchStats();
 fetchLeaderboard();
 setInterval(fetchStats, 15000);
