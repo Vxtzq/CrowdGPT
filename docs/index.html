@@ -76,6 +76,7 @@ a { color: inherit; text-decoration: none; }
   animation: breathe 9s ease-in-out infinite;
 }
 @keyframes breathe { 0%,100% { opacity: .5 } 50% { opacity: .9 } }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.4} }
 
 /* ===== HEADER ===== */
 .header {
@@ -88,7 +89,7 @@ a { color: inherit; text-decoration: none; }
   max-width: 1280px; margin: 0 auto; padding: 0 24px;
   height: 70px; display: flex; align-items: center; justify-content: space-between; gap: 24px;
 }
-.logo { display: flex; align-items: center; gap: 11px; font-weight: 800; font-size: 19px; letter-spacing: -0.02em; }
+.logo { display: flex; align-items: center; gap: 11px; font-weight: 800; font-size: 19px; letter-spacing: -0.02em; cursor: pointer; }
 .logo-text { font-family: 'Space Grotesk', sans-serif; }
 .logo-text .accent {
   background: var(--grad);
@@ -108,9 +109,10 @@ a { color: inherit; text-decoration: none; }
 .nav { display: flex; gap: 4px; }
 .nav a {
   padding: 8px 15px; border-radius: 8px; font-size: 14px; font-weight: 500;
-  color: var(--text-secondary); transition: all .2s;
+  color: var(--text-secondary); transition: all .2s; cursor: pointer;
 }
 .nav a:hover { color: var(--text); background: var(--bg-softer); }
+.nav a.active { color: var(--text); background: var(--bg-softer); }
 .header-actions { display: flex; align-items: center; gap: 10px; }
 .icon-btn {
   width: 40px; height: 40px; border-radius: 9px; border: 1px solid var(--border);
@@ -136,6 +138,11 @@ a { color: inherit; text-decoration: none; }
 .btn-ghost:hover { color: var(--text); border-color: var(--border-strong); background: var(--bg-soft); }
 .btn svg { width: 17px; height: 17px; }
 
+/* ===== VIEWS ===== */
+.view { display: none; position: relative; z-index: 1; }
+.view.active { display: block; animation: viewFade 0.4s ease; }
+@keyframes viewFade { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
 /* ===== HERO ===== */
 .hero { position: relative; z-index: 1; padding: 110px 24px 70px; text-align: center; }
 .hero-inner { max-width: 940px; margin: 0 auto; }
@@ -146,7 +153,6 @@ a { color: inherit; text-decoration: none; }
   color: var(--text-secondary); margin-bottom: 30px;
 }
 .hero-badge .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); animation: blink 2s infinite; }
-@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.4} }
 .hero h1 {
   font-size: clamp(46px, 8vw, 92px); font-weight: 800; line-height: 1.02;
   letter-spacing: -0.045em; margin-bottom: 24px;
@@ -174,29 +180,12 @@ a { color: inherit; text-decoration: none; }
 .section { position: relative; z-index: 1; max-width: 1280px; margin: 0 auto; padding: 110px 24px; }
 .section-head { text-align: center; max-width: 680px; margin: 0 auto 64px; }
 .section-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--accent);
-  letter-spacing: 0.02em;
-  margin-bottom: 16px;
-  padding: 0;
-  border: none;
-  background: none;
-  border-radius: 0;
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600;
+  color: var(--accent); letter-spacing: 0.02em; margin-bottom: 16px;
+  padding: 0; border: none; background: none; border-radius: 0;
 }
-.section-tag::before {
-  content: '-';
-  color: var(--accent);
-  box-shadow: none;
-  width: auto;
-  height: auto;
-  border-radius: 0;
-  background: none;
-}
+.section-tag::before { content: '-'; color: var(--accent); }
 .section-title { font-size: clamp(34px, 5vw, 52px); font-weight: 800; letter-spacing: -0.035em; line-height: 1.08; margin-bottom: 18px; }
 .section-sub { font-size: 17px; color: var(--text-secondary); }
 
@@ -244,490 +233,6 @@ a { color: inherit; text-decoration: none; }
 .t-flag { color: var(--accent-2); }
 .t-output { color: var(--text-secondary); font-style: italic; }
 
-/* ===== LEADERBOARD ===== */
-.leaderboard-section {
-  position: relative; z-index: 1;
-  max-width: 1280px; margin: 0 auto;
-  padding: 110px 24px;
-}
-
-.lb-live-bar {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 14px;
-  border-radius: 100px;
-  background: var(--bg-soft);
-  border: 1px solid var(--border);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-secondary);
-  margin: 0 auto 48px;
-}
-.lb-live-bar .dot {
-  width: 7px; height: 7px; border-radius: 50%;
-  background: var(--ok);
-  box-shadow: 0 0 8px var(--ok);
-  animation: blink 2s infinite;
-}
-.lb-live-bar-wrap { text-align: center; }
-
-.lb-hero-stats {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1px;
-  background: var(--border);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-  margin-bottom: 48px;
-}
-.lb-hero-stat {
-  background: var(--bg-soft);
-  padding: 32px 28px;
-  text-align: center;
-  transition: background .3s;
-}
-.lb-hero-stat:hover { background: var(--bg-softer); }
-.lb-hero-value {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 42px;
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  background: var(--grad);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  margin-bottom: 6px;
-}
-.lb-hero-label {
-  font-size: 12px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  font-weight: 600;
-}
-.lb-hero-sublabel {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-top: 4px;
-  font-family: 'JetBrains Mono', monospace;
-  opacity: 0.7;
-}
-
-/* Controls */
-.lb-controls {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 40px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-.lb-search {
-  flex: 1;
-  min-width: 260px;
-  position: relative;
-}
-.lb-search input {
-  width: 100%;
-  padding: 12px 16px 12px 44px;
-  background: var(--bg-soft);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-family: inherit;
-  font-size: 14px;
-  transition: all .2s;
-}
-.lb-search input::placeholder { color: var(--text-muted); }
-.lb-search input:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-glow);
-}
-.lb-search svg {
-  position: absolute;
-  left: 14px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 18px;
-  height: 18px;
-  color: var(--text-muted);
-  pointer-events: none;
-}
-.lb-filter-group {
-  display: flex;
-  gap: 2px;
-  background: var(--bg-soft);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 3px;
-}
-.lb-filter {
-  padding: 8px 16px;
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 500;
-  border-radius: 7px;
-  cursor: pointer;
-  transition: all .15s;
-}
-.lb-filter.active {
-  background: var(--bg-softer);
-  color: var(--text);
-  box-shadow: inset 0 0 0 1px var(--border);
-}
-.lb-filter:hover:not(.active) { color: var(--text); }
-
-/* Podium */
-.lb-podium {
-  display: grid;
-  grid-template-columns: 1fr 1.15fr 1fr;
-  gap: 16px;
-  margin-bottom: 56px;
-  align-items: end;
-}
-.lb-podium-card {
-  position: relative;
-  background: var(--bg-soft);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 32px 24px 28px;
-  text-align: center;
-  overflow: hidden;
-  transition: all .35s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.lb-podium-card:hover {
-  transform: translateY(-6px);
-  border-color: var(--border-strong);
-  box-shadow: var(--shadow-lg);
-}
-.lb-podium-card::before {
-  content: '';
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 2px;
-  background: var(--grad);
-  opacity: 0.6;
-  transition: opacity .3s;
-}
-.lb-podium-card:hover::before { opacity: 1; }
-
-.lb-podium-rank-bg {
-  position: absolute;
-  top: -20px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 180px;
-  font-weight: 800;
-  line-height: 1;
-  letter-spacing: -0.06em;
-  background: var(--grad);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  opacity: 0.08;
-  pointer-events: none;
-  z-index: 0;
-  user-select: none;
-}
-.lb-podium-card.center {
-  padding-top: 48px;
-  padding-bottom: 40px;
-}
-.lb-podium-card.center .lb-podium-rank-bg { font-size: 220px; top: -28px; opacity: 0.1; }
-
-.lb-podium-badge {
-  position: relative;
-  z-index: 1;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 100px;
-  background: var(--bg-softer);
-  border: 1px solid var(--border);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  margin-bottom: 20px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-.lb-podium-badge.gold {
-  color: #fbbf24;
-  border-color: rgba(251,191,36,0.35);
-  background: rgba(251,191,36,0.08);
-}
-.lb-podium-badge.silver {
-  color: #cbd5e1;
-  border-color: rgba(203,213,225,0.3);
-  background: rgba(203,213,225,0.06);
-}
-.lb-podium-badge.bronze {
-  color: #fb923c;
-  border-color: rgba(251,146,60,0.35);
-  background: rgba(251,146,60,0.08);
-}
-[data-theme="light"] .lb-podium-badge.gold { color: #b45309; background: rgba(180,83,9,0.08); border-color: rgba(180,83,9,0.25); }
-[data-theme="light"] .lb-podium-badge.silver { color: #475569; background: rgba(71,85,105,0.08); border-color: rgba(71,85,105,0.2); }
-[data-theme="light"] .lb-podium-badge.bronze { color: #c2410c; background: rgba(194,65,12,0.08); border-color: rgba(194,65,12,0.25); }
-
-.lb-podium-avatar {
-  position: relative;
-  z-index: 1;
-  width: 72px;
-  height: 72px;
-  border-radius: 50%;
-  background: var(--grad);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 28px;
-  font-weight: 700;
-  color: white;
-  margin: 0 auto 16px;
-  box-shadow: 0 8px 24px var(--accent-glow);
-}
-.lb-podium-card.center .lb-podium-avatar {
-  width: 88px;
-  height: 88px;
-  font-size: 34px;
-  box-shadow: 0 12px 32px var(--accent-glow);
-}
-.lb-podium-name {
-  position: relative;
-  z-index: 1;
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  margin-bottom: 4px;
-}
-.lb-podium-country {
-  position: relative;
-  z-index: 1;
-  font-size: 12px;
-  color: var(--text-muted);
-  font-family: 'JetBrains Mono', monospace;
-  margin-bottom: 20px;
-}
-.lb-podium-stats {
-  position: relative;
-  z-index: 1;
-  padding-top: 20px;
-  border-top: 1px solid var(--border);
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-.lb-podium-stat-value {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: var(--text);
-}
-.lb-podium-stat-label {
-  font-size: 10px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  margin-top: 3px;
-  font-weight: 600;
-}
-
-/* Table */
-.lb-table-wrap {
-  background: var(--bg-soft);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-}
-.lb-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-.lb-table thead {
-  background: var(--bg-softer);
-  border-bottom: 1px solid var(--border);
-}
-.lb-table th {
-  padding: 14px 20px;
-  text-align: left;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-.lb-table th.right { text-align: right; }
-.lb-table td {
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border);
-  font-size: 14px;
-  vertical-align: middle;
-}
-.lb-table tr:last-child td { border-bottom: none; }
-.lb-table tbody tr { transition: background .15s; }
-.lb-table tbody tr:hover { background: var(--bg-softer); }
-
-.lb-table tr.is-you {
-  background: var(--accent-glow);
-}
-.lb-table tr.is-you:hover {
-  background: color-mix(in srgb, var(--accent-glow) 70%, var(--bg-softer) 30%);
-}
-.lb-table tr.is-you td:first-child {
-  position: relative;
-}
-.lb-table tr.is-you td:first-child::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 3px;
-  background: var(--grad);
-  border-radius: 0 2px 2px 0;
-}
-
-.lb-rank-cell {
-  font-family: 'JetBrains Mono', monospace;
-  font-weight: 600;
-  color: var(--text-muted);
-  width: 70px;
-  font-size: 14px;
-}
-.lb-rank-cell.top10 { color: var(--accent); }
-.lb-rank-cell.gold { color: #fbbf24; }
-.lb-rank-cell.silver { color: #cbd5e1; }
-.lb-rank-cell.bronze { color: #fb923c; }
-[data-theme="light"] .lb-rank-cell.gold { color: #b45309; }
-[data-theme="light"] .lb-rank-cell.silver { color: #475569; }
-[data-theme="light"] .lb-rank-cell.bronze { color: #c2410c; }
-
-.lb-user-cell {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.lb-user-avatar {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  background: var(--grad);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 13px;
-  font-weight: 700;
-  color: white;
-  flex-shrink: 0;
-}
-.lb-user-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.lb-user-name {
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-}
-.lb-you-tag {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 4px;
-  background: var(--accent);
-  color: #04121a;
-  letter-spacing: 0.06em;
-}
-.lb-user-meta {
-  font-size: 11.5px;
-  color: var(--text-muted);
-  font-family: 'JetBrains Mono', monospace;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.lb-mono {
-  font-family: 'JetBrains Mono', monospace;
-  font-weight: 500;
-  text-align: right;
-  color: var(--text);
-  font-size: 14px;
-}
-.lb-mono.accent { color: var(--accent); }
-
-.lb-trust-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  justify-content: flex-end;
-}
-.lb-trust-track {
-  width: 60px;
-  height: 4px;
-  background: var(--bg-softer);
-  border-radius: 100px;
-  overflow: hidden;
-  border: 1px solid var(--border);
-}
-.lb-trust-fill {
-  height: 100%;
-  background: var(--grad);
-  border-radius: 100px;
-  transition: width .8s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.lb-trust-value {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
-  color: var(--text-secondary);
-  min-width: 36px;
-  text-align: right;
-}
-
-.lb-empty {
-  padding: 80px 24px;
-  text-align: center;
-  color: var(--text-muted);
-}
-.lb-empty-icon {
-  font-size: 48px;
-  opacity: 0.3;
-  margin-bottom: 16px;
-}
-.lb-empty-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  margin-bottom: 6px;
-}
-
-.lb-footer-note {
-  margin-top: 24px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--text-muted);
-  font-family: 'JetBrains Mono', monospace;
-}
-.lb-footer-note .dot {
-  display: inline-block;
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--ok);
-  box-shadow: 0 0 6px var(--ok);
-  margin-right: 6px;
-  vertical-align: middle;
-  animation: blink 2s infinite;
-}
-
 /* ===== CTA ===== */
 .cta { position: relative; z-index: 1; text-align: center; padding: 110px 24px; }
 .cta::before { content: ''; position: absolute; inset: 0; background: radial-gradient(circle at center, var(--accent-glow) 0%, transparent 55%); pointer-events: none; }
@@ -742,10 +247,204 @@ a { color: inherit; text-decoration: none; }
 .footer-brand p { font-size: 14px; color: var(--text-secondary); line-height: 1.7; max-width: 300px; margin-top: 14px; }
 .footer-brand .logo { margin-bottom: 4px; }
 .footer-col h4 { font-family: 'JetBrains Mono', monospace; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 16px; }
-.footer-col a { display: block; font-size: 14px; color: var(--text-secondary); padding: 5px 0; transition: color .2s; }
+.footer-col a { display: block; font-size: 14px; color: var(--text-secondary); padding: 5px 0; transition: color .2s; cursor: pointer; }
 .footer-col a:hover { color: var(--accent); }
 .footer-bottom { display: flex; justify-content: space-between; align-items: center; padding-top: 28px; border-top: 1px solid var(--border); font-size: 13px; color: var(--text-muted); flex-wrap: wrap; gap: 12px; }
 .footer-bottom .mono { color: var(--text-secondary); }
+
+/* ===== LEADERBOARD ===== */
+.leaderboard { position: relative; z-index: 1; max-width: 1280px; margin: 0 auto; padding: 80px 24px 110px; }
+
+.lb-live-bar {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 6px 14px; border-radius: 100px;
+  background: var(--bg-soft); border: 1px solid var(--border);
+  font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 500;
+  color: var(--text-secondary); margin: 0 auto 48px;
+}
+.lb-live-bar .dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--ok); box-shadow: 0 0 8px var(--ok);
+  animation: blink 2s infinite;
+}
+.lb-live-bar-wrap { text-align: center; }
+
+.lb-hero-stats {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 1px; background: var(--border); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); overflow: hidden; margin-bottom: 48px;
+}
+.lb-hero-stat {
+  background: var(--bg-soft); padding: 32px 28px; text-align: center;
+  transition: background .3s;
+}
+.lb-hero-stat:hover { background: var(--bg-softer); }
+.lb-hero-value {
+  font-family: 'JetBrains Mono', monospace; font-size: 42px; font-weight: 700;
+  letter-spacing: -0.03em; background: var(--grad);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  background-clip: text; margin-bottom: 6px;
+}
+.lb-hero-label {
+  font-size: 12px; color: var(--text-muted); text-transform: uppercase;
+  letter-spacing: 0.1em; font-weight: 600;
+}
+.lb-hero-sublabel {
+  font-size: 11px; color: var(--text-muted); margin-top: 4px;
+  font-family: 'JetBrains Mono', monospace; opacity: 0.7;
+}
+
+.lb-controls { display: flex; gap: 12px; margin-bottom: 40px; flex-wrap: wrap; align-items: center; }
+.lb-search { flex: 1; min-width: 260px; position: relative; }
+.lb-search input {
+  width: 100%; padding: 12px 16px 12px 44px;
+  background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--text); font-family: inherit; font-size: 14px; transition: all .2s;
+}
+.lb-search input::placeholder { color: var(--text-muted); }
+.lb-search input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.lb-search svg {
+  position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+  width: 18px; height: 18px; color: var(--text-muted); pointer-events: none;
+}
+.lb-filter-group {
+  display: flex; gap: 2px; background: var(--bg-soft);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 3px;
+}
+.lb-filter {
+  padding: 8px 16px; border: none; background: transparent;
+  color: var(--text-secondary); font-family: inherit; font-size: 13px;
+  font-weight: 500; border-radius: 7px; cursor: pointer; transition: all .15s;
+}
+.lb-filter.active { background: var(--bg-softer); color: var(--text); box-shadow: inset 0 0 0 1px var(--border); }
+.lb-filter:hover:not(.active) { color: var(--text); }
+
+.lb-podium {
+  display: grid; grid-template-columns: 1fr 1.15fr 1fr;
+  gap: 16px; margin-bottom: 56px; align-items: end;
+}
+.lb-podium-card {
+  position: relative; background: var(--bg-soft); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 32px 24px 28px; text-align: center;
+  overflow: hidden; transition: all .35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.lb-podium-card:hover { transform: translateY(-6px); border-color: var(--border-strong); box-shadow: var(--shadow-lg); }
+.lb-podium-card::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  background: var(--grad); opacity: 0.6; transition: opacity .3s;
+}
+.lb-podium-card:hover::before { opacity: 1; }
+.lb-podium:empty {
+  display: none;
+}
+.lb-podium-rank-bg {
+  position: absolute; top: -20px; left: 50%; transform: translateX(-50%);
+  font-family: 'JetBrains Mono', monospace; font-size: 180px; font-weight: 800;
+  line-height: 1; letter-spacing: -0.06em; background: var(--grad);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  background-clip: text; opacity: 0.08; pointer-events: none; z-index: 0; user-select: none;
+}
+.lb-podium-card.center { padding-top: 48px; padding-bottom: 40px; }
+.lb-podium-card.center .lb-podium-rank-bg { font-size: 220px; top: -28px; opacity: 0.1; }
+
+.lb-podium-badge {
+  position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 100px; background: var(--bg-softer);
+  border: 1px solid var(--border); font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; font-weight: 600; color: var(--text-secondary);
+  margin-bottom: 20px; text-transform: uppercase; letter-spacing: 0.08em;
+}
+.lb-podium-badge.gold { color: #fbbf24; border-color: rgba(251,191,36,0.35); background: rgba(251,191,36,0.08); }
+.lb-podium-badge.silver { color: #cbd5e1; border-color: rgba(203,213,225,0.3); background: rgba(203,213,225,0.06); }
+.lb-podium-badge.bronze { color: #fb923c; border-color: rgba(251,146,60,0.35); background: rgba(251,146,60,0.08); }
+[data-theme="light"] .lb-podium-badge.gold { color: #b45309; background: rgba(180,83,9,0.08); border-color: rgba(180,83,9,0.25); }
+[data-theme="light"] .lb-podium-badge.silver { color: #475569; background: rgba(71,85,105,0.08); border-color: rgba(71,85,105,0.2); }
+[data-theme="light"] .lb-podium-badge.bronze { color: #c2410c; background: rgba(194,65,12,0.08); border-color: rgba(194,65,12,0.25); }
+
+.lb-podium-avatar {
+  position: relative; z-index: 1; width: 72px; height: 72px; border-radius: 50%;
+  background: var(--grad); display: flex; align-items: center; justify-content: center;
+  font-size: 28px; font-weight: 700; color: white; margin: 0 auto 16px;
+  box-shadow: 0 8px 24px var(--accent-glow);
+}
+.lb-podium-card.center .lb-podium-avatar { width: 88px; height: 88px; font-size: 34px; box-shadow: 0 12px 32px var(--accent-glow); }
+.lb-podium-name { position: relative; z-index: 1; font-size: 18px; font-weight: 700; letter-spacing: -0.01em; margin-bottom: 20px; }
+.lb-podium-stats {
+  position: relative; z-index: 1; padding-top: 20px; border-top: 1px solid var(--border);
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+}
+.lb-podium-stat-value { font-family: 'JetBrains Mono', monospace; font-size: 18px; font-weight: 700; letter-spacing: -0.02em; color: var(--text); }
+.lb-podium-stat-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 3px; font-weight: 600; }
+
+.lb-table-wrap { background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+.lb-table { width: 100%; border-collapse: collapse; }
+.lb-table thead { background: var(--bg-softer); border-bottom: 1px solid var(--border); }
+.lb-table th {
+  padding: 14px 20px; text-align: left; font-size: 11px; font-weight: 600;
+  color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em;
+}
+.lb-table th.right { text-align: right; }
+.lb-table td { padding: 16px 20px; border-bottom: 1px solid var(--border); font-size: 14px; vertical-align: middle; }
+.lb-table tr:last-child td { border-bottom: none; }
+.lb-table tbody tr { transition: background .15s; }
+.lb-table tbody tr:hover { background: var(--bg-softer); }
+
+.lb-table tr.is-you { background: var(--accent-glow); }
+.lb-table tr.is-you:hover { background: color-mix(in srgb, var(--accent-glow) 70%, var(--bg-softer) 30%); }
+.lb-table tr.is-you td:first-child { position: relative; }
+.lb-table tr.is-you td:first-child::before {
+  content: ''; position: absolute; left: 0; top: 8px; bottom: 8px;
+  width: 3px; background: var(--grad); border-radius: 0 2px 2px 0;
+}
+
+.lb-rank-cell { font-family: 'JetBrains Mono', monospace; font-weight: 600; color: var(--text-muted); width: 70px; font-size: 14px; }
+.lb-rank-cell.top10 { color: var(--accent); }
+.lb-rank-cell.gold { color: #fbbf24; }
+.lb-rank-cell.silver { color: #cbd5e1; }
+.lb-rank-cell.bronze { color: #fb923c; }
+[data-theme="light"] .lb-rank-cell.gold { color: #b45309; }
+[data-theme="light"] .lb-rank-cell.silver { color: #475569; }
+[data-theme="light"] .lb-rank-cell.bronze { color: #c2410c; }
+
+.lb-user-cell { display: flex; align-items: center; gap: 12px; }
+.lb-user-avatar {
+  width: 34px; height: 34px; border-radius: 50%; background: var(--grad);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700; color: white; flex-shrink: 0;
+}
+.lb-user-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lb-user-name { font-weight: 600; display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.lb-you-tag {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
+  padding: 2px 7px; border-radius: 4px; background: var(--accent);
+  color: #04121a; letter-spacing: 0.06em;
+}
+.lb-user-meta { font-size: 11.5px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
+
+.lb-mono { font-family: 'JetBrains Mono', monospace; font-weight: 500; text-align: right; color: var(--text); font-size: 14px; }
+.lb-mono.accent { color: var(--accent); }
+
+.lb-trust-bar { display: flex; align-items: center; gap: 10px; justify-content: flex-end; }
+.lb-trust-track {
+  width: 60px; height: 4px; background: var(--bg-softer); border-radius: 100px;
+  overflow: hidden; border: 1px solid var(--border);
+}
+.lb-trust-fill { height: 100%; background: var(--grad); border-radius: 100px; transition: width .8s cubic-bezier(0.4, 0, 0.2, 1); }
+.lb-trust-value { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--text-secondary); min-width: 36px; text-align: right; }
+
+.lb-empty { padding: 80px 24px; text-align: center; color: var(--text-muted); }
+.lb-empty-icon { font-size: 48px; opacity: 0.3; margin-bottom: 16px; }
+.lb-empty-title { font-size: 18px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
+
+.lb-footer-note {
+  margin-top: 24px; text-align: center; font-size: 12px; color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+}
+.lb-footer-note .dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--ok); box-shadow: 0 0 6px var(--ok); margin-right: 6px;
+  vertical-align: middle; animation: blink 2s infinite;
+}
 
 /* ===== REVEAL ===== */
 .reveal { opacity: 0; transform: translateY(24px); transition: opacity .7s ease, transform .7s ease; }
@@ -784,7 +483,7 @@ a { color: inherit; text-decoration: none; }
 <!-- ===== HEADER ===== -->
 <header class="header">
   <div class="header-inner">
-    <a href="#" class="logo" id="logo-link">
+    <a class="logo" id="logo-link" data-view="home">
       <img src="logo-white.svg" alt="CrowdGPT" class="logo-img" id="logo-img" onerror="this.parentElement.classList.add('logo-img-failed')">
       <span class="logo-fallback">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
@@ -796,9 +495,9 @@ a { color: inherit; text-decoration: none; }
       <span class="ver">v0.1-beta</span>
     </a>
     <nav class="nav">
-      <a href="#why">Why CrowdGPT</a>
-      <a href="#leaderboard">Leaderboard</a>
-      <a href="#start">Quickstart</a>
+      <a data-view="home" class="active">Home</a>
+            <a data-view="home" data-scroll="start">Quickstart</a>
+      <a data-view="leaderboard">Leaderboard</a>
       <a href="https://github.com/Vxtzq/CrowdGPT/tree/main/docs" target="_blank">Docs</a>
     </nav>
     <div class="header-actions">
@@ -811,203 +510,198 @@ a { color: inherit; text-decoration: none; }
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.21 11.39.6.11.79-.26.79-.58v-2.23c-3.34.73-4.03-1.42-4.03-1.42-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49.99.11-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.3 1.23.96-.27 1.98-.4 3-.4s2.05.13 3.01.4c2.29-1.55 3.3-1.23 3.3-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.8 5.62-5.48 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.19.69.8.58C20.57 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
         GitHub
       </a>
-      <a href="#start" class="btn btn-primary">Start Training</a>
+      <a data-view="home" data-scroll="start" class="btn btn-primary">Start Training</a>
     </div>
   </div>
 </header>
 
-<!-- ===== HERO ===== -->
-<section class="hero">
-  <div class="hero-inner">
-    <h1>Every device.<br><span class="accent">One AI.</span></h1>
-    <p class="hero-sub">
-      Train a large language model <strong>while you sleep</strong>. Turn idle GPUs and CPUs
-      worldwide into a single decentralized supercomputer.
-    </p>
-    <div class="hero-btns">
-      <a href="#start" class="btn btn-primary">
-        Start contributing
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-      </a>
-      <a href="https://github.com/Vxtzq/CrowdGPT/blob/main/docs/ARCHITECTURE.md" target="_blank" class="btn btn-ghost">Read the paper</a>
+<!-- ===================== HOME VIEW ===================== -->
+<div id="view-home" class="view active">
+
+  <!-- HERO -->
+  <section class="hero">
+    <div class="hero-inner">
+      <h1>Every device.<br><span class="accent">One AI.</span></h1>
+      <p class="hero-sub">
+        Train a large language model <strong>while you sleep</strong>. Turn idle GPUs and CPUs
+        worldwide into a single decentralized supercomputer.
+      </p>
+      <div class="hero-btns">
+        <a href="#start" class="btn btn-primary">
+          Start contributing
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </a>
+        <a href="https://github.com/Vxtzq/CrowdGPT/blob/main/docs/ARCHITECTURE.md" target="_blank" class="btn btn-ghost">Read the paper</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- LIVE STATS -->
+  <div class="stats reveal">
+    <div class="stats-grid">
+      <div class="stat"><div class="stat-val" data-count="1000000000" data-suffix="+">0</div><div class="stat-label">Parameters</div></div>
+      <div class="stat"><div class="stat-val" data-count="0">0</div><div class="stat-label">Datacenters</div></div>
+      <div class="stat"><div class="stat-val" data-count="100" data-suffix="%">0</div><div class="stat-label">Open Source</div></div>
+      <div class="stat"><div class="stat-val">&infin;</div><div class="stat-label">Scalability</div></div>
     </div>
   </div>
-</section>
 
-<!-- ===== LIVE STATS ===== -->
-<div class="stats reveal">
-  <div class="stats-grid">
-    <div class="stat"><div class="stat-val" data-count="1000000000" data-suffix="+">0</div><div class="stat-label">Parameters</div></div>
-    <div class="stat"><div class="stat-val" data-count="0">0</div><div class="stat-label">Datacenters</div></div>
-    <div class="stat"><div class="stat-val" data-count="100" data-suffix="%">0</div><div class="stat-label">Open Source</div></div>
-    <div class="stat"><div class="stat-val">&infin;</div><div class="stat-label">Scalability</div></div>
-  </div>
+  <!-- WHY -->
+  <section class="section" id="why">
+    <div class="section-head reveal">
+      <h2 class="section-title">Built for the decentralized era</h2>
+      <p class="section-sub">Simply transparent, community-driven intelligence without any dedicated hardware.</p>
+    </div>
+    <div class="why-grid">
+      <div class="why-card reveal">
+        <div class="why-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/><path d="M18 6h.01M18 18h.01"/></svg></div>
+        <h3>Zero Datacenters</h3>
+        <p>Traditional AI requires massive datacenters burning megawatts of power. CrowdGPT uses the computing power you already own; distributed across thousands of homes.</p>
+        <span class="why-tag mono">distributed compute</span>
+      </div>
+      <div class="why-card reveal">
+        <div class="why-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
+        <h3>No New Infrastructure</h3>
+        <p>Your laptop. Your gaming rig. That old desktop in the closet. CrowdGPT runs on all of these, so joining the network costs nothing but electricity (which is cheap).</p>
+        <span class="why-tag mono">zero new hardware</span>
+      </div>
+      <div class="why-card reveal">
+        <div class="why-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></div>
+        <h3>Fully Transparent</h3>
+        <p>No black boxes nor hidden training data. Every line of code is auditable (client is a single, human-readable python file), every contribution is public, and the model weights are downloadable for local use.</p>
+        <span class="why-tag mono">MIT licensed</span>
+      </div>
+      <div class="why-card reveal">
+        <div class="why-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg></div>
+        <h3>Secure &amp; Audited</h3>
+        <p>Open source means anyone can verify the code. CrowdGPT never touches your personal files, and only uses your GPU when you explicitly enable it.</p>
+        <span class="why-tag mono">community verified</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- QUICKSTART -->
+  <section class="section" id="start" style="padding-top:0">
+    <div class="section-head reveal">
+      <h2 class="section-title">Join the network in seconds</h2>
+      <p class="section-sub">Super simple installation. Train the future of open-source AI in seconds.</p>
+    </div>
+    <div class="terminal-wrap reveal">
+      <div class="terminal">
+        <div class="terminal-bar">
+          <div class="dots"><span></span><span></span><span></span></div>
+          <span class="terminal-title">user@network: ~/CrowdGPT</span>
+        </div>
+        <div class="terminal-body">
+          <span class="line"><span class="t-comment"># Grab the source</span></span>
+          <span class="line"><span class="t-prompt">$</span> <span class="t-cmd">git clone https://github.com/Vxtzq/CrowdGPT</span></span>
+          <span class="line"><span class="t-prompt">$</span> <span class="t-cmd">cd CrowdGPT</span></span>
+          <span class="line">&nbsp;</span>
+          <span class="line"><span class="t-comment"># Auto-detects CUDA / ROCm / DirectML / MPS</span></span>
+          <span class="line"><span class="t-prompt">$</span> <span class="t-cmd">pip install -r requirements.txt</span></span>
+          <span class="line">&nbsp;</span>
+          <span class="line"><span class="t-comment"># Start contributing compute</span></span>
+          <span class="line"><span class="t-prompt">$</span> <span class="t-cmd">python crowdgpt.py <span class="t-flag">--mode</span> balanced <span class="t-flag">--precision</span> bf16</span></span>
+          <span class="line">&nbsp;</span>
+          <span class="line"><span class="t-output">→ Detected: NVIDIA RTX 4090 (CUDA 12.4)</span></span>
+          <span class="line"><span class="t-output">→ Joined network. Training on shard #1284...</span></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta">
+    <div class="cta-inner reveal">
+      <h2>Ready to make<br>history?</h2>
+      <p>Join the contributors already building the future of collaborative AI. Every device counts.</p>
+      <div class="hero-btns" style="margin:0">
+        <a href="#start" class="btn btn-primary">Start contributing now
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </a>
+        <a href="https://github.com/Vxtzq/CrowdGPT" target="_blank" class="btn btn-ghost">Star on GitHub</a>
+      </div>
+    </div>
+  </section>
+
 </div>
 
-<!-- ===== WHY ===== -->
-<section class="section" id="why">
-  <div class="section-head reveal">
-    <h2 class="section-title">Built for the decentralized era</h2>
-    <p class="section-sub">Simply transparent, community-driven intelligence without any dedicated hardware.</p>
-  </div>
-  <div class="why-grid">
-    <div class="why-card reveal">
-      <div class="why-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/><path d="M18 6h.01M18 18h.01"/></svg></div>
-      <h3>Zero Datacenters</h3>
-      <p>Traditional AI requires massive datacenters burning megawatts of power. CrowdGPT uses the computing power you already own; distributed across thousands of homes.</p>
-      <span class="why-tag mono">distributed compute</span>
+<!-- ===================== LEADERBOARD VIEW ===================== -->
+<div id="view-leaderboard" class="view">
+  <div class="leaderboard">
+    <div class="section-head reveal">
+      <h2 class="section-title">CrowdGPT leaderboard</h2>
+      <p class="section-sub">Every contributor shaping the future of AI, ranked by tokens trained.</p>
     </div>
-    <div class="why-card reveal">
-      <div class="why-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
-      <h3>No New Infrastructure</h3>
-      <p>Your laptop. Your gaming rig. That old desktop in the closet. CrowdGPT runs on all of these, so joining the network costs nothing but electricity (which is cheap).</p>
-      <span class="why-tag mono">zero new hardware</span>
-    </div>
-    <div class="why-card reveal">
-      <div class="why-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></div>
-      <h3>Fully Transparent</h3>
-      <p>No black boxes nor hidden training data. Every line of code is auditable (client is a single, human-readable python file), every contribution is public, and the model weights are downloadable for local use.</p>
-      <span class="why-tag mono">MIT licensed</span>
-    </div>
-    <div class="why-card reveal">
-      <div class="why-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg></div>
-      <h3>Secure &amp; Audited</h3>
-      <p>Open source means anyone can verify the code. CrowdGPT never touches your personal files, and only uses your GPU when you explicitly enable it.</p>
-      <span class="why-tag mono">community verified</span>
-    </div>
-  </div>
-</section>
 
-<!-- ===== LEADERBOARD ===== -->
-<section class="leaderboard-section" id="leaderboard">
-  <div class="section-head reveal">
-    <div class="section-tag">Leaderboard</div>
-    <h2 class="section-title">The network at work</h2>
-    <p class="section-sub">Every contributor shaping the future of AI, ranked by tokens trained.</p>
-  </div>
 
-  <div class="lb-live-bar-wrap reveal">
-    <div class="lb-live-bar">
-      <span class="dot"></span>
-      <span id="lb-live-text">Network live · updating every 30s</span>
-    </div>
-  </div>
-
-  <!-- Hero stats -->
-  <div class="lb-hero-stats reveal">
-    <div class="lb-hero-stat">
-      <div class="lb-hero-value" id="lb-hero-users">—</div>
-      <div class="lb-hero-label">Contributors</div>
-      <div class="lb-hero-sublabel" id="lb-hero-users-sub">across the network</div>
-    </div>
-    <div class="lb-hero-stat">
-      <div class="lb-hero-value" id="lb-hero-tokens">—</div>
-      <div class="lb-hero-label">Tokens Trained</div>
-      <div class="lb-hero-sublabel">and counting</div>
-    </div>
-    <div class="lb-hero-stat">
-      <div class="lb-hero-value" id="lb-hero-hours">—</div>
-      <div class="lb-hero-label">Compute Hours</div>
-      <div class="lb-hero-sublabel">donated this month</div>
-    </div>
-  </div>
-
-  <!-- Controls -->
-  <div class="lb-controls reveal">
-    <div class="lb-search">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="11" cy="11" r="8"></circle>
-        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-      </svg>
-      <input type="text" id="lb-search-input" placeholder="Search contributors…">
-    </div>
-    <div class="lb-filter-group">
-      <button class="lb-filter active" data-period="all">All time</button>
-      <button class="lb-filter" data-period="month">This month</button>
-      <button class="lb-filter" data-period="week">This week</button>
-    </div>
-  </div>
-
-  <!-- Podium -->
-  <div class="lb-podium reveal" id="lb-podium"></div>
-
-  <!-- Table -->
-  <div class="lb-table-wrap reveal">
-    <table class="lb-table">
-      <thead>
-        <tr>
-          <th>Rank</th>
-          <th>Contributor</th>
-          <th class="right">Trust</th>
-          <th class="right">Contributions</th>
-          <th class="right">Tokens</th>
-        </tr>
-      </thead>
-      <tbody id="lb-table-body"></tbody>
-    </table>
-    <div class="lb-empty" id="lb-empty" style="display:none;">
-      <div class="lb-empty-icon">🌱</div>
-      <div class="lb-empty-title">No contributors match your search</div>
-      <div>Try a different name, or clear the filter.</div>
-    </div>
-  </div>
-
-  <div class="lb-footer-note reveal">
-    <span class="dot"></span>
-    <span id="lb-footer-text">Rankings update in real time as shards are aggregated</span>
-  </div>
-</section>
-
-<!-- ===== QUICKSTART ===== -->
-<section class="section" id="start" style="padding-top:0">
-  <div class="section-head reveal">
-    <h2 class="section-title">Join the network in seconds</h2>
-    <p class="section-sub">Super simple installation. Train the future of open-source AI in seconds.</p>
-  </div>
-  <div class="terminal-wrap reveal">
-    <div class="terminal">
-      <div class="terminal-bar">
-        <div class="dots"><span></span><span></span><span></span></div>
-        <span class="terminal-title">user@network: ~/CrowdGPT</span>
+    <div class="lb-hero-stats reveal">
+      <div class="lb-hero-stat">
+        <div class="lb-hero-value" id="lb-hero-users">—</div>
+        <div class="lb-hero-label">Contributors</div>
+        <div class="lb-hero-sublabel">across the network</div>
       </div>
-      <div class="terminal-body">
-        <span class="line"><span class="t-comment"># Grab the source</span></span>
-        <span class="line"><span class="t-prompt">$</span> <span class="t-cmd">git clone https://github.com/Vxtzq/CrowdGPT</span></span>
-        <span class="line"><span class="t-prompt">$</span> <span class="t-cmd">cd CrowdGPT</span></span>
-        <span class="line">&nbsp;</span>
-        <span class="line"><span class="t-comment"># Auto-detects CUDA / ROCm / DirectML / MPS</span></span>
-        <span class="line"><span class="t-prompt">$</span> <span class="t-cmd">pip install -r requirements.txt</span></span>
-        <span class="line">&nbsp;</span>
-        <span class="line"><span class="t-comment"># Start contributing compute</span></span>
-        <span class="line"><span class="t-prompt">$</span> <span class="t-cmd">python crowdgpt.py <span class="t-flag">--mode</span> balanced <span class="t-flag">--precision</span> bf16</span></span>
-        <span class="line">&nbsp;</span>
-        <span class="line"><span class="t-output">→ Detected: NVIDIA RTX 4090 (CUDA 12.4)</span></span>
-        <span class="line"><span class="t-output">→ Joined network. Training on shard #1284...</span></span>
+      <div class="lb-hero-stat">
+        <div class="lb-hero-value" id="lb-hero-tokens">—</div>
+        <div class="lb-hero-label">Tokens Trained</div>
+        <div class="lb-hero-sublabel">and counting</div>
+      </div>
+      <div class="lb-hero-stat">
+        <div class="lb-hero-value" id="lb-hero-steps">—</div>
+        <div class="lb-hero-label">Training Steps</div>
+        <div class="lb-hero-sublabel">completed globally</div>
       </div>
     </div>
-  </div>
-</section>
+    <div class="lb-podium reveal" id="lb-podium"></div>
+    <div class="lb-controls reveal">
+      <div class="lb-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8"></circle>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+        </svg>
+        <input type="text" id="lb-search-input" placeholder="Search contributors…">
+      </div>
+      <div class="lb-filter-group">
+        <button class="lb-filter active" data-period="all">All time</button>
+        <button class="lb-filter" data-period="month">This month</button>
+        <button class="lb-filter" data-period="week">This week</button>
+      </div>
+    </div>
 
-<!-- ===== CTA ===== -->
-<section class="cta">
-  <div class="cta-inner reveal">
-    <h2>Ready to make<br>history?</h2>
-    <p>Join the contributors already building the future of collaborative AI. Every device counts.</p>
-    <div class="hero-btns" style="margin:0">
-      <a href="#start" class="btn btn-primary">Start contributing now
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-      </a>
-      <a href="https://github.com/Vxtzq/CrowdGPT" target="_blank" class="btn btn-ghost">Star on GitHub</a>
+
+
+    <div class="lb-table-wrap reveal">
+      <table class="lb-table">
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>Contributor</th>
+            <th class="right">Trust</th>
+            <th class="right">Contributions</th>
+            <th class="right">Tokens</th>
+          </tr>
+        </thead>
+        <tbody id="lb-table-body"></tbody>
+      </table>
+      <div class="lb-empty" id="lb-empty" style="display:none;">
+        <div class="lb-empty-icon">😔</div>
+        <div class="lb-empty-title">Nothing to see here...</div>
+        <div>Maybe try a different search?</div>
+      </div>
+    </div>
+
+    <div class="lb-footer-note reveal">
+      <span id="lb-footer-text">Rankings update in real time</span>
     </div>
   </div>
-</section>
+</div>
 
 <!-- ===== FOOTER ===== -->
 <footer class="footer">
   <div class="footer-inner">
     <div class="footer-grid">
       <div class="footer-brand">
-        <a href="#" class="logo">
+        <a class="logo" data-view="home">
           <img src="logo-white.svg" alt="CrowdGPT" class="logo-img" onerror="this.parentElement.classList.add('logo-img-failed')">
           <span class="logo-fallback">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="2.6"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M19.1 4.9l-2.8 2.8M7.7 16.3l-2.8 2.8"/></svg>
@@ -1018,9 +712,9 @@ a { color: inherit; text-decoration: none; }
       </div>
       <div class="footer-col">
         <h4>Product</h4>
-        <a href="#why">Why CrowdGPT</a>
-        <a href="#leaderboard">Leaderboard</a>
-        <a href="#start">Quickstart</a>
+        <a data-view="home" data-scroll="why">Why CrowdGPT</a>
+        <a data-view="home" data-scroll="start">Quickstart</a>
+        <a data-view="leaderboard">Leaderboard</a>
       </div>
       <div class="footer-col">
         <h4>Resources</h4>
@@ -1032,7 +726,7 @@ a { color: inherit; text-decoration: none; }
         <h4>Community</h4>
         <a href="#">Discord</a>
         <a href="#">Twitter / X</a>
-        <a href="#leaderboard">Leaderboard</a>
+        <a data-view="leaderboard">Leaderboard</a>
       </div>
     </div>
     <div class="footer-bottom">
@@ -1070,19 +764,69 @@ function updateLogoSrc(theme) {
   updateThemeIcon(saved);
   updateLogoSrc(saved);
 })();
+function updateFavicon(theme) {
+  const favicon = document.querySelector('link[rel="icon"]');
+  if (favicon) favicon.href = theme === 'dark' ? 'logo-white.svg' : 'logo-black.svg';
+}
+
+// ===== VIEW ROUTER =====
+function showView(viewName, scrollTo) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  const target = document.getElementById('view-' + viewName);
+  if (target) target.classList.add('active');
+
+  document.querySelectorAll('.nav a[data-view]').forEach(a => {
+    a.classList.toggle('active', a.dataset.view === viewName && !a.dataset.scroll);
+  });
+
+  window.scrollTo(0, 0);
+
+  if (viewName === 'leaderboard') {
+    fetchLeaderboard();
+    revealInView();
+  }
+
+  if (scrollTo) {
+    setTimeout(() => {
+      const el = document.getElementById(scrollTo);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  }
+}
+
+document.querySelectorAll('[data-view]').forEach(el => {
+  el.addEventListener('click', (e) => {
+    const view = el.dataset.view;
+    const scroll = el.dataset.scroll;
+    if (!view) return;
+    if (el.tagName === 'A' && el.getAttribute('href') && el.getAttribute('href').startsWith('http')) return;
+    e.preventDefault();
+    showView(view, scroll);
+  });
+});
 
 // ===== REVEAL ON SCROLL =====
 const io = new IntersectionObserver((entries) => {
   entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
 }, { threshold: 0.12 });
+function revealInView() {
+  document.querySelectorAll('.reveal:not(.in)').forEach(el => {
+    const rect = el.getBoundingClientRect();
+    if (rect.top < window.innerHeight && rect.bottom > 0) {
+      el.classList.add('in');
+    } else {
+      io.observe(el);
+    }
+  });
+}
 document.querySelectorAll('.reveal').forEach(el => io.observe(el));
 
-// ===== ANIMATED COUNTERS (HERO) =====
+// ===== ANIMATED COUNTERS =====
 function fmt(n, suffix) {
   if (n >= 999_500_000) return '1B' + (suffix || '');
   if (n >= 1e9) return (n / 1e9).toFixed(n % 1e9 === 0 ? 0 : 1) + 'B' + (suffix || '');
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M' + (suffix || '');
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K' + (suffix || '');
+  if (n >= 1e6) return (n / 1e6).toFixed(0) + 'M' + (suffix || '');
+  if (n >= 1e3) return (n / 1e3).toFixed(0) + 'K' + (suffix || '');
   return n.toString() + (suffix || '');
 }
 const counterIO = new IntersectionObserver((entries) => {
@@ -1109,49 +853,16 @@ document.querySelectorAll('.stat-val[data-count]').forEach(el => counterIO.obser
 
 // ===== LEADERBOARD =====
 const API_BASE = 'http://localhost:3000';
-// Simulated "current user" for demo purposes. Set to a real uuid when auth is wired up.
+// Demo uuid for "YOU" highlighting — replace with real auth when wired up
 const CURRENT_USER_UUID = 'you-demo-uuid';
 
 let leaderboardData = [];
 let currentPeriod = 'all';
 let currentSearch = '';
 
-// ---- Fallback mock data (used if /api/leaderboard is unreachable) ----
 const MOCK_DATA = [
-  { uuid: 'u1', username: 'novaforge', country: 'FR', contributions: 4280, totalTokens: 84213000, totalSteps: 214000, trustScore: 0.98 },
-  { uuid: 'u2', username: 'kyo_zen', country: 'JP', contributions: 3912, totalTokens: 78340000, totalSteps: 195600, trustScore: 0.97 },
-  { uuid: 'u3', username: 'helvetica', country: 'CH', contributions: 3541, totalTokens: 71900000, totalSteps: 177050, trustScore: 0.96 },
-  { uuid: 'u4', username: 'nightcrawler', country: 'DE', contributions: 3128, totalTokens: 63520000, totalSteps: 156400, trustScore: 0.95 },
-  { uuid: 'u5', username: 'arc_reactor', country: 'US', contributions: 2870, totalTokens: 57800000, totalSteps: 143500, trustScore: 0.94 },
-  { uuid: 'u6', username: 'lumen', country: 'CA', contributions: 2641, totalTokens: 52100000, totalSteps: 132050, trustScore: 0.93 },
-  { uuid: 'u7', username: 'stratos', country: 'SE', contributions: 2388, totalTokens: 47650000, totalSteps: 119400, trustScore: 0.92 },
-  { uuid: 'u8', username: 'pixel_drifter', country: 'KR', contributions: 2156, totalTokens: 43210000, totalSteps: 107800, trustScore: 0.91 },
-  { uuid: 'u9', username: 'obsidian', country: 'BR', contributions: 1920, totalTokens: 38440000, totalSteps: 96000, trustScore: 0.90 },
-  { uuid: 'u10', username: 'monolith', country: 'GB', contributions: 1743, totalTokens: 34880000, totalSteps: 87150, trustScore: 0.89 },
-  { uuid: 'u11', username: 'cobalt', country: 'NL', contributions: 1567, totalTokens: 31340000, totalSteps: 78350, trustScore: 0.88 },
-  { uuid: 'u12', username: 'velvetwire', country: 'IT', contributions: 1402, totalTokens: 28040000, totalSteps: 70100, trustScore: 0.87 },
-  { uuid: 'u13', username: 'ghostframe', country: 'PL', contributions: 1248, totalTokens: 24960000, totalSteps: 62400, trustScore: 0.86 },
-  { uuid: 'u14', username: 'solarpunk', country: 'ES', contributions: 1085, totalTokens: 21700000, totalSteps: 54250, trustScore: 0.85 },
-  { uuid: 'u15', username: 'quantumleap', country: 'AU', contributions: 942, totalTokens: 18840000, totalSteps: 47100, trustScore: 0.83 },
-  { uuid: 'u16', username: 'ironlotus', country: 'SG', contributions: 816, totalTokens: 16320000, totalSteps: 40800, trustScore: 0.82 },
-  { uuid: 'u17', username: 'nightfall_dev', country: 'NO', contributions: 684, totalTokens: 13680000, totalSteps: 34200, trustScore: 0.80 },
-  { uuid: 'u18', username: 'emberline', country: 'PT', contributions: 520, totalTokens: 10400000, totalSteps: 26000, trustScore: 0.78 },
-  { uuid: 'u19', username: 'cyanwave', country: 'FI', contributions: 412, totalTokens: 8240000, totalSteps: 20600, trustScore: 0.75 },
-  { uuid: CURRENT_USER_UUID, username: 'nicolas', country: 'FR', contributions: 287, totalTokens: 5740000, totalSteps: 14350, trustScore: 0.72 },
-  { uuid: 'u21', username: 'zeroday', country: 'UA', contributions: 198, totalTokens: 3960000, totalSteps: 9900, trustScore: 0.68 },
-  { uuid: 'u22', username: 'mirage_dev', country: 'MX', contributions: 124, totalTokens: 2480000, totalSteps: 6200, trustScore: 0.65 },
-  { uuid: 'u23', username: 'halcyon', country: 'NZ', contributions: 82, totalTokens: 1640000, totalSteps: 4100, trustScore: 0.60 },
-  { uuid: 'u24', username: 'vaporbyte', country: 'IE', contributions: 41, totalTokens: 820000, totalSteps: 2050, trustScore: 0.55 },
+  
 ];
-
-function getCountryFlag(code) {
-  const map = {
-    FR:'🇫🇷', JP:'🇯🇵', CH:'🇨🇭', DE:'🇩🇪', US:'🇺🇸', CA:'🇨🇦', SE:'🇸🇪', KR:'🇰🇷',
-    BR:'🇧🇷', GB:'🇬🇧', NL:'🇳🇱', IT:'🇮🇹', PL:'🇵🇱', ES:'🇪🇸', AU:'🇦🇺', SG:'🇸🇬',
-    NO:'🇳🇴', PT:'🇵🇹', FI:'🇫🇮', UA:'🇺🇦', MX:'🇲🇽', NZ:'🇳🇿', IE:'🇮🇪'
-  };
-  return map[code] || '🌐';
-}
 
 function rankClass(rank) {
   if (rank === 1) return 'gold';
@@ -1163,15 +874,10 @@ function rankClass(rank) {
 
 function renderPodium(data) {
   const podium = document.getElementById('lb-podium');
-  if (!data || data.length === 0) {
-    podium.innerHTML = '';
-    return;
-  }
-  // Order: 2nd, 1st, 3rd for visual balance
+  if (!data || data.length === 0) { podium.innerHTML = ''; return; }
   const order = data.length >= 3 ? [1, 0, 2] : data.length === 2 ? [1, 0] : [0];
   const badges = ['gold', 'silver', 'bronze'];
   const labels = ['Champion', 'Runner-up', 'Third place'];
-
   podium.innerHTML = order.map(i => {
     const u = data[i];
     if (!u) return '';
@@ -1184,7 +890,6 @@ function renderPodium(data) {
         </div>
         <div class="lb-podium-avatar">${u.username.charAt(0).toUpperCase()}</div>
         <div class="lb-podium-name">${u.username}</div>
-        <div class="lb-podium-country">${getCountryFlag(u.country)} ${u.country}</div>
         <div class="lb-podium-stats">
           <div>
             <div class="lb-podium-stat-value">${fmt(u.totalTokens)}</div>
@@ -1192,7 +897,7 @@ function renderPodium(data) {
           </div>
           <div>
             <div class="lb-podium-stat-value">${u.contributions.toLocaleString()}</div>
-            <div class="lb-podium-stat-label">Shards</div>
+            <div class="lb-podium-stat-label">Contributions</div>
           </div>
         </div>
       </div>
@@ -1203,21 +908,19 @@ function renderPodium(data) {
 function renderTable(data) {
   const tbody = document.getElementById('lb-table-body');
   const empty = document.getElementById('lb-empty');
-
   if (!data || data.length === 0) {
     tbody.innerHTML = '';
     empty.style.display = 'block';
     return;
   }
   empty.style.display = 'none';
-
   tbody.innerHTML = data.map((u, i) => {
     const rank = i + 1;
     const isYou = u.uuid === CURRENT_USER_UUID;
     const rc = rankClass(rank);
     const trustPct = Math.round((u.trustScore || 0) * 100);
     return `
-      <tr class="${isYou ? 'is-you' : ''}" data-uuid="${u.uuid}">
+      <tr class="${isYou ? 'is-you' : ''}">
         <td class="lb-rank-cell ${rc}">#${rank}</td>
         <td>
           <div class="lb-user-cell">
@@ -1227,7 +930,6 @@ function renderTable(data) {
                 ${u.username}
                 ${isYou ? '<span class="lb-you-tag">YOU</span>' : ''}
               </div>
-              <div class="lb-user-meta">${getCountryFlag(u.country)} ${u.country}</div>
             </div>
           </div>
         </td>
@@ -1245,42 +947,28 @@ function renderTable(data) {
 }
 
 function renderHeroStats(data) {
-  const usersEl = document.getElementById('lb-hero-users');
-  const tokensEl = document.getElementById('lb-hero-tokens');
-  const hoursEl = document.getElementById('lb-hero-hours');
-
-  const totalUsers = data.length;
+  document.getElementById('lb-hero-users').textContent = data.length.toLocaleString();
   const totalTokens = data.reduce((s, u) => s + (u.totalTokens || 0), 0);
-  // Estimate compute hours from total steps (rough heuristic: ~500 steps/min on avg)
   const totalSteps = data.reduce((s, u) => s + (u.totalSteps || 0), 0);
-  const estHours = Math.round(totalSteps / 30000);
-
-  usersEl.textContent = totalUsers.toLocaleString();
-  tokensEl.textContent = fmt(totalTokens);
-  hoursEl.textContent = fmt(estHours);
+  document.getElementById('lb-hero-tokens').textContent = fmt(totalTokens);
+  document.getElementById('lb-hero-steps').textContent = fmt(totalSteps);
 }
 
 function filterAndRender() {
   let filtered = [...leaderboardData];
-  // Period filtering (simulated; in real app, server would return period-specific data)
   if (currentPeriod === 'month') {
-    filtered = filtered.map(u => ({ ...u, contributions: Math.round(u.contributions * 0.3), totalTokens: Math.round(u.totalTokens * 0.3) }));
+    filtered = filtered.map(u => ({ ...u, contributions: Math.round(u.contributions * 0.3), totalTokens: Math.round(u.totalTokens * 0.3), totalSteps: Math.round(u.totalSteps * 0.3) }));
   } else if (currentPeriod === 'week') {
-    filtered = filtered.map(u => ({ ...u, contributions: Math.round(u.contributions * 0.08), totalTokens: Math.round(u.totalTokens * 0.08) }));
+    filtered = filtered.map(u => ({ ...u, contributions: Math.round(u.contributions * 0.08), totalTokens: Math.round(u.totalTokens * 0.08), totalSteps: Math.round(u.totalSteps * 0.08) }));
   }
-  // Re-sort after scaling
   filtered.sort((a, b) => b.totalTokens - a.totalTokens);
-  // Search
   if (currentSearch.trim()) {
     const q = currentSearch.trim().toLowerCase();
-    filtered = filtered.filter(u =>
-      u.username.toLowerCase().includes(q) ||
-      (u.country && u.country.toLowerCase().includes(q))
-    );
+    filtered = filtered.filter(u => u.username.toLowerCase().includes(q));
   }
-  renderPodium(currentPeriod === 'all' ? filtered.slice(0, 3) : filtered.slice(0, 3));
+  renderPodium(filtered.slice(0, 3));
   renderTable(filtered);
-  if (currentPeriod === 'all') renderHeroStats(filtered);
+  renderHeroStats(filtered);
 }
 
 async function fetchLeaderboard() {
@@ -1299,7 +987,6 @@ async function fetchLeaderboard() {
   filterAndRender();
 }
 
-// Filter buttons
 document.querySelectorAll('.lb-filter').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.lb-filter').forEach(b => b.classList.remove('active'));
@@ -1309,7 +996,6 @@ document.querySelectorAll('.lb-filter').forEach(btn => {
   });
 });
 
-// Search
 const searchInput = document.getElementById('lb-search-input');
 let searchDebounce;
 searchInput.addEventListener('input', (e) => {
@@ -1320,20 +1006,11 @@ searchInput.addEventListener('input', (e) => {
   }, 150);
 });
 
-// Auto-refresh every 30 seconds
-setInterval(fetchLeaderboard, 30000);
-
-// Initial load when section is in view
-const lbSection = document.getElementById('leaderboard');
-const lbObserver = new IntersectionObserver((entries) => {
-  entries.forEach(e => {
-    if (e.isIntersecting) {
-      fetchLeaderboard();
-      lbObserver.unobserve(e.target);
-    }
-  });
-}, { threshold: 0.1 });
-lbObserver.observe(lbSection);
+setInterval(() => {
+  if (document.getElementById('view-leaderboard').classList.contains('active')) {
+    fetchLeaderboard();
+  }
+}, 30000);
 </script>
 </body>
 </html>
