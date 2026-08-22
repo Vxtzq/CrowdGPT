@@ -1079,6 +1079,43 @@ footer {
                 <p>The client is a single Python file. No binaries, no telemetry. Read it, fork it, run your own coordinator. The model weights are downloadable.</p>
               </div>
             </div>
+                    <div class="chart-card">
+          <div class="chart-head">
+            <span>training loss</span>
+            <span>last 100 steps</span>
+          </div>
+          <div class="chart-body">
+            <svg viewBox="0 0 400 180" width="100%" height="180" preserveAspectRatio="none">
+              <!-- grid lines -->
+              <g stroke="#1f1f23" stroke-width="1">
+                <line x1="0" y1="36" x2="400" y2="36"/>
+                <line x1="0" y1="72" x2="400" y2="72"/>
+                <line x1="0" y1="108" x2="400" y2="108"/>
+                <line x1="0" y1="144" x2="400" y2="144"/>
+              </g>
+              <!-- gradient fill -->
+              <defs>
+                <linearGradient id="lossFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#22c55e" stop-opacity="0.3"/>
+                  <stop offset="100%" stop-color="#22c55e" stop-opacity="0"/>
+                </linearGradient>
+              </defs>
+              <path d="M0,18 L20,24 L40,22 L60,34 L80,38 L100,42 L120,40 L140,52 L160,56 L180,62 L200,60 L220,68 L240,72 L260,70 L280,78 L300,82 L320,80 L340,88 L360,92 L380,90 L400,96 L400,180 L0,180 Z" fill="url(#lossFill)"/>
+              <!-- loss line -->
+              <polyline fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+                points="0,18 20,24 40,22 60,34 80,38 100,42 120,40 140,52 160,56 180,62 200,60 220,68 240,72 260,70 280,78 300,82 320,80 340,88 360,92 380,90 400,96"/>
+              <!-- end point -->
+              <circle cx="400" cy="96" r="4" fill="#22c55e"/>
+              <circle cx="400" cy="96" r="8" fill="#22c55e" opacity="0.3"/>
+            </svg>
+          </div>
+          <div class="chart-foot">
+            <span>loss <b>2.71</b></span>
+            <span>avg <b>2.79</b></span>
+            <span>norm <b>41.2</b></span>
+            <span>step <b>1,284</b></span>
+          </div>
+        </div>
           </div>
         </div>
 
