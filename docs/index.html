@@ -38,23 +38,6 @@
   --term-error: #ef4444;
   color-scheme: dark;
 }
-.chart-card { background: #000; border: 1px solid var(--border-strong); overflow: hidden; }
-.chart-head {
-  padding: 10px 14px; background: #0f0f10; border-bottom: 1px solid var(--border-strong);
-  display: flex; justify-content: space-between;
-  font-family: var(--mono); font-size: 11px; color: #8a8a92;
-}
-.chart-body { padding: 16px 12px 8px; }
-.chart-foot {
-  display: flex; gap: 24px; padding: 12px 16px;
-  border-top: 1px solid var(--border-strong);
-  font-family: var(--mono); font-size: 11px; color: #8a8a92;
-}
-.chart-foot b { color: #f5f5f7; font-weight: 600; }
-.t-success { color: #22c55e; }
-.t-info { color: #22d3ee; }
-.t-warn { color: #e879f9; }
-.t-bold { font-weight: 700; }
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #fafaf9;
@@ -83,10 +66,7 @@
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
-html { 
-  scroll-behavior: smooth;
-  font-size: 21px;
-}
+html { scroll-behavior: smooth; font-size: 21px; }
 
 body {
   background: var(--bg);
@@ -233,7 +213,8 @@ nav a.active { color: var(--text); }
   color: var(--text-muted);
   margin-bottom: 34px;
 }
-
+.product-grid { align-items: stretch; }
+.product-side { justify-content: center; }
 .hero-status .dot {
   width: 9px; height: 9px;
   border-radius: 50%;
@@ -320,6 +301,30 @@ nav a.active { color: var(--text); }
   margin-top: 67px;
 }
 
+/* ===== PRODUCT SIDE COLUMN ===== */
+.product-side {
+  display: flex;
+  flex-direction: column;
+  gap: 29px;
+}
+
+.product-side-image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px;
+  overflow: hidden;
+}
+
+.product-side-image .fit-image {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+
 .stat-item {
   padding: 31px 29px;
   border-right: 1px solid var(--border);
@@ -401,6 +406,40 @@ nav a.active { color: var(--text); }
   font-size: 17px;
   color: var(--text-dim);
   line-height: 1.55;
+}
+
+/* ===== CTA CARD ===== */
+.cta-card {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  padding: 48px 38px;
+  border-radius: 8px;
+}
+
+.cta-card h3 {
+  font-size: 29px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 14px;
+  line-height: 1.2;
+}
+
+.cta-card p {
+  font-size: 17px;
+  color: var(--text-dim);
+  line-height: 1.6;
+  margin-bottom: 29px;
+}
+
+.cta-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cta-btns .btn {
+  width: 100%;
+  justify-content: center;
 }
 
 /* ===== TERMINALS ===== */
@@ -891,17 +930,6 @@ footer {
 .footer-links a { color: var(--text-muted); }
 .footer-links a:hover { color: var(--text); }
 
-.footer-note {
-  width: 100%;
-  text-align: center;
-  margin-top: 24px;
-  padding-top: 22px;
-  border-top: 1px solid var(--border);
-  font-family: var(--mono);
-  font-size: 14px;
-  color: var(--text-muted);
-}
-
 /* ===== EMPTY/LOADING ===== */
 .empty-state {
   padding: 48px 29px;
@@ -999,7 +1027,6 @@ footer {
       <div class="hero-grid">
         <div class="hero-copy">
           <div class="hero-status">
-            
             <span id="home-status-text"></span>
           </div>
           <h1>Train a language model with <span class="em">your GPU</span>.</h1>
@@ -1017,9 +1044,9 @@ footer {
           </div>
         </div>
 
-        <div class="hero-image-wrap">
+       
           <img src="greet.png" class="fit-image" alt="CrowdGPT client dashboard">
-        </div>
+        
       </div>
 
       <div class="stats-strip">
@@ -1079,47 +1106,39 @@ footer {
                 <p>The client is a single Python file. No binaries, no telemetry. Read it, fork it, run your own coordinator. The model weights are downloadable.</p>
               </div>
             </div>
-                    <div class="chart-card">
-          <div class="chart-head">
-            <span>training loss</span>
-            <span>last 100 steps</span>
-          </div>
-          <div class="chart-body">
-            <svg viewBox="0 0 400 180" width="100%" height="180" preserveAspectRatio="none">
-              <!-- grid lines -->
-              <g stroke="#1f1f23" stroke-width="1">
-                <line x1="0" y1="36" x2="400" y2="36"/>
-                <line x1="0" y1="72" x2="400" y2="72"/>
-                <line x1="0" y1="108" x2="400" y2="108"/>
-                <line x1="0" y1="144" x2="400" y2="144"/>
-              </g>
-              <!-- gradient fill -->
-              <defs>
-                <linearGradient id="lossFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#22c55e" stop-opacity="0.3"/>
-                  <stop offset="100%" stop-color="#22c55e" stop-opacity="0"/>
-                </linearGradient>
-              </defs>
-              <path d="M0,18 L20,24 L40,22 L60,34 L80,38 L100,42 L120,40 L140,52 L160,56 L180,62 L200,60 L220,68 L240,72 L260,70 L280,78 L300,82 L320,80 L340,88 L360,92 L380,90 L400,96 L400,180 L0,180 Z" fill="url(#lossFill)"/>
-              <!-- loss line -->
-              <polyline fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
-                points="0,18 20,24 40,22 60,34 80,38 100,42 120,40 140,52 160,56 180,62 200,60 220,68 240,72 260,70 280,78 300,82 320,80 340,88 360,92 380,90 400,96"/>
-              <!-- end point -->
-              <circle cx="400" cy="96" r="4" fill="#22c55e"/>
-              <circle cx="400" cy="96" r="8" fill="#22c55e" opacity="0.3"/>
-            </svg>
-          </div>
-          <div class="chart-foot">
-            <span>loss <b>2.71</b></span>
-            <span>avg <b>2.79</b></span>
-            <span>norm <b>41.2</b></span>
-            <span>step <b>1,284</b></span>
           </div>
         </div>
-          </div>
-        </div>
+        <div class="product-side">
+  <div class="cta-card" style="margin-bottom: 0;">
+    <h3 style="font-size: 20px;">A note on trust</h3>
+    <p style="margin-bottom: 0;">
+      Every submitted delta is validated server-side before it touches the global weights.
+      Malformed, oversized, or statistically suspicious updates are rejected automatically,
+      and repeat offenders lose write access. The server never executes anything a
+      client sends; it only ever reads numbers. This makes the global server/coordinator immune to any breaking attacks.
+    </p>
+  </div>
 
-        
+  <div class="cta-card">
+    <h3>Help the project grow.</h3>
+    <p>
+      Every contribution, even the smallest, makes the model better.
+      Run a client, star the repo, or open an issue.
+    </p>
+    <div class="cta-btns">
+      <a class="btn btn-primary" data-view="install">
+        Install the client
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </a>
+      <a class="btn btn-ghost" href="https://github.com/Vxtzq/CrowdGPT" target="_blank">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="17" height="17"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.21 11.39.6.11.79-.26.79-.58v-2.23c-3.34.73-4.03-1.42-4.03-1.42-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49.99.11-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.3 1.23.96-.27 1.98-.4 3-.4s2.05.13 3.01.4c2.29-1.55 3.3-1.23 3.3-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.8 5.62-5.48 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.19.69.8.58C20.57 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
+        Star on GitHub
+      </a>
+    </div>
+  </div>
+</div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -1138,11 +1157,11 @@ footer {
       <div class="content">
         <h2>Requirements</h2>
         <ul>
-          <li><strong>Python:</strong> 3.9 or newer</li>
+          <li><strong>Python:</strong> 3.8 or newer</li>
           <li><strong>GPU:</strong> CUDA (NVIDIA), ROCm (AMD), or MPS (Apple Silicon). 8GB+ VRAM recommended.</li>
           <li><strong>RAM:</strong> 16GB minimum</li>
           <li><strong>Network:</strong> Stable connection, 20Mbps+ up/down (for weight transfers)</li>
-          <li><strong>Storage:</strong> ~5GB for dataset chunks and checkpoints</li>
+          <li><strong>Storage:</strong> ~2GB for dataset chunks and checkpoints</li>
         </ul>
         <p>CPU fallback works but is orders of magnitude slower. Useful for development and testing.</p>
 
