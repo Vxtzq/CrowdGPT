@@ -1069,28 +1069,23 @@ footer {
           </div>
         </div>
 
-        <div class="terminal">
-          <div class="terminal-bar">
-            <div class="terminal-dots"><span></span><span></span><span></span></div>
-            <span class="terminal-title">coordinator</span>
-          </div>
-          <div class="terminal-body">
-<span class="line"><span class="t-dim">22:14:03</span> <span class="t-success">●</span> <span class="t-bold">coordinator online</span> <span class="t-dim">· port 3000</span></span>
-<span class="line"><span class="t-dim">22:14:03</span> <span class="t-info">◧</span> model loaded <span class="t-dim">·</span> <span class="t-bold">500M</span> params <span class="t-dim">· 1.9GB</span></span>
-<span class="line"><span class="t-dim">22:14:03</span> <span class="t-info">◈</span> consensus <span class="t-dim">=</span> <span class="t-bold">3</span> <span class="t-dim">·</span> timeout <span class="t-dim">=</span> 1800s</span>
-<span class="line"></span>
-<span class="line line-group"><span class="t-dim">22:15:12</span> <span class="t-warn">↑</span> <span class="t-bold">task assigned</span></span>
-<span class="line">  <span class="t-dim">shard</span> shard_3_47_... <span class="t-dim">· chunk</span> 47</span>
-<span class="line">  <span class="t-dim">client</span> 82.41.xx.xx <span class="t-dim">· mode</span> balanced</span>
-<span class="line"></span>
-<span class="line line-group"><span class="t-dim">22:17:44</span> <span class="t-success">↓</span> <span class="t-bold">delta received</span></span>
-<span class="line">  <span class="t-dim">norm</span> 12.41 <span class="t-dim">· rank</span> 2048 <span class="t-dim">· loss</span> 2.71</span>
-<span class="line">  <span class="t-success">✓</span> applied <span class="t-dim">· global step</span> <span class="t-bold">1284</span></span>
-<span class="line"></span>
-<span class="line line-group"><span class="t-dim">22:17:44</span> <span class="t-info">◆</span> checkpoint saved</span>
-<span class="line">  <span class="t-dim">model_step_1284.bin</span></span>
-          </div>
-        </div>
+        <div class="hero-terminal" aria-hidden="true">
+  <div class="term-bar">
+    <div class="term-dots"><span></span><span></span><span></span></div>
+    <span>GET /api/stats</span>
+  </div>
+  <div class="term-body">
+<span class="term-line"><span class="t-prompt">$ </span><span class="t-cmd">curl -s api.crowdgpt.net/api/stats | jq</span></span>
+<span class="term-line">{</span>
+<span class="term-line">  <span class="t-cyan">"globalStep"</span>: <span class="t-magenta">1284</span>,</span>
+<span class="term-line">  <span class="t-cyan">"activeContributors"</span>: <span class="t-magenta">247</span>,</span>
+<span class="term-line">  <span class="t-cyan">"totalTokens"</span>: <span class="t-magenta">3204811520</span>,</span>
+<span class="term-line">  <span class="t-cyan">"lastLoss"</span>: <span class="t-magenta">2.7144</span>,</span>
+<span class="term-line">  <span class="t-cyan">"weightNorm"</span>: <span class="t-magenta">41.23</span>,</span>
+<span class="term-line">  <span class="t-cyan">"datasetStats"</span>: { <span class="t-cyan">"currentEpoch"</span>: <span class="t-magenta">12</span>, <span class="t-cyan">"currentChunk"</span>: <span class="t-magenta">47</span> }</span>
+<span class="term-line">}</span>
+  </div>
+</div>
       </div>
     </div>
   </section>
