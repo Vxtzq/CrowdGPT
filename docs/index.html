@@ -463,9 +463,9 @@ nav a.active { color: var(--text); }
 }
 
 .terminal-dots { display: flex; gap: 8px; }
-.terminal-dots span { 
-  width: 13px; 
-  height: 13px; 
+.terminal-dots span {
+  width: 13px;
+  height: 13px;
   border-radius: 50%;
   transition: opacity 0.15s;
 }
@@ -495,14 +495,14 @@ nav a.active { color: var(--text); }
   transition: all 0.15s;
 }
 
-.terminal-copy:hover { 
-  color: var(--term-text); 
+.terminal-copy:hover {
+  color: var(--term-text);
   background: rgba(255, 255, 255, 0.08);
   border-color: var(--text-muted);
 }
 
-.terminal-copy.copied { 
-  color: var(--term-accent); 
+.terminal-copy.copied {
+  color: var(--term-accent);
   border-color: var(--term-accent);
   background: rgba(34, 197, 94, 0.1);
 }
@@ -516,35 +516,35 @@ nav a.active { color: var(--text); }
   color: var(--term-text);
 }
 
-.terminal-body .line { 
-  display: block; 
+.terminal-body .line {
+  display: block;
   white-space: pre;
   padding: 2px 0;
 }
 
-.t-prompt { 
-  color: var(--term-dim); 
+.t-prompt {
+  color: var(--term-dim);
   user-select: none;
   font-weight: 500;
 }
 
-.t-cmd { 
+.t-cmd {
   color: var(--term-text);
   font-weight: 500;
 }
 
-.t-comment { 
-  color: var(--term-dim); 
+.t-comment {
+  color: var(--term-dim);
   user-select: none;
   font-style: italic;
 }
 
-.t-flag { 
+.t-flag {
   color: var(--term-info);
   font-weight: 500;
 }
 
-.t-output { 
+.t-output {
   color: var(--term-accent);
   user-select: none;
 }
@@ -581,6 +581,104 @@ nav a.active { color: var(--text); }
 
 .terminal-body .line:first-child {
   margin-top: 0;
+}
+
+/* ===== OS TABS ===== */
+.os-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 19px;
+  border-bottom: 1px solid var(--border);
+}
+
+.os-tab {
+  padding: 10px 20px;
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+  margin-bottom: -1px;
+}
+
+.os-tab:hover {
+  color: var(--text-dim);
+}
+
+.os-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.os-panel {
+  display: none;
+}
+
+.os-panel.active {
+  display: block;
+}
+
+/* ===== INSTALL HERO BOX ===== */
+.install-hero {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 38px;
+  margin-bottom: 38px;
+}
+
+.install-hero h3 {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.install-hero h3 .badge {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent);
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid var(--accent);
+  padding: 3px 10px;
+  border-radius: 100px;
+}
+
+.install-hero p {
+  font-size: 17px;
+  color: var(--text-dim);
+  margin-bottom: 24px;
+  line-height: 1.6;
+}
+
+.install-hero .terminal {
+  margin-bottom: 0;
+}
+
+.install-divider {
+  display: flex;
+  align-items: center;
+  gap: 19px;
+  margin: 48px 0 38px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 14px;
+}
+
+.install-divider::before,
+.install-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
 }
 
 /* ===== PAGE HEAD ===== */
@@ -988,6 +1086,8 @@ footer {
   .lb-table th:nth-child(6), .lb-table td:nth-child(6) { display: none; }
   .fit-image { max-width: 380px; border-radius: 19px; }
   .terminal-body { font-size: 14px; padding: 20px 22px; }
+  .install-hero { padding: 24px; }
+  .os-tab { padding: 8px 14px; font-size: 13px; }
 }
 
 ::-webkit-scrollbar { width: 11px; height: 11px; }
@@ -1036,17 +1136,17 @@ footer {
             transformer gets better. No datacenters required.
           </p>
           <div class="hero-btns">
-            <a class="btn btn-primary" data-view="install">
-              Run a client
+            <a class="btn btn-primary" data-view="install" data-scroll="quick-install">
+              Download now
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
             </a>
             <a class="btn btn-ghost" data-view="protocol">Read the protocol</a>
           </div>
         </div>
 
-       
+
           <img src="greet.png" class="fit-image" alt="CrowdGPT client dashboard">
-        
+
       </div>
 
       <div class="stats-strip">
@@ -1151,21 +1251,66 @@ footer {
       <div class="page-head">
         <div class="crumb">docs / install</div>
         <h1>Running a client</h1>
-        <p>Clone, install, run. Auto-detects CUDA, ROCm, and MPS backends. Kills cleanly whenever you want.</p>
+        <p>One command. Auto-detects CUDA, ROCm, DirectML, and MPS backends. Kills cleanly whenever you want.</p>
       </div>
 
       <div class="content">
         <h2>Requirements</h2>
         <ul>
           <li><strong>Python:</strong> 3.8 or newer</li>
-          <li><strong>GPU:</strong> CUDA (NVIDIA), ROCm (AMD), or MPS (Apple Silicon). 8GB+ VRAM recommended.</li>
+          <li><strong>GPU:</strong> CUDA (NVIDIA), ROCm (AMD), MPS (Apple Silicon), or DirectML (Windows). 8GB+ VRAM recommended.</li>
           <li><strong>RAM:</strong> 16GB minimum</li>
           <li><strong>Network:</strong> Stable connection, 20Mbps+ up/down (for weight transfers)</li>
           <li><strong>Storage:</strong> ~2GB for dataset chunks and checkpoints</li>
         </ul>
         <p>CPU fallback works but is orders of magnitude slower. Useful for development and testing.</p>
 
-        <h2>Installation</h2>
+        <h2 id="quick-install">Quick install</h2>
+
+        <div class="install-hero">
+          <h3>One command, any platform <span class="badge">recommended</span></h3>
+          <p>Auto-detects your GPU backend (CUDA, ROCm, DirectML, or CPU) and installs the right dependencies. Training starts automatically.</p>
+
+          <div class="os-tabs">
+            <button class="os-tab active" data-os="unix">Linux / macOS</button>
+            <button class="os-tab" data-os="windows">Windows</button>
+          </div>
+
+          <div class="os-panel active" data-os="unix">
+            <div class="terminal">
+              <div class="terminal-bar">
+                <div class="terminal-dots"><span></span><span></span><span></span></div>
+                <span class="terminal-title">bash</span>
+                <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
+              </div>
+              <div class="terminal-body">
+<span class="line"><span class="t-prompt">$ </span><span class="t-cmd">git clone https://github.com/Vxtzq/CrowdGPT/ && cd CrowdGPT && \</span></span>
+<span class="line"><span class="t-cmd">  REQ="requirements.txt"; \</span></span>
+<span class="line"><span class="t-cmd">  if command -v nvidia-smi >/dev/null 2>&1; then REQ="requirements_cuda.txt"; \</span></span>
+<span class="line"><span class="t-cmd">  elif command -v rocminfo >/dev/null 2>&1 || [ -d /opt/rocm ]; then REQ="requirements_rocm.txt"; \</span></span>
+<span class="line"><span class="t-cmd">  fi; \</span></span>
+<span class="line"><span class="t-cmd">  echo "🔧 Installing $REQ"; pip install -r "$REQ" && python crowdgpt.py</span></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="os-panel" data-os="windows">
+            <div class="terminal">
+              <div class="terminal-bar">
+                <div class="terminal-dots"><span></span><span></span><span></span></div>
+                <span class="terminal-title">powershell</span>
+                <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
+              </div>
+              <div class="terminal-body">
+<span class="line"><span class="t-prompt">PS> </span><span class="t-cmd">git clone https://github.com/Vxtzq/CrowdGPT/; cd CrowdGPT; pip install -r requirements_directml.txt; python crowdgpt.py</span></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="install-divider">or install manually</div>
+
+        <h2>Manual installation</h2>
         <div class="terminal">
           <div class="terminal-bar">
             <div class="terminal-dots"><span></span><span></span><span></span></div>
@@ -1184,7 +1329,8 @@ footer {
 <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">pip install -r requirements.txt</span></span>
           </div>
         </div>
-          <h2>Start the client</h2>
+
+        <h2>Start the client</h2>
 <div class="terminal">
   <div class="terminal-bar">
     <div class="terminal-dots"><span></span><span></span><span></span></div>
@@ -1690,9 +1836,9 @@ const API_BASE = 'https://api.crowdgpt.net';
 function updateThemeAssets() {
   const logoImg = document.getElementById('logo-img');
   const favicon = document.getElementById('favicon');
-  
+
   if (!logoImg || !favicon) return;
-  
+
   const isLight = window.matchMedia('(prefers-color-scheme: light)').matches;
   logoImg.src = isLight ? 'logo-black.svg' : 'logo-white.svg';
   favicon.href = isLight ? 'logo-black.svg' : 'logo-white.svg';
@@ -1717,8 +1863,32 @@ document.querySelectorAll('[data-view]').forEach(el => {
     const view = el.dataset.view;
     if (!view) return;
     if (el.tagName === 'A' && el.getAttribute('href') && el.getAttribute('href').startsWith('http')) return;
+
     e.preventDefault();
     showView(view);
+
+    if (el.dataset.scroll) {
+      setTimeout(() => {
+        const target = document.getElementById(el.dataset.scroll);
+if (target) {
+  window.scrollTo({
+    top: target.getBoundingClientRect().top + window.scrollY - 125,
+    behavior: 'smooth'
+  });
+}
+      }, 0);
+    }
+  });
+});
+// ===== OS TABS =====
+document.querySelectorAll('.os-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    const os = tab.dataset.os;
+    const hero = tab.closest('.install-hero');
+    hero.querySelectorAll('.os-tab').forEach(t => t.classList.remove('active'));
+    hero.querySelectorAll('.os-panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    hero.querySelector(`.os-panel[data-os="${os}"]`).classList.add('active');
   });
 });
 
