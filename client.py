@@ -332,7 +332,7 @@ class StreamingShardDataset:
     def _load_chunk(self, idx):
         offset = idx * self.chunk_size
         r = _fetch_with_retry(self.url, headers={'Range': f'bytes={offset}-{offset + self.chunk_size - 1}'}, timeout=120)
-        tk = np.frombuffer(r.content, dtype=np.uint16)
+        tk = np.frombuffer(r.content, dtype=np.uint32)
         self.data = tk
         self.n = len(tk) // self.tps
         self.cursor = 0
