@@ -60,7 +60,7 @@ MODEL_CONFIG = {
     "nHeads": 16,
     "nKvHeads": 4,
     "headDim": 96,
-    "maxSeqLen": 64,
+    "maxSeqLen": 2048,
     "mlpHidden": 2560,
     "weightTying": True,
     "architecture": "SotaGPT"
