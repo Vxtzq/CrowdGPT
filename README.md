@@ -27,7 +27,7 @@
 
 ---
 # 🥳🥳🥳 CrowdGPT v0.2 is out 🥳🥳🥳
-**Key changes**
+## Key changes
 - Switched to Qwen3.6 tokenizer
 - Changed model size from 500m params to ~650m params
 
