@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <strong>Train AI together. No datacenter required.</strong>
+  <strong>Train AI together. Without any money or datacenters.</strong>
 </p>
 
 ---
