@@ -54,7 +54,7 @@ LOCAL_FP32_CACHE = CHECKPOINT_DIR / "hf_weights_fp32.bin"
 
 # Crowd-v1: 500M parameter architecture
 MODEL_CONFIG = {
-    "vocabSize": 50257,
+    "vocabSize": 151669,
     "dim": 1536,
     "nLayers": 24,
     "nHeads": 16,
@@ -332,7 +332,7 @@ class StreamingShardDataset:
     def _load_chunk(self, idx):
         offset = idx * self.chunk_size
         r = _fetch_with_retry(self.url, headers={'Range': f'bytes={offset}-{offset + self.chunk_size - 1}'}, timeout=120)
-        tk = np.frombuffer(r.content, dtype=np.uint16)
+        tk = np.frombuffer(r.content, dtype=np.uint32)
         self.data = tk
         self.n = len(tk) // self.tps
         self.cursor = 0
@@ -366,8 +366,8 @@ def decompress_weights(raw, fmt="bf16"):
     if len(raw) >= 2 and raw[0] == 0x78:
         raw = zlib.decompress(raw)
     if fmt == "fp16":
-        return np.frombuffer(raw, dtype=np.uint16).view(np.float16).astype(np.float32)
-    return torch.from_numpy(np.frombuffer(raw, dtype=np.uint16).copy()).view(torch.bfloat16).to(torch.float32).numpy()
+        return np.frombuffer(raw, dtype=np.uint32).view(np.float16).astype(np.float32)
+    return torch.from_numpy(np.frombuffer(raw, dtype=np.uint32).copy()).view(torch.bfloat16).to(torch.float32).numpy()
 
 # ============ HUGGINGFACE WEIGHT LOADING ============
 def parse_safetensors(filepath):
@@ -425,7 +425,7 @@ def parse_safetensors(filepath):
             weights = np.frombuffer(raw_bytes, dtype=np.float32).copy()
         elif dtype == 'BF16':
             weights = torch.from_numpy(
-                np.frombuffer(raw_bytes, dtype=np.uint16).copy()
+                np.frombuffer(raw_bytes, dtype=np.uint32).copy()
             ).view(torch.bfloat16).to(torch.float32).numpy()
         elif dtype == 'F16':
             weights = np.frombuffer(raw_bytes, dtype=np.float16).astype(np.float32).copy()
