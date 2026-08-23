@@ -1289,7 +1289,7 @@ footer {
 <span class="line"><span class="t-cmd">  if command -v nvidia-smi >/dev/null 2>&1; then REQ="requirements_cuda.txt"; \</span></span>
 <span class="line"><span class="t-cmd">  elif command -v rocminfo >/dev/null 2>&1 || [ -d /opt/rocm ]; then REQ="requirements_rocm.txt"; \</span></span>
 <span class="line"><span class="t-cmd">  fi; \</span></span>
-<span class="line"><span class="t-cmd">  echo "🔧 Installing $REQ"; pip install -r "$REQ" && python crowdgpt.py</span></span>
+<span class="line"><span class="t-cmd">  echo "🔧 Installing $REQ"; pip install -r "$REQ" && python client.py</span></span>
               </div>
             </div>
           </div>
@@ -1302,7 +1302,7 @@ footer {
                 <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
               </div>
               <div class="terminal-body">
-<span class="line"><span class="t-prompt">PS> </span><span class="t-cmd">git clone https://github.com/Vxtzq/CrowdGPT/; cd CrowdGPT; pip install -r requirements_directml.txt; python crowdgpt.py</span></span>
+<span class="line"><span class="t-prompt">PS> </span><span class="t-cmd">git clone https://github.com/Vxtzq/CrowdGPT/; cd CrowdGPT; pip install -r requirements_directml.txt; python client.py</span></span>
               </div>
             </div>
           </div>
