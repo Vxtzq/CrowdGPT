@@ -41,7 +41,7 @@ log = logging.getLogger(__name__)
 console = Console()
 
 # ============ CONFIG ============
-DATASET_URL = "https://huggingface.co/datasets/Vxtzq/CrowdGPT/resolve/main/fineweb_qwen3.bin.bin"
+DATASET_URL = "https://huggingface.co/datasets/Vxtzq/CrowdGPT/resolve/main/fineweb_qwen3.bin"
 CHECKPOINT_DIR = Path("checkpoints")
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
