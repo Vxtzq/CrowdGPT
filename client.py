@@ -459,7 +459,7 @@ def download_from_huggingface(precision="bf16"):
                         mb_total = total / 1024 / 1024
                         pct = downloaded / total * 100
                         # Use rich's print for in-place update
-                        console.print(f"\r[cyan]  ↓ {mb_done:.1f}MB / {mb_total:.1f}MB ({pct:.0f}%)[/cyan]", end="")
+                        print(f"\r  ↓ {mb_done:.1f}MB / {mb_total:.1f}MB ({pct:.0f}%)", end="", flush=True)
         
         console.print("")  # newline after progress
         
