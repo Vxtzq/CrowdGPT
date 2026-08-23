@@ -309,36 +309,57 @@ def _fetch_with_retry(url, headers=None, timeout=60, retries=3):
             else:
                 raise
 
-class TinyStoriesDatasetShard:
-    def __init__(self, url, ci, co, cs, seq_len=64):
-        self.url = url
-        self.ci = ci
-        self.co = co
-        self.cs = min(cs, 10 * 1024 * 1024)
+class StreamingShardDataset:
+    """
+    Streams dataset chunks sequentially, starting from the coordinator-assigned chunk.
+    Downloads the next chunk automatically when the current one runs out.
+    Never loops within a chunk; wraps only after a full epoch over all chunks.
+    """
+    def __init__(self, ds_cfg, seq_len=64):
+        self.url = ds_cfg.get("url", DATASET_URL)
+        self.chunk_size = ds_cfg.get("chunkSize", 10 * 1024 * 1024)
+        self.total_chunks = max(1, ds_cfg.get("totalChunks", 1))
         self.seq_len = seq_len
-        self.tps = seq_len + 1
+        self.tps = ds_cfg.get("tokensPerSample", seq_len + 1)
+        self.chunk_idx = None
         self.data = None
         self.n = 0
-        self._l = False
+        self.cursor = 0
+        self.chunks_consumed = 0
+        self.epochs = 0
+        self._load_chunk(ds_cfg.get("chunkIdx", 0) % self.total_chunks)
 
-    def load_chunk(self):
-        if self._l:
-            return
-        r = _fetch_with_retry(self.url, headers={'Range': f'bytes={self.co}-{self.co+self.cs-1}'}, timeout=60)
-        self.data = r.content
-        self.n = len(np.frombuffer(self.data, dtype=np.uint16)) // self.tps
-        self._l = True
+    def _load_chunk(self, idx):
+        offset = idx * self.chunk_size
+        r = _fetch_with_retry(self.url, headers={'Range': f'bytes={offset}-{offset + self.chunk_size - 1}'}, timeout=120)
+        tk = np.frombuffer(r.content, dtype=np.uint16)
+        self.data = tk
+        self.n = len(tk) // self.tps
+        self.cursor = 0
+        self.chunk_idx = idx
+
+    def _next_chunk(self):
+        nxt = self.chunk_idx + 1
+        if nxt >= self.total_chunks:
+            nxt = 0
+            self.epochs += 1
+        self._load_chunk(nxt)
+        self.chunks_consumed += 1
+        log.info(f"📥 streamed next chunk {nxt}/{self.total_chunks} (epoch {self.epochs})")
 
     def get_batch(self, bs, seed=None):
-        if not self._l:
-            self.load_chunk()
-        tk = np.frombuffer(self.data, dtype=np.uint16)
-        rng = np.random.RandomState(seed)
         inp, tgt = [], []
         for _ in range(bs):
-            s = rng.randint(0, self.n) * self.tps
-            inp.append(tk[s:s+self.seq_len])
-            tgt.append(tk[s+1:s+self.seq_len+1])
+            guard = 0
+            while self.cursor >= self.n:
+                self._next_chunk()
+                guard += 1
+                if guard > self.total_chunks:
+                    raise RuntimeError("Dataset stream exhausted (empty chunks)")
+            s = self.cursor * self.tps
+            inp.append(self.data[s:s + self.seq_len])
+            tgt.append(self.data[s + 1:s + self.seq_len + 1])
+            self.cursor += 1
         return torch.tensor(np.array(inp), dtype=torch.long), torch.tensor(np.array(tgt), dtype=torch.long)
 
 def decompress_weights(raw, fmt="bf16"):
@@ -597,10 +618,9 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     seq_len = args.seq_len if args.seq_len > 0 else train_cfg.get("seqLen", 64)
     steps = args.steps if args.steps > 0 else train_cfg.get("localSteps", 500)
 
-    dataset_shard = TinyStoriesDatasetShard(
-        metadata.get("datasetConfig", {}).get("url", DATASET_URL),
-        0, 0, 1024*1024, seq_len
-    )
+    ds_cfg = metadata.get("datasetConfig", {})
+    dataset_shard = StreamingShardDataset(ds_cfg, seq_len)
+    console.print(f"[cyan]📚 Streaming from chunk {dataset_shard.chunk_idx}/{dataset_shard.total_chunks}[/cyan]")
 
     # Get initial weights
     if hf_weights is not None:
