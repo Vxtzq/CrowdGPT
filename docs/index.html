@@ -430,24 +430,7 @@ async function fetchStats() {
     lossEl.textContent = `${lossArrow} ${Math.abs(lossChange)}%`;
     lossEl.style.color = lossChange < 0 ? 'var(--accent)' : (lossChange > 0 ? 'var(--term-error)' : 'var(--text-muted)');
 
-    // 2. Calculate personalized contribution if user is logged in
-    let contribution = "0.000";
-    const token = getAuthToken();
-    if (token && d.totalTokens > 0) {
-      try {
-        const userRes = await fetch(`${API_BASE}/auth/me`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (userRes.ok) {
-          const userData = await userRes.json();
-          const userTokens = userData.stats?.totalTokens || 0;
-          contribution = ((userTokens / d.totalTokens) * 100).toFixed(4);
-        }
-      } catch (e) {
-        // Silently fail auth check, contribution remains 0.000
-      }
-    }
-    document.getElementById('home-stat-contribution').textContent = `${contribution}%`;
+    
 
     // Update live status text
     const statusText = document.getElementById('home-status-text');
