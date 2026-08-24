@@ -750,7 +750,7 @@ def main():
     parser.add_argument("--server", default="https://api.crowdgpt.net", help="Coordinator URL")
     parser.add_argument("--backend", default="auto", choices=["auto","cuda","cpu"], help="Training backend")
     parser.add_argument("--batch-size", type=int, default=0, help="Override batch size (0=auto)")
-    add_argument("--seq-len", type=int, default=0, help="Override sequence length (0=auto)")
+    parser.add_argument("--seq-len", type=int, default=0, help="Override sequence length (0=auto)") # FIXED: added parser.
     parser.add_argument("--steps", type=int, default=0, help="Override local steps (0=auto)")
     parser.add_argument("--mode", default="quick", choices=["quick","balanced","deep","ultra"], help="Training mode")
     parser.add_argument("--precision", default="bf16", choices=["fp32","bf16","fp16"], help="Weight precision")
