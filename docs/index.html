@@ -64,10 +64,10 @@ nav a.active { color: var(--text); }
 .hero { padding: 67px 0 77px; border-bottom: 1px solid var(--border); }
 .hero-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 58px; align-items: center; }
 .hero-copy { text-align: left; }
-.hero-status { display: inline-flex; align-items: center; gap: 11px; font-family: var(--mono); font-size: 15px; color: var(--text-muted); margin-bottom: 34px; }
+
 .product-grid { align-items: stretch; }
 .product-side { justify-content: center; }
-.hero-status .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 12px var(--accent); }
+
 .hero h1 { font-size: clamp(50px, 6.5vw, 70px); font-weight: 600; line-height: 1.08; color: var(--text); margin-bottom: 29px; }
 .hero h1 .em { font-family: var(--serif); font-style: italic; font-weight: 400; color: var(--accent); }
 .hero-sub { font-size: 21px; color: var(--text-dim); margin-bottom: 38px; line-height: 1.6; }
@@ -290,10 +290,7 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
     <div class="container">
       <div class="hero-grid">
         <div class="hero-copy">
-          <div class="hero-status">
-            <span class="dot"></span>
-            <span id="home-status-text">Live training in progress</span>
-          </div>
+          
           <h1>Train a language model with <span class="em">your GPU</span>.</h1>
           <p class="hero-sub">
             CrowdGPT is an open federated training protocol. You run a client on your machine,
