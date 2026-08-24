@@ -44,10 +44,12 @@ console = Console()
 CHECKPOINT_DIR = Path("checkpoints")
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
-# HuggingFace sources (cuts server bandwidth for new clients)
-HF_REPO_ID = "Vxtzq/Crowd-v1"
-HF_WEIGHTS_URL_BF16 = f"https://huggingface.co/{HF_REPO_ID}/resolve/main/model_bf16.safetensors"
-HF_WEIGHTS_URL_FP32 = f"https://huggingface.co/{HF_REPO_ID}/resolve/main/model_fp32.safetensors"
+# HuggingFace sources
+DATASET_REPO_ID = "Vxtzq/CrowdGPT"
+MODEL_REPO_ID = "Vxtzq/Crowd-v1"
+
+HF_WEIGHTS_URL_BF16 = f"https://huggingface.co/{MODEL_REPO_ID}/resolve/main/model_bf16.safetensors"
+HF_WEIGHTS_URL_FP32 = f"https://huggingface.co/{MODEL_REPO_ID}/resolve/main/model_fp32.safetensors"
 LOCAL_SAFETENSORS_CACHE = CHECKPOINT_DIR / "hf_weights_bf16.safetensors"
 LOCAL_FP32_CACHE = CHECKPOINT_DIR / "hf_weights_fp32.bin"
 
@@ -446,7 +448,7 @@ def download_from_huggingface(precision="bf16"):
     
     url = HF_WEIGHTS_URL_BF16 if precision == "bf16" else HF_WEIGHTS_URL_FP32
     console.print(f"[cyan]🤗 Downloading weights from HuggingFace ({precision})...[/cyan]")
-    console.print(f"[dim]   Source: {HF_REPO_ID}[/dim]")
+    console.print(f"[dim]   Source: {MODEL_REPO_ID}[/dim]")
     
     try:
         r = requests.get(url, stream=True, timeout=600, allow_redirects=True)
@@ -748,7 +750,7 @@ def main():
     parser.add_argument("--server", default="https://api.crowdgpt.net", help="Coordinator URL")
     parser.add_argument("--backend", default="auto", choices=["auto","cuda","cpu"], help="Training backend")
     parser.add_argument("--batch-size", type=int, default=0, help="Override batch size (0=auto)")
-    parser.add_argument("--seq-len", type=int, default=0, help="Override sequence length (0=auto)")
+    add_argument("--seq-len", type=int, default=0, help="Override sequence length (0=auto)")
     parser.add_argument("--steps", type=int, default=0, help="Override local steps (0=auto)")
     parser.add_argument("--mode", default="quick", choices=["quick","balanced","deep","ultra"], help="Training mode")
     parser.add_argument("--precision", default="bf16", choices=["fp32","bf16","fp16"], help="Weight precision")
