@@ -4,7 +4,8 @@ CrowdGPT Client - Distributed LLM Training Node
 
 Contributes local GPU compute to train Crowd-v1 (500M parameter transformer).
 Fetches model weights from HuggingFace (first run) or coordinator, trains on 
-local data shards (chunks/), and submits weight deltas back to coordinator.
+raw dataset shards fetched directly via HTTP Range requests, and submits 
+weight deltas back to the coordinator.
 """
 
 import sys
@@ -76,20 +77,17 @@ HEAD_DIM = MODEL_CONFIG["headDim"]
 MAX_SEQ_LEN = MODEL_CONFIG["maxSeqLen"]
 MLP_HIDDEN = MODEL_CONFIG["mlpHidden"]
 
-# Calculate expected parameter count for validation
 def _calc_model_size():
     size = VOCAB_SIZE * DIM
     for _ in range(N_LAYERS):
-        size += DIM * 2  # ln_1
-        size += DIM * (N_HEADS * HEAD_DIM)  # wq
-        size += DIM * (N_KV_HEADS * HEAD_DIM)  # wk
-        size += DIM * (N_KV_HEADS * HEAD_DIM)  # wv
-        size += DIM * DIM  # wo
-        size += DIM * 2  # ln_2
-        size += DIM * MLP_HIDDEN  # w1
-        size += DIM * MLP_HIDDEN  # w2
-        size += MLP_HIDDEN * DIM  # w3
-    size += DIM * 2  # ln_f
+        size += DIM * 2
+        size += DIM * (N_HEADS * HEAD_DIM)
+        size += DIM * (N_KV_HEADS * HEAD_DIM) * 2
+        size += DIM * DIM
+        size += DIM * 2
+        size += DIM * MLP_HIDDEN * 2
+        size += MLP_HIDDEN * DIM
+    size += DIM * 2
     return size
 
 EXPECTED_MODEL_SIZE = _calc_model_size()
@@ -108,27 +106,20 @@ BANNER = """
 def print_welcome():
     console.print(BANNER)
 
-# ============ CUDA AUTO-DETECTION & HINTS ============
+# ============ CUDA AUTO-DETECTION ============
 def check_cuda_installed():
-    """Check if CUDA is actually installed on the system (not just if PyTorch sees it)"""
     try:
         result = subprocess.run(['nvidia-smi'], capture_output=True, timeout=5)
-        if result.returncode == 0:
-            return True
+        return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    return False
+        return False
 
 def suggest_cuda_install():
-    """Print clear CUDA installation instructions"""
     console.print("\n[bold red]⚠ PyTorch does NOT detect your GPU![/bold red]")
     console.print("[yellow]NVIDIA GPU detected but CUDA-enabled PyTorch not installed.[/yellow]\n")
     console.print("[bold]Fix with one of these commands:[/bold]\n")
     console.print("[cyan]# For CUDA 12.1 (recommended):[/cyan]")
     console.print("[white]pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121[/white]\n")
-    console.print("[cyan]# For CUDA 11.8 (older GPUs):[/cyan]")
-    console.print("[white]pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118[/white]\n")
-    console.print("[dim]Or check requirements.txt includes the correct torch version for your system.[/dim]\n")
 
 # ============ HARDWARE & MEMORY ============
 def check_backend_available(name):
@@ -174,38 +165,29 @@ def auto_detect_vram_budget():
         pass
 
 def estimate_vram_bytes(precision="bf16", batch_size=4, seq_len=64):
-    """Realistic memory estimation for full pretrain on GPU"""
     w = 2 if (precision == "bf16" and torch.cuda.is_bf16_supported()) else 4
-    
     vocab_b = VOCAB_SIZE * DIM * w
     layer_b = (DIM*2 + DIM*(N_HEADS*HEAD_DIM) + DIM*(N_KV_HEADS*HEAD_DIM)*2 + DIM*DIM + DIM*2 + DIM*MLP_HIDDEN*2 + MLP_HIDDEN*DIM) * w
     model_b = vocab_b + (layer_b * N_LAYERS)
-    
     optim_grad_b = model_b * 3
-    
     act_per_layer = 20 * batch_size * seq_len * DIM * w
     act_b = act_per_layer * N_LAYERS
-    
     logits_b = batch_size * seq_len * VOCAB_SIZE * 4
-    
     total_raw = model_b + optim_grad_b + act_b + logits_b
     return int(total_raw * 1.1) + int(0.2 * 1024**3)
 
 def recommend_optimal_config(precision="bf16", seq_len=64):
-    """Prioritizes full pretrain with all layers on GPU"""
     budget = int(memory_config["ram_gb"] * 1024**3)
     safe = budget - int(0.5 * 1024**3)
-    
     best_bs = 4
     for bs in ALLOWED_BATCH_SIZES:
         if estimate_vram_bytes(precision, bs, seq_len) <= safe:
             best_bs = bs
         else:
             break
-            
     return 0, "full_pretrain", best_bs, N_LAYERS
 
-# ============ MODEL ARCHITECTURE (Crowd-v1) ============
+# ============ MODEL ARCHITECTURE ============
 def precompute_freqs(dim, sl, dev):
     inv = 1.0/(10000.0**(torch.arange(0,dim,2,dtype=torch.float32)/dim))
     t = torch.arange(sl, dtype=torch.float32)
@@ -298,67 +280,88 @@ class SotaGPT(nn.Module):
             o += s
 
 # ============ DATASET & UTILS ============
+def _fetch_with_retry(url, headers=None, timeout=60, retries=3):
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+            r.raise_for_status()
+            return r
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            if attempt < retries - 1:
+                wait = 2 ** (attempt + 1)
+                log.warning(f"⚠️ Download failed (attempt {attempt+1}/{retries}), retry in {wait}s: {str(e)[:100]}")
+                time.sleep(wait)
+            else:
+                raise
+
 class StreamingShardDataset:
     """
-    Reads dataset chunks sequentially from a local `chunks/` directory at root.
-    Expects files named like chunk_0000.bin, chunk_0001.bin, etc.
+    Fetches raw .bin dataset chunks directly from HuggingFace using HTTP Range headers.
+    No local storage required. Automatically requests new chunks from the server when finished.
     """
-    def __init__(self, ds_cfg, seq_len=64, chunks_dir="chunks"):
-        self.chunks_dir = Path(chunks_dir)
-        self.seq_len = seq_len
-        self.tps = ds_cfg.get("tokensPerSample", seq_len + 1)
-        self.chunk_idx = None
+    STEPS_PER_CHUNK = 500  # Request a new chunk after this many steps
+
+    def __init__(self, url, ci, co, cs, tps=65, auth_token=None):
+        self.url = url
+        self.ci = ci          # chunk index
+        self.co = co          # chunk offset (bytes)
+        self.cs = cs          # chunk size (bytes)
+        self.tps = tps        # tokens per sample
+        self.auth_token = auth_token
         self.data = None
         self.n = 0
-        self.cursor = 0
-        self.chunks_consumed = 0
-        self.epochs = 0
-        
-        # Discover and sort chunk files (e.g., chunk_0000.bin, chunk_0001.bin)
-        self.chunk_files = sorted(self.chunks_dir.glob("chunk_*.bin"))
-        if not self.chunk_files:
-            raise FileNotFoundError(f"No chunk_*.bin files found in {self.chunks_dir.resolve()}")
-        
-        self.total_chunks = len(self.chunk_files)
-        
-        # Start at the requested chunk index (default 0)
-        start_idx = ds_cfg.get("chunkIdx", 0) % self.total_chunks
-        self._load_chunk(start_idx)
+        self._l = False
+        self.steps_used = 0
 
-    def _load_chunk(self, idx):
-        chunk_file = self.chunk_files[idx]
-        with open(chunk_file, "rb") as f:
-            raw_data = f.read()
-        
-        tk = np.frombuffer(raw_data, dtype=np.uint32)
-        self.data = tk
-        self.n = len(tk) // self.tps
-        self.cursor = 0
-        self.chunk_idx = idx
-        log.info(f"📂 Loaded local chunk {self.chunk_idx + 1}/{self.total_chunks}: {chunk_file.name} ({len(self.data):,} tokens)")
+    def load_chunk(self):
+        if self._l: return
+        headers = {'Range': f'bytes={self.co}-{self.co+self.cs-1}'}
+        r = _fetch_with_retry(self.url, headers=headers, timeout=60)
+        self.data = r.content
+        # uint32 is required because Qwen vocab size (151669) exceeds uint16 max (65535)
+        self.n = len(np.frombuffer(self.data, dtype=np.uint32)) // self.tps
+        self._l = True
+        self.steps_used = 0
+        log.info(f"📦 Loaded chunk {self.ci}: {self.n} sequences ({len(self.data)/1024/1024:.1f}MB)")
 
-    def _next_chunk(self):
-        nxt = self.chunk_idx + 1
-        if nxt >= self.total_chunks:
-            nxt = 0
-            self.epochs += 1
-        self._load_chunk(nxt)
-        self.chunks_consumed += 1
-        log.info(f"📂 Streamed next local chunk {self.chunk_idx + 1}/{self.total_chunks} (epoch {self.epochs})")
+    def needs_new_chunk(self):
+        return self.steps_used >= self.STEPS_PER_CHUNK
+
+    def request_new_chunk(self, server_url, mode="balanced", fmt="bf16"):
+        try:
+            headers = {}
+            if self.auth_token:
+                headers["Authorization"] = f"Bearer {self.auth_token}"
+            
+            # 🚨 CRITICAL FIX: Add skip_weights=true to avoid re-downloading 2.5GB on chunk rotation!
+            r = requests.get(f"{server_url}/fl/task?mode={mode}&format={fmt}&skip_weights=true", headers=headers, timeout=30)
+            if r.status_code == 200:
+                raw = r.content
+                ml = struct.unpack('<I', raw[:4])[0]
+                metadata = json.loads(raw[4:4+ml].decode('utf-8'))
+                ds_cfg = metadata.get("datasetConfig", {})
+                if ds_cfg:
+                    self.ci = ds_cfg.get("chunkIdx", self.ci)
+                    self.co = ds_cfg.get("chunkOffset", self.co)
+                    self.cs = ds_cfg.get("chunkSize", self.cs)
+                    self._l = False
+                    log.info(f"🔄 Requested new chunk {self.ci} from server")
+                    return True
+        except Exception as e:
+            log.warning(f"⚠️ Failed to request new chunk: {e}")
+        return False
 
     def get_batch(self, bs, seed=None):
+        if not self._l: self.load_chunk()
+        self.steps_used += 1
+        
+        tk = np.frombuffer(self.data, dtype=np.uint32)
+        rng = np.random.RandomState(seed)
         inp, tgt = [], []
         for _ in range(bs):
-            guard = 0
-            while self.cursor >= self.n:
-                self._next_chunk()
-                guard += 1
-                if guard > self.total_chunks:
-                    raise RuntimeError("Dataset stream exhausted (empty chunks)")
-            s = self.cursor * self.tps
-            inp.append(self.data[s:s + self.seq_len])
-            tgt.append(self.data[s + 1:s + self.seq_len + 1])
-            self.cursor += 1
+            s = rng.randint(0, self.n) * self.tps
+            inp.append(tk[s:s+self.tps-1])
+            tgt.append(tk[s+1:s+self.tps])
         return torch.tensor(np.array(inp), dtype=torch.long), torch.tensor(np.array(tgt), dtype=torch.long)
 
 def decompress_weights(raw, fmt="bf16"):
@@ -370,10 +373,6 @@ def decompress_weights(raw, fmt="bf16"):
 
 # ============ HUGGINGFACE WEIGHT LOADING ============
 def parse_safetensors(filepath):
-    """
-    Minimal safetensors parser — no external library required.
-    Extracts the 'weights' tensor (or first tensor) as a flat fp32 numpy array.
-    """
     with open(filepath, 'rb') as f:
         header_size_bytes = f.read(8)
         if len(header_size_bytes) < 8:
@@ -386,41 +385,25 @@ def parse_safetensors(filepath):
         header_json = f.read(header_size)
         header = json.loads(header_json.decode('utf-8'))
         
-        tensor_key = None
-        if 'weights' in header:
-            tensor_key = 'weights'
-        else:
-            for key in header:
-                if not key.startswith('__'):
-                    tensor_key = key
-                    break
-        
+        tensor_key = 'weights' if 'weights' in header else next((k for k in header if not k.startswith('__')), None)
         if tensor_key is None:
             raise ValueError("No tensor found in safetensors file")
         
         tensor_info = header[tensor_key]
         dtype = tensor_info['dtype']
         shape = tensor_info['shape']
-        data_offsets = tensor_info['data_offsets']
-        start, end = data_offsets
+        start, end = tensor_info['data_offsets']
         
         f.seek(8 + header_size + start)
         raw_bytes = f.read(end - start)
         
-        expected_bytes = end - start
-        if len(raw_bytes) != expected_bytes:
-            raise ValueError(f"Read {len(raw_bytes)} bytes, expected {expected_bytes}")
-        
         total_elements = 1
-        for s in shape:
-            total_elements *= s
+        for s in shape: total_elements *= s
         
         if dtype == 'F32':
             weights = np.frombuffer(raw_bytes, dtype=np.float32).copy()
         elif dtype == 'BF16':
-            weights = torch.from_numpy(
-                np.frombuffer(raw_bytes, dtype=np.uint16).copy()
-            ).view(torch.bfloat16).to(torch.float32).numpy()
+            weights = torch.from_numpy(np.frombuffer(raw_bytes, dtype=np.uint16).copy()).view(torch.bfloat16).to(torch.float32).numpy()
         elif dtype == 'F16':
             weights = np.frombuffer(raw_bytes, dtype=np.float16).astype(np.float32).copy()
         else:
@@ -428,7 +411,6 @@ def parse_safetensors(filepath):
         
         if len(weights) != total_elements:
             raise ValueError(f"Element count mismatch: {len(weights)} vs {total_elements}")
-        
         return weights
 
 def download_from_huggingface(precision="bf16"):
@@ -448,7 +430,6 @@ def download_from_huggingface(precision="bf16"):
     
     url = HF_WEIGHTS_URL_BF16 if precision == "bf16" else HF_WEIGHTS_URL_FP32
     console.print(f"[cyan]🤗 Downloading weights from HuggingFace ({precision})...[/cyan]")
-    console.print(f"[dim]   Source: {MODEL_REPO_ID}[/dim]")
     
     try:
         r = requests.get(url, stream=True, timeout=600, allow_redirects=True)
@@ -464,10 +445,8 @@ def download_from_huggingface(precision="bf16"):
                     f.write(chunk)
                     downloaded += len(chunk)
                     if total > 0:
-                        mb_done = downloaded / 1024 / 1024
-                        mb_total = total / 1024 / 1024
                         pct = downloaded / total * 100
-                        print(f"\r  ↓ {mb_done:.1f}MB / {mb_total:.1f}MB ({pct:.0f}%)", end="", flush=True)
+                        print(f"\r  ↓ {downloaded/1024/1024:.1f}MB / {total/1024/1024:.1f}MB ({pct:.0f}%)", end="", flush=True)
         
         console.print("")
         console.print(f"[cyan]📦 Parsing safetensors...[/cyan]")
@@ -483,10 +462,6 @@ def download_from_huggingface(precision="bf16"):
         LOCAL_SAFETENSORS_CACHE.unlink(missing_ok=True)
         return weights
         
-    except requests.exceptions.RequestException as e:
-        console.print(f"[yellow]⚠ HF download failed: {e}[/yellow]")
-        LOCAL_SAFETENSORS_CACHE.unlink(missing_ok=True)
-        return None
     except Exception as e:
         console.print(f"[yellow]⚠ HF weight loading failed: {e}[/yellow]")
         LOCAL_SAFETENSORS_CACHE.unlink(missing_ok=True)
@@ -495,33 +470,18 @@ def download_from_huggingface(precision="bf16"):
 
 # ============ AUTHENTICATION ============
 def authenticate(server_url, username, password):
-    if not username or not password:
-        return None
-    
+    if not username or not password: return None
     try:
-        r = requests.post(
-            f"{server_url}/auth/login",
-            json={"username": username, "password": password},
-            timeout=30
-        )
-        
+        r = requests.post(f"{server_url}/auth/login", json={"username": username, "password": password}, timeout=30)
         if r.status_code == 200:
-            data = r.json()
-            return data.get("token")
+            return r.json().get("token")
         
-        r = requests.post(
-            f"{server_url}/auth/register",
-            json={"username": username, "password": password, "email": f"{username}@crowdgpt.local"},
-            timeout=30
-        )
-        
+        r = requests.post(f"{server_url}/auth/register", json={"username": username, "password": password, "email": f"{username}@crowdgpt.local"}, timeout=30)
         if r.status_code == 200:
-            data = r.json()
-            return data.get("token")
+            return r.json().get("token")
         
         console.print(f"[yellow]⚠ Auth failed: {r.text[:100]}[/yellow]")
         return None
-        
     except Exception as e:
         console.print(f"[yellow]⚠ Auth request failed: {e}[/yellow]")
         return None
@@ -571,10 +531,7 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     ml = struct.unpack('<I', raw[:4])[0]
     metadata = json.loads(raw[4:4+ml].decode('utf-8'))
     
-    if skip_weights:
-        weights_bytes = None
-    else:
-        weights_bytes = raw[4+ml:]
+    weights_bytes = None if skip_weights else raw[4+ml:]
 
     train_cfg = metadata.get("trainingConfig", {})
     task_id = metadata['taskId']
@@ -586,9 +543,17 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     steps = args.steps if args.steps > 0 else train_cfg.get("localSteps", 500)
 
     ds_cfg = metadata.get("datasetConfig", {})
-    # UPDATED: Points to local chunks/ directory
-    dataset_shard = StreamingShardDataset(ds_cfg, seq_len, chunks_dir="chunks")
-    console.print(f"[cyan]📚 Streaming from local chunk {dataset_shard.chunk_idx + 1}/{dataset_shard.total_chunks}[/cyan]")
+    
+    # NEW: Direct HTTP Range fetching from HuggingFace
+    dataset_shard = StreamingShardDataset(
+        url=ds_cfg.get("url", "https://huggingface.co/datasets/Vxtzq/CrowdGPT/resolve/main/fineweb_qwen3.bin"),
+        ci=ds_cfg.get("chunkIdx", 0),
+        co=ds_cfg.get("chunkOffset", 0),
+        cs=ds_cfg.get("chunkSize", 10*1024*1024),
+        tps=ds_cfg.get("tokensPerSample", seq_len + 1),
+        auth_token=auth_token
+    )
+    console.print(f"[cyan]📚 Streaming directly from HuggingFace chunk {dataset_shard.ci + 1}[/cyan]")
 
     if hf_weights is not None:
         console.print(f"[cyan]📦 Using weights from HuggingFace[/cyan]")
@@ -625,6 +590,12 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
         total_tok = 0
 
         for step in range(1, steps+1):
+            # Check if we need to fetch the next chunk from the server
+            if dataset_shard.needs_new_chunk():
+                console.print(f"[cyan]🔄 Chunk rotation at step {step}[/cyan]")
+                if dataset_shard.request_new_chunk(args.server, args.mode, args.precision):
+                    dataset_shard.load_chunk()
+            
             x, y = dataset_shard.get_batch(batch_size, seed=hash("shard")%10000 + step)
             x, y = x.to(train_device), y.to(train_device)
 
@@ -750,7 +721,7 @@ def main():
     parser.add_argument("--server", default="http://api.crowdgpt.net:5006", help="Coordinator URL")
     parser.add_argument("--backend", default="auto", choices=["auto","cuda","cpu"], help="Training backend")
     parser.add_argument("--batch-size", type=int, default=0, help="Override batch size (0=auto)")
-    parser.add_argument("--seq-len", type=int, default=0, help="Override sequence length (0=auto)") # FIXED: added parser.
+    parser.add_argument("--seq-len", type=int, default=0, help="Override sequence length (0=auto)")
     parser.add_argument("--steps", type=int, default=0, help="Override local steps (0=auto)")
     parser.add_argument("--mode", default="quick", choices=["quick","balanced","deep","ultra"], help="Training mode")
     parser.add_argument("--precision", default="bf16", choices=["fp32","bf16","fp16"], help="Weight precision")
