@@ -747,7 +747,7 @@ def run_swarm_node(args):
 
 def main():
     parser = argparse.ArgumentParser(description="CrowdGPT distributed training client")
-    parser.add_argument("--server", default="https://api.crowdgpt.net", help="Coordinator URL")
+    parser.add_argument("--server", default="http://api.crowdgpt.net:5006", help="Coordinator URL")
     parser.add_argument("--backend", default="auto", choices=["auto","cuda","cpu"], help="Training backend")
     parser.add_argument("--batch-size", type=int, default=0, help="Override batch size (0=auto)")
     parser.add_argument("--seq-len", type=int, default=0, help="Override sequence length (0=auto)") # FIXED: added parser.
