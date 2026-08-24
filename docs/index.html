@@ -82,7 +82,7 @@ nav a.active { color: var(--text); }
 .hero-image-wrap { display: flex; align-items: center; justify-content: center; }
 .fit-image { width: 100%; max-width: 550px; height: auto; object-fit: contain; border-radius: 10px; display: block; }
 
-.stats-strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; border: 1px solid var(--border); margin-top: 67px; }
+.stats-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; border: 1px solid var(--border); margin-top: 67px; }
 .stat-item { padding: 31px 29px; border-right: 1px solid var(--border); }
 .stat-item:last-child { border-right: none; }
 .stat-val { font-family: var(--mono); font-size: 31px; font-weight: 500; color: var(--text); margin-bottom: 6px; }
@@ -323,10 +323,7 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
           <div class="stat-val" id="home-stat-loss">—</div>
           <div class="stat-lbl">Training loss this week</div>
         </div>
-        <div class="stat-item">
-          <div class="stat-val" id="home-stat-contribution">—</div>
-          <div class="stat-lbl">Your contribution</div>
-        </div>
+        
       </div>
     </div>
   </div>
@@ -714,13 +711,8 @@ async function fetchStats() {
     lossEl.textContent = `${lossArrow} ${Math.abs(lossChange)}%`;
     lossEl.style.color = lossChange < 0 ? 'var(--accent)' : (lossChange > 0 ? 'var(--term-error)' : 'var(--text-muted)');
 
-    const contribEl = document.getElementById('home-stat-contribution');
-    if (contribEl) contribEl.textContent = `${d.yourContribution || 0}%`;
 
-    const statusText = document.getElementById('home-status-text');
-    if (statusText && d.globalStep && d.activeGpus) {
-      statusText.textContent = `step ${d.globalStep.toLocaleString()} · ${d.activeGpus} clients training`;
-    }
+    
 
     // Update status view if elements exist
     const stepEl = document.getElementById('status-step');
@@ -754,8 +746,7 @@ async function fetchStats() {
           const lossEl = document.getElementById('home-stat-loss');
           lossEl.textContent = `${lossArrow} ${Math.abs(lossChange)}%`;
           
-          const contribEl = document.getElementById('home-stat-contribution');
-          if (contribEl) contribEl.textContent = `${d2.yourContribution || 0}%`;
+          
           
           failedAttempts = 0;
           apiReachable = true;
