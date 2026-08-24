@@ -71,7 +71,7 @@ pip install -r requirements.txt
 Then:
 
 ```bash
-python crowdgpt.py
+python client.py
 ```
 
 For the automatic installer, see [`docs/easy_install.md`](./docs/easy_install.md).
@@ -81,7 +81,7 @@ For the automatic installer, see [`docs/easy_install.md`](./docs/easy_install.md
 ## ⚙️ Configuration
 
 ```bash
-python crowdgpt.py \
+python client.py \
   --server http://your-coordinator:3000 \
   --mode deep \
   --batch-size 8 \
