@@ -82,13 +82,7 @@ nav a.active { color: var(--text); }
 .hero-image-wrap { display: flex; align-items: center; justify-content: center; }
 .fit-image { width: 100%; max-width: 550px; height: auto; object-fit: contain; border-radius: 10px; display: block; }
 
-.stats-strip {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0;
-  border: 1px solid var(--border);
-  margin-top: 67px;
-}
+.stats-strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; border: 1px solid var(--border); margin-top: 67px; }
 .stat-item { padding: 31px 29px; border-right: 1px solid var(--border); }
 .stat-item:last-child { border-right: none; }
 .stat-val { font-family: var(--mono); font-size: 31px; font-weight: 500; color: var(--text); margin-bottom: 6px; }
@@ -290,25 +284,22 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
   </div>
 </header>
 
+<!-- ===== HOME ===== -->
 <div id="view-home" class="view active">
   <div class="hero">
     <div class="container">
       <div class="hero-grid">
         <div class="hero-copy">
-          
+          <div class="hero-status">
+            <span class="dot"></span>
+            <span id="home-status-text">Live training in progress</span>
+          </div>
           <h1>Train a language model with <span class="em">your GPU</span>.</h1>
           <p class="hero-sub">
             CrowdGPT is an open federated training protocol. You run a client on your machine,
             train on a data chunk locally, submit the weight delta, and the global 0.6B-parameter
             transformer gets better. No datacenters required.
           </p>
-          <div class="hero-btns">
-            <a class="btn btn-primary" data-view="install" data-scroll="quick-install">
-              Download now
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-            </a>
-            <a class="btn btn-ghost" data-view="protocol">Read the protocol</a>
-          </div>
         </div>
         <div class="hero-image-wrap">
           <img src="greet.png" class="fit-image" alt="CrowdGPT client dashboard">
@@ -332,7 +323,10 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
           <div class="stat-val" id="home-stat-loss">—</div>
           <div class="stat-lbl">Training loss this week</div>
         </div>
-        
+        <div class="stat-item">
+          <div class="stat-val" id="home-stat-contribution">—</div>
+          <div class="stat-lbl">Your contribution</div>
+        </div>
       </div>
     </div>
   </div>
@@ -379,7 +373,294 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
   </section>
 </div>
 
-<!-- (INSTALL, PROTOCOL, STATUS, CONTRIBUTORS, CONTACT views remain exactly as in your original file) -->
+<!-- ===== INSTALL ===== -->
+<div id="view-install" class="view">
+  <div class="container page-pad">
+    <div class="page-head">
+      <div class="crumb">home / install</div>
+      <h1>Install the client</h1>
+      <p>Get up and running in under a minute. The client is a single Python script with minimal dependencies.</p>
+    </div>
+
+    <div class="install-hero" id="quick-install">
+      <h3>Quick start <span class="badge">Recommended</span></h3>
+      <p>Clone the repository, install dependencies, and run the client. It will automatically detect your GPU and configure optimal settings.</p>
+      
+      <div class="os-tabs">
+        <button class="os-tab active" data-os="linux">Linux</button>
+        <button class="os-tab" data-os="macos">macOS</button>
+        <button class="os-tab" data-os="windows">Windows</button>
+      </div>
+
+      <div class="os-panel active" data-os="linux">
+        <div class="terminal">
+          <div class="terminal-bar">
+            <div class="terminal-dots"><span></span><span></span><span></span></div>
+            <div class="terminal-title">bash</div>
+            <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
+          </div>
+          <div class="terminal-body">
+            <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">git clone https://github.com/Vxtzq/CrowdGPT.git</span></span>
+            <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">cd CrowdGPT</span></span>
+            <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">pip install -r requirements.txt</span></span>
+            <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">python3 client.py --backend auto</span></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="os-panel" data-os="macos">
+        <div class="terminal">
+          <div class="terminal-bar">
+            <div class="terminal-dots"><span></span><span></span><span></span></div>
+            <div class="terminal-title">zsh</div>
+            <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
+          </div>
+          <div class="terminal-body">
+            <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">git clone https://github.com/Vxtzq/CrowdGPT.git</span></span>
+            <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">cd CrowdGPT</span></span>
+            <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">pip3 install -r requirements.txt</span></span>
+            <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">python3 client.py --backend auto</span></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="os-panel" data-os="windows">
+        <div class="terminal">
+          <div class="terminal-bar">
+            <div class="terminal-dots"><span></span><span></span><span></span></div>
+            <div class="terminal-title">powershell</div>
+            <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
+          </div>
+          <div class="terminal-body">
+            <span class="line"><span class="t-prompt">PS&gt; </span><span class="t-cmd">git clone https://github.com/Vxtzq/CrowdGPT.git</span></span>
+            <span class="line"><span class="t-prompt">PS&gt; </span><span class="t-cmd">cd CrowdGPT</span></span>
+            <span class="line"><span class="t-prompt">PS&gt; </span><span class="t-cmd">pip install -r requirements.txt</span></span>
+            <span class="line"><span class="t-prompt">PS&gt; </span><span class="t-cmd">python client.py --backend auto</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="install-divider">or run via Docker</div>
+
+    <div class="install-hero">
+      <h3>Docker deployment</h3>
+      <p>For users who prefer containerized environments or want to run the client as a background service.</p>
+      <div class="terminal">
+        <div class="terminal-bar">
+          <div class="terminal-dots"><span></span><span></span><span></span></div>
+          <div class="terminal-title">bash</div>
+          <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
+        </div>
+        <div class="terminal-body">
+          <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">docker run -d --gpus all --name crowdgpt-node \</span></span>
+          <span class="line"><span class="t-prompt">  </span><span class="t-cmd">-v $(pwd)/checkpoints:/app/checkpoints \</span></span>
+          <span class="line"><span class="t-prompt">  </span><span class="t-cmd">vxtzq/crowdgpt-client:latest</span></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="content">
+      <h2>Configuration</h2>
+      <p>The client can be configured via command-line arguments or environment variables.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Flag</th><th>Description</th><th>Default</th></tr></thead>
+          <tbody>
+            <tr><td><code>--server</code></td><td>Coordinator URL</td><td><code>http://api.crowdgpt.net:5006</code></td></tr>
+            <tr><td><code>--backend</code></td><td>Compute backend (<code>auto</code>, <code>cuda</code>, <code>cpu</code>)</td><td><code>auto</code></td></tr>
+            <tr><td><code>--batch-size</code></td><td>Override batch size (0 = auto-tune)</td><td><code>0</code></td></tr>
+            <tr><td><code>--mode</code></td><td>Training intensity (<code>quick</code>, <code>balanced</code>, <code>deep</code>, <code>ultra</code>)</td><td><code>quick</code></td></tr>
+            <tr><td><code>--username</code></td><td>Username for the public leaderboard</td><td><em>anonymous</em></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== PROTOCOL ===== -->
+<div id="view-protocol" class="view">
+  <div class="container page-pad">
+    <div class="page-head">
+      <div class="crumb">home / protocol</div>
+      <h1>The Federated Protocol</h1>
+      <p>How CrowdGPT coordinates thousands of independent GPUs to train a single, cohesive language model without centralizing data.</p>
+    </div>
+
+    <div class="content">
+      <h2>1. Task Assignment</h2>
+      <p>When a client connects, the coordinator assigns it a specific data shard (a local chunk of tokenized text) and the current global model weights. The client downloads the weights from HuggingFace (or the coordinator) and loads the data chunk locally.</p>
+      
+      <h2>2. Local Training</h2>
+      <p>The client performs a set number of forward and backward passes on its local GPU. It calculates the gradient (the "delta") between its starting weights and the newly trained weights. <strong>No raw data ever leaves the client's machine.</strong></p>
+
+      <h2>3. Secure Submission</h2>
+      <p>The client compresses and submits only the weight delta to the coordinator. The coordinator validates the submission:</p>
+      <div class="cap-list">
+        <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">Checks for NaN or Inf values in the delta.</span></div>
+        <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">Verifies the delta size matches the model architecture exactly.</span></div>
+        <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">Ensures the delta norm is within statistically acceptable bounds to prevent poisoning.</span></div>
+      </div>
+
+      <h2>4. Sequential Aggregation</h2>
+      <p>Valid deltas are applied to the global model using a decoupled learning rate and weight decay. The global step increments, and the updated weights are periodically pushed to HuggingFace for public auditing and as a bootstrap for new clients.</p>
+    </div>
+
+    <div class="stats-grid" style="margin-top: 58px;">
+      <div class="stat-cell">
+        <div class="val">500M</div>
+        <div class="lbl">Parameters</div>
+        <div class="sub">Dense Transformer</div>
+      </div>
+      <div class="stat-cell">
+        <div class="val">151K</div>
+        <div class="lbl">Vocabulary</div>
+        <div class="sub">Qwen3 Tokenizer</div>
+      </div>
+      <div class="stat-cell">
+        <div class="val">24</div>
+        <div class="lbl">Layers</div>
+        <div class="sub">Grouped-Query Attention</div>
+      </div>
+      <div class="stat-cell">
+        <div class="val">BF16</div>
+        <div class="lbl">Precision</div>
+        <div class="sub">Native GPU Support</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== STATUS ===== -->
+<div id="view-status" class="view">
+  <div class="container page-pad">
+    <div class="page-head">
+      <div class="crumb">home / status</div>
+      <h1>Network Status</h1>
+      <p>Real-time metrics of the CrowdGPT federated training network.</p>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-cell">
+        <div class="val" id="status-step">—</div>
+        <div class="lbl">Global Step</div>
+        <div class="sub">Total optimizer updates</div>
+      </div>
+      <div class="stat-cell">
+        <div class="val" id="status-tokens">—</div>
+        <div class="lbl">Tokens Processed</div>
+        <div class="sub">Across all clients</div>
+      </div>
+      <div class="stat-cell">
+        <div class="val" id="status-clients">—</div>
+        <div class="lbl">Active Clients</div>
+        <div class="sub">Currently training</div>
+      </div>
+      <div class="stat-cell">
+        <div class="val" id="status-loss">—</div>
+        <div class="lbl">Model Loss</div>
+        <div class="sub">Latest aggregated</div>
+      </div>
+    </div>
+
+    <div class="content">
+      <h2>Live Terminal</h2>
+      <p>The coordinator outputs real-time aggregation events. This is a simulated view of the server logs.</p>
+      <div class="terminal">
+        <div class="terminal-bar">
+          <div class="terminal-dots"><span></span><span></span><span></span></div>
+          <div class="terminal-title">coordinator.log</div>
+        </div>
+        <div class="terminal-body">
+          <span class="line"><span class="t-dim">[14:02:11]</span> <span class="t-info">INFO</span> 📦 New shard shard_0_42_1710000000 chunk=42 mode=quick (consensus)</span>
+          <span class="line"><span class="t-dim">[14:02:15]</span> <span class="t-info">INFO</span> 📥 shard_0_42_1710000000: tracking submission 1/3 (ip=192.168.1.10, norm=482.12)</span>
+          <span class="line"><span class="t-dim">[14:02:18]</span> <span class="t-info">INFO</span> 📥 shard_0_42_1710000000: tracking submission 2/3 (ip=10.0.0.55, norm=491.05)</span>
+          <span class="line"><span class="t-dim">[14:02:22]</span> <span class="t-success">SUCCESS</span> ✅ Sequential update step 1402 from 10.0.0.55 (rank=1536)</span>
+          <span class="line"><span class="t-dim">[14:02:22]</span> <span class="t-warn">WATCH</span> 🧹 Watchdog cleaning stale shard shard_0_41_1709999000 (age=1805s)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== CONTRIBUTORS ===== -->
+<div id="view-contributors" class="view">
+  <div class="container page-pad">
+    <div class="page-head">
+      <div class="crumb">home / leaderboard</div>
+      <h1>Contributor Leaderboard</h1>
+      <p>The top contributors powering the CrowdGPT training run. Rankings are based on total tokens processed.</p>
+    </div>
+
+    <div class="table-wrap">
+      <table class="lb-table">
+        <thead>
+          <tr>
+            <th style="width: 60px;">Rank</th>
+            <th>Username</th>
+            <th class="right">Tokens</th>
+            <th class="right">Steps</th>
+            <th class="right">Trust Score</th>
+            <th class="right">Submissions</th>
+          </tr>
+        </thead>
+        <tbody id="lb-body">
+          <tr><td colspan="6" class="empty-state"><span class="loading-dot"></span> Loading leaderboard...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ===== CONTACT ===== -->
+<div id="view-contact" class="view">
+  <div class="container page-pad">
+    <div class="page-head">
+      <div class="crumb">home / contact</div>
+      <h1>Get in Touch</h1>
+      <p>Questions, bug reports, or interested in running your own coordinator? Reach out.</p>
+    </div>
+
+    <div class="contact-grid">
+      <div class="contact-card">
+        <h3>GitHub Issues</h3>
+        <p>The best place to report bugs, request features, or discuss technical details of the protocol.</p>
+        <a href="https://github.com/Vxtzq/CrowdGPT/issues" target="_blank" class="link">github.com/Vxtzq/CrowdGPT/issues</a>
+      </div>
+      <div class="contact-card">
+        <h3>Email</h3>
+        <p>For business inquiries, partnership opportunities, or sensitive security disclosures.</p>
+        <a href="mailto:vxtzqmc@gmail.com" class="link">vxtzqmc@gmail.com</a>
+      </div>
+      <div class="contact-card">
+        <h3>Hosting</h3>
+        <p>The primary coordinator API is proudly hosted and maintained by Xevex.</p>
+        <a href="https://xevex.dev" target="_blank" class="link">xevex.dev</a>
+      </div>
+      <div class="contact-card">
+        <h3>Model Weights</h3>
+        <p>All trained model checkpoints and configuration files are publicly available on HuggingFace.</p>
+        <a href="https://huggingface.co/Vxtzq/Crowd-v1" target="_blank" class="link">huggingface.co/Vxtzq/Crowd-v1</a>
+      </div>
+    </div>
+
+    <div class="faq">
+      <div class="faq-item">
+        <div class="faq-q">Is my data safe when I run the client?</div>
+        <div class="faq-a">Yes. The client downloads a public, anonymized data chunk to your machine. Your personal files, browser history, or any other local data are never accessed or transmitted. Only the mathematical weight delta is sent to the coordinator.</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q">Can I run this on a CPU?</div>
+        <div class="faq-a">Technically yes, but it will be extremely slow. The client is optimized for CUDA-enabled NVIDIA GPUs. If no GPU is detected, it will fall back to CPU, but contributing meaningful compute will take significantly longer.</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q">How are malicious updates prevented?</div>
+        <div class="faq-a">The coordinator enforces strict validation. Every submitted delta is checked for NaN/Inf values, exact size matching, and norm bounds. Updates that deviate too far from expected statistical distributions are rejected, and repeat offenders are temporarily banned by subnet.</div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <footer>
   <div class="footer-inner">
@@ -433,9 +714,23 @@ async function fetchStats() {
     lossEl.textContent = `${lossArrow} ${Math.abs(lossChange)}%`;
     lossEl.style.color = lossChange < 0 ? 'var(--accent)' : (lossChange > 0 ? 'var(--term-error)' : 'var(--text-muted)');
 
-    
+    const contribEl = document.getElementById('home-stat-contribution');
+    if (contribEl) contribEl.textContent = `${d.yourContribution || 0}%`;
 
-    
+    const statusText = document.getElementById('home-status-text');
+    if (statusText && d.globalStep && d.activeGpus) {
+      statusText.textContent = `step ${d.globalStep.toLocaleString()} · ${d.activeGpus} clients training`;
+    }
+
+    // Update status view if elements exist
+    const stepEl = document.getElementById('status-step');
+    if (stepEl) stepEl.textContent = (d.globalStep || 0).toLocaleString();
+    const tokensEl = document.getElementById('status-tokens');
+    if (tokensEl) tokensEl.textContent = fmtNum(d.totalTokens || 0);
+    const clientsEl = document.getElementById('status-clients');
+    if (clientsEl) clientsEl.textContent = (d.activeGpus || 0).toLocaleString();
+    const lossStatusEl = document.getElementById('status-loss');
+    if (lossStatusEl) lossStatusEl.textContent = d.lastLoss != null ? 'last loss ' + d.lastLoss.toFixed(3) : 'no loss data';
 
     failedAttempts = 0;
     apiReachable = true;
@@ -459,8 +754,8 @@ async function fetchStats() {
           const lossEl = document.getElementById('home-stat-loss');
           lossEl.textContent = `${lossArrow} ${Math.abs(lossChange)}%`;
           
-          document.getElementById('home-stat-contribution').textContent = `${d2.yourContribution || 0}%`;
-          
+          const contribEl = document.getElementById('home-stat-contribution');
+          if (contribEl) contribEl.textContent = `${d2.yourContribution || 0}%`;
           
           failedAttempts = 0;
           apiReachable = true;
@@ -473,13 +768,13 @@ async function fetchStats() {
 
     if (failedAttempts >= 3) {
       apiReachable = false;
-      
+      const statusText = document.getElementById('home-status-text');
+      if (statusText) statusText.textContent = 'Coordinator offline';
       if (statsInterval) clearInterval(statsInterval);
     }
   }
 }
 
-// Keep existing leaderboard fetch logic intact
 async function fetchLeaderboard() {
   if (apiReachable === false && failedAttempts >= 3) return;
   const tbody = document.getElementById('lb-body');
@@ -524,6 +819,81 @@ async function fetchLeaderboard() {
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ===== THEME HANDLER (Logo + Favicon) =====
+function updateThemeAssets() {
+  const logoImg = document.getElementById('logo-img');
+  const favicon = document.getElementById('favicon');
+  if (!logoImg || !favicon) return;
+  const isLight = window.matchMedia('(prefers-color-scheme: light)').matches;
+  logoImg.src = isLight ? 'logo-black.svg' : 'logo-white.svg';
+  favicon.href = isLight ? 'logo-black.svg' : 'logo-white.svg';
+}
+window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', updateThemeAssets);
+updateThemeAssets();
+
+// ===== VIEW ROUTER =====
+function showView(viewName) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  const target = document.getElementById('view-' + viewName);
+  if (target) target.classList.add('active');
+  document.querySelectorAll('nav a').forEach(a => {
+    a.classList.toggle('active', a.dataset.view === viewName);
+  });
+  window.scrollTo(0, 0);
+}
+
+document.querySelectorAll('[data-view]').forEach(el => {
+  el.addEventListener('click', (e) => {
+    const view = el.dataset.view;
+    if (!view) return;
+    if (el.tagName === 'A' && el.getAttribute('href') && el.getAttribute('href').startsWith('http')) return;
+    e.preventDefault();
+    showView(view);
+    if (el.dataset.scroll) {
+      setTimeout(() => {
+        const target = document.getElementById(el.dataset.scroll);
+        if (target) {
+          window.scrollTo({
+            top: target.getBoundingClientRect().top + window.scrollY - 125,
+            behavior: 'smooth'
+          });
+        }
+      }, 0);
+    }
+  });
+});
+
+// ===== OS TABS =====
+document.querySelectorAll('.os-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    const os = tab.dataset.os;
+    const hero = tab.closest('.install-hero');
+    hero.querySelectorAll('.os-tab').forEach(t => t.classList.remove('active'));
+    hero.querySelectorAll('.os-panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    hero.querySelector(`.os-panel[data-os="${os}"]`).classList.add('active');
+  });
+});
+
+// ===== TERMINAL COPY =====
+function copyTerminal(btn) {
+  const terminal = btn.closest('.terminal');
+  const cmds = terminal.querySelectorAll('.t-cmd');
+  const text = Array.from(cmds).map(c => c.textContent).join('\n');
+  navigator.clipboard.writeText(text).then(() => {
+    const original = btn.textContent;
+    btn.textContent = 'copied';
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.textContent = original;
+      btn.classList.remove('copied');
+    }, 1500);
+  }).catch(() => {
+    btn.textContent = 'failed';
+    setTimeout(() => { btn.textContent = 'copy'; }, 1500);
+  });
 }
 
 // ===== INIT =====
