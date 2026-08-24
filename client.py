@@ -630,9 +630,8 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     steps = args.steps if args.steps > 0 else train_cfg.get("localSteps", 500)
 
     ds_cfg = metadata.get("datasetConfig", {})
-    dataset_shard = StreamingShardDataset(ds_cfg, seq_len)
-    console.print(f"[cyan]📚 Streaming from chunk {dataset_shard.chunk_idx}/{dataset_shard.total_chunks}[/cyan]")
-
+    dataset_shard = StreamingShardDataset(ds_cfg, seq_len, chunks_dir="chunks")
+    console.print(f"[cyan]📚 Streaming from local chunk {dataset_shard.chunk_idx + 1}/{dataset_shard.total_chunks}[/cyan]")
     # Get initial weights
     if hf_weights is not None:
         console.print(f"[cyan]📦 Using weights from HuggingFace[/cyan]")
