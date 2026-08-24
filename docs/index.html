@@ -393,67 +393,13 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
 </footer>
 
 <script>
+// Read global stats from Hugging Face CDN (infinitely scalable, no CORS)
+const HF_STATUS_URL = 'https://huggingface.co/Vxtzq/Crowd-v1/resolve/main/status.json';
 const API_BASE = 'http://api.crowdgpt.net:5006';
 
-function updateThemeAssets() {
-  const logoImg = document.getElementById('logo-img');
-  const favicon = document.getElementById('favicon');
-  if (!logoImg || !favicon) return;
-  const isLight = window.matchMedia('(prefers-color-scheme: light)').matches;
-  logoImg.src = isLight ? 'logo-black.svg' : 'logo-white.svg';
-  favicon.href = isLight ? 'logo-black.svg' : 'logo-white.svg';
-}
-window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', updateThemeAssets);
-updateThemeAssets();
-
-function showView(viewName) {
-  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-  const target = document.getElementById('view-' + viewName);
-  if (target) target.classList.add('active');
-  document.querySelectorAll('nav a').forEach(a => { a.classList.toggle('active', a.dataset.view === viewName); });
-  window.scrollTo(0, 0);
-}
-
-document.querySelectorAll('[data-view]').forEach(el => {
-  el.addEventListener('click', (e) => {
-    const view = el.dataset.view;
-    if (!view) return;
-    if (el.tagName === 'A' && el.getAttribute('href') && el.getAttribute('href').startsWith('http')) return;
-    e.preventDefault();
-    showView(view);
-    if (el.dataset.scroll) {
-      setTimeout(() => {
-        const target = document.getElementById(el.dataset.scroll);
-        if (target) window.scrollTo({ top: target.getBoundingClientRect().top + window.scrollY - 125, behavior: 'smooth' });
-      }, 0);
-    }
-  });
-});
-
-document.querySelectorAll('.os-tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    const os = tab.dataset.os;
-    const hero = tab.closest('.install-hero');
-    hero.querySelectorAll('.os-tab').forEach(t => t.classList.remove('active'));
-    hero.querySelectorAll('.os-panel').forEach(p => p.classList.remove('active'));
-    tab.classList.add('active');
-    hero.querySelector(`.os-panel[data-os="${os}"]`).classList.add('active');
-  });
-});
-
-function copyTerminal(btn) {
-  const terminal = btn.closest('.terminal');
-  const cmds = terminal.querySelectorAll('.t-cmd');
-  const text = Array.from(cmds).map(c => c.textContent).join('\n');
-  navigator.clipboard.writeText(text).then(() => {
-    const original = btn.textContent;
-    btn.textContent = 'copied';
-    btn.classList.add('copied');
-    setTimeout(() => { btn.textContent = original; btn.classList.remove('copied'); }, 1500);
-  }).catch(() => {
-    btn.textContent = 'failed';
-    setTimeout(() => { btn.textContent = 'copy'; }, 1500);
-  });
+// Helper to get auth token (adjust 'crowdgpt_token' to whatever key your login system uses)
+function getAuthToken() {
+  return localStorage.getItem('crowdgpt_token') || sessionStorage.getItem('crowdgpt_token');
 }
 
 function fmtNum(n) {
@@ -465,36 +411,21 @@ function fmtNum(n) {
   return n.toLocaleString();
 }
 
-function fmtParams(n) {
-  if (n == null || isNaN(n)) return '—';
-  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
-  if (n >= 1e6) return Math.round(n / 1e6) + 'M';
-  if (n >= 1e3) return Math.round(n / 1e3) + 'K';
-  return n.toString();
-}
-
 let apiReachable = null;
 let failedAttempts = 0;
 let statsInterval, lbInterval;
 
 async function fetchStats() {
-  if (apiReachable === false && failedAttempts >= 3) return;
   try {
-    const r = await fetch(`${API_BASE}/api/stats`, { cache: 'no-store', signal: AbortSignal.timeout(5000) });
-    if (!r.ok) throw new Error('stats not ok');
+    // 1. Fetch global stats from Hugging Face
+    const r = await fetch(HF_STATUS_URL, { cache: 'no-store' });
+    if (!r.ok) throw new Error('HF status fetch failed');
     const d = await r.json();
-    apiReachable = true;
-    failedAttempts = 0;
 
-    // STRICTLY REAL DATA MAPPING (No hardcoded fallbacks)
-    document.getElementById('home-stat-participants').textContent = 
-      (d.totalParticipants != null ? d.totalParticipants : 0).toLocaleString();
-    
-    document.getElementById('home-stat-gpus').textContent = 
-      (d.activeGpus != null ? d.activeGpus : 0).toLocaleString();
-    
-    document.getElementById('home-stat-tokens').textContent = 
-      fmtNum(d.totalTokens != null ? d.totalTokens : 0);
+    // Map global stats to DOM
+    document.getElementById('home-stat-participants').textContent = (d.totalParticipants || 0).toLocaleString();
+    document.getElementById('home-stat-gpus').textContent = (d.activeGpus || 0).toLocaleString();
+    document.getElementById('home-stat-tokens').textContent = fmtNum(d.totalTokens || 0);
     
     const lossChange = d.trainingLossChange != null ? d.trainingLossChange : 0.0;
     const lossArrow = lossChange < 0 ? '↓' : (lossChange > 0 ? '↑' : '→');
@@ -502,37 +433,77 @@ async function fetchStats() {
     lossEl.textContent = `${lossArrow} ${Math.abs(lossChange)}%`;
     lossEl.style.color = lossChange < 0 ? 'var(--accent)' : (lossChange > 0 ? 'var(--term-error)' : 'var(--text-muted)');
 
-    const contribution = d.yourContribution != null ? d.yourContribution : 0.0;
+    // 2. Calculate personalized contribution if user is logged in
+    let contribution = "0.000";
+    const token = getAuthToken();
+    if (token && d.totalTokens > 0) {
+      try {
+        const userRes = await fetch(`${API_BASE}/auth/me`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (userRes.ok) {
+          const userData = await userRes.json();
+          const userTokens = userData.stats?.totalTokens || 0;
+          contribution = ((userTokens / d.totalTokens) * 100).toFixed(4);
+        }
+      } catch (e) {
+        // Silently fail auth check, contribution remains 0.000
+      }
+    }
     document.getElementById('home-stat-contribution').textContent = `${contribution}%`;
 
+    // Update live status text
     const statusText = document.getElementById('home-status-text');
-    if (d.globalStep != null && d.activeContributors != null) {
-      statusText.textContent = `step ${d.globalStep.toLocaleString()} · ${d.activeContributors} clients training`;
+    if (d.globalStep != null && d.activeGpus != null) {
+      statusText.textContent = `step ${d.globalStep.toLocaleString()} · ${d.activeGpus} GPUs training`;
     }
 
-    if (d.modelSize) document.getElementById('status-params').textContent = fmtParams(d.modelSize);
-    document.getElementById('status-step').textContent = (d.globalStep || 0).toLocaleString();
-    document.getElementById('status-tokens').textContent = fmtNum(d.totalTokens);
-    document.getElementById('status-clients').textContent = (d.activeContributors || d.activeNow || 0).toLocaleString();
-
-    if (d.lastLoss != null && isFinite(d.lastLoss)) {
-      document.getElementById('status-loss').textContent = 'last loss ' + d.lastLoss.toFixed(3);
-    } else {
-      document.getElementById('status-loss').textContent = 'no loss data';
-    }
+    failedAttempts = 0;
+    apiReachable = true;
 
   } catch (e) {
+    console.warn("HF status fetch failed, falling back to direct API:", e);
     failedAttempts++;
+    
+    // Fallback to direct API if HF is somehow unavailable
+    if (failedAttempts < 3) {
+      try {
+        const r2 = await fetch(`${API_BASE}/api/stats`, { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+        if (r2.ok) {
+          const d2 = await r2.json();
+          document.getElementById('home-stat-participants').textContent = (d2.totalParticipants || 0).toLocaleString();
+          document.getElementById('home-stat-gpus').textContent = (d2.activeGpus || 0).toLocaleString();
+          document.getElementById('home-stat-tokens').textContent = fmtNum(d2.totalTokens || 0);
+          
+          const lossChange = d2.trainingLossChange != null ? d2.trainingLossChange : 0.0;
+          const lossArrow = lossChange < 0 ? '↓' : (lossChange > 0 ? '↑' : '→');
+          const lossEl = document.getElementById('home-stat-loss');
+          lossEl.textContent = `${lossArrow} ${Math.abs(lossChange)}%`;
+          
+          document.getElementById('home-stat-contribution').textContent = `${d2.yourContribution || 0}%`;
+          
+          const statusText = document.getElementById('home-status-text');
+          if (d2.globalStep != null && d2.activeGpus != null) {
+            statusText.textContent = `step ${d2.globalStep.toLocaleString()} · ${d2.activeGpus} GPUs training`;
+          }
+          failedAttempts = 0;
+          apiReachable = true;
+          return; // Success via fallback
+        }
+      } catch (e2) {
+        // Fall through to offline state
+      }
+    }
+
     if (failedAttempts >= 3) {
       apiReachable = false;
-      const statusText = document.getElementById('home-status-text');
-      if (statusText) statusText.textContent = 'Coordinator offline';
+      document.getElementById('home-status-text').textContent = 'Coordinator offline';
       if (statsInterval) clearInterval(statsInterval);
-      if (lbInterval) clearInterval(lbInterval);
     }
   }
 }
 
+// Keep existing leaderboard fetch logic intact
 async function fetchLeaderboard() {
   if (apiReachable === false && failedAttempts >= 3) return;
   const tbody = document.getElementById('lb-body');
@@ -579,9 +550,10 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// ===== INIT =====
 fetchStats();
 fetchLeaderboard();
-statsInterval = setInterval(fetchStats, 15000);
+statsInterval = setInterval(fetchStats, 15000); // Check every 15s (HF CDN handles this effortlessly)
 lbInterval = setInterval(fetchLeaderboard, 30000);
 </script>
 </body>
