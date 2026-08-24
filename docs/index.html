@@ -295,10 +295,7 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
     <div class="container">
       <div class="hero-grid">
         <div class="hero-copy">
-          <div class="hero-status">
-            <span class="dot"></span>
-            <span id="home-status-text">Connecting to coordinator...</span>
-          </div>
+          
           <h1>Train a language model with <span class="em">your GPU</span>.</h1>
           <p class="hero-sub">
             CrowdGPT is an open federated training protocol. You run a client on your machine,
@@ -438,11 +435,7 @@ async function fetchStats() {
 
     
 
-    // Update live status text
-    const statusText = document.getElementById('home-status-text');
-    if (d.globalStep != null && d.activeGpus != null) {
-      statusText.textContent = `step ${d.globalStep.toLocaleString()} · ${d.activeGpus} GPUs training`;
-    }
+    
 
     failedAttempts = 0;
     apiReachable = true;
@@ -468,10 +461,7 @@ async function fetchStats() {
           
           document.getElementById('home-stat-contribution').textContent = `${d2.yourContribution || 0}%`;
           
-          const statusText = document.getElementById('home-status-text');
-          if (d2.globalStep != null && d2.activeGpus != null) {
-            statusText.textContent = `step ${d2.globalStep.toLocaleString()} · ${d2.activeGpus} GPUs training`;
-          }
+          
           failedAttempts = 0;
           apiReachable = true;
           return; // Success via fallback
@@ -483,7 +473,7 @@ async function fetchStats() {
 
     if (failedAttempts >= 3) {
       apiReachable = false;
-      document.getElementById('home-status-text').textContent = 'Coordinator offline';
+      
       if (statsInterval) clearInterval(statsInterval);
     }
   }
