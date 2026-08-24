@@ -309,16 +309,14 @@ def _fetch_with_retry(url, headers=None, timeout=60, retries=3):
             else:
                 raise
 
+# ============ DATASET & UTILS ============
 class StreamingShardDataset:
     """
-    Streams dataset chunks sequentially, starting from the coordinator-assigned chunk.
-    Downloads the next chunk automatically when the current one runs out.
-    Never loops within a chunk; wraps only after a full epoch over all chunks.
+    Reads dataset chunks sequentially from a local `chunks/` directory at root.
+    Expects files named like chunk_0000.bin, chunk_0001.bin, etc.
     """
-    def __init__(self, ds_cfg, seq_len=64):
-        self.url = ds_cfg.get("url", DATASET_URL)
-        self.chunk_size = ds_cfg.get("chunkSize", 10 * 1024 * 1024)
-        self.total_chunks = max(1, ds_cfg.get("totalChunks", 1))
+    def __init__(self, ds_cfg, seq_len=64, chunks_dir="chunks"):
+        self.chunks_dir = Path(chunks_dir)
         self.seq_len = seq_len
         self.tps = ds_cfg.get("tokensPerSample", seq_len + 1)
         self.chunk_idx = None
@@ -327,16 +325,29 @@ class StreamingShardDataset:
         self.cursor = 0
         self.chunks_consumed = 0
         self.epochs = 0
-        self._load_chunk(ds_cfg.get("chunkIdx", 0) % self.total_chunks)
+        
+        # Discover and sort chunk files (e.g., chunk_0000.bin, chunk_0001.bin)
+        self.chunk_files = sorted(self.chunks_dir.glob("chunk_*.bin"))
+        if not self.chunk_files:
+            raise FileNotFoundError(f"No chunk_*.bin files found in {self.chunks_dir.resolve()}")
+        
+        self.total_chunks = len(self.chunk_files)
+        
+        # Start at the requested chunk index (default 0)
+        start_idx = ds_cfg.get("chunkIdx", 0) % self.total_chunks
+        self._load_chunk(start_idx)
 
     def _load_chunk(self, idx):
-        offset = idx * self.chunk_size
-        r = _fetch_with_retry(self.url, headers={'Range': f'bytes={offset}-{offset + self.chunk_size - 1}'}, timeout=120)
-        tk = np.frombuffer(r.content, dtype=np.uint32)
+        chunk_file = self.chunk_files[idx]
+        with open(chunk_file, "rb") as f:
+            raw_data = f.read()
+        
+        tk = np.frombuffer(raw_data, dtype=np.uint32)
         self.data = tk
         self.n = len(tk) // self.tps
         self.cursor = 0
         self.chunk_idx = idx
+        log.info(f"📂 Loaded local chunk {self.chunk_idx + 1}/{self.total_chunks}: {chunk_file.name} ({len(self.data):,} tokens)")
 
     def _next_chunk(self):
         nxt = self.chunk_idx + 1
@@ -345,7 +356,7 @@ class StreamingShardDataset:
             self.epochs += 1
         self._load_chunk(nxt)
         self.chunks_consumed += 1
-        log.info(f"📥 streamed next chunk {nxt}/{self.total_chunks} (epoch {self.epochs})")
+        log.info(f"📂 Streamed next local chunk {self.chunk_idx + 1}/{self.total_chunks} (epoch {self.epochs})")
 
     def get_batch(self, bs, seed=None):
         inp, tgt = [], []
