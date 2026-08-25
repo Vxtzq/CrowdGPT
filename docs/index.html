@@ -305,8 +305,8 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
 
       <div class="stats-strip">
         <div class="stat-item">
-          <div class="stat-val" id="home-stat-participants">—</div>
-          <div class="stat-lbl">Participants</div>
+          <div class="stat-val" id="home-stat-contributions">—</div>
+          <div class="stat-lbl">Contributions</div>
         </div>
         <div class="stat-item">
           <div class="stat-val" id="home-stat-gpus">—</div>
@@ -698,7 +698,7 @@ async function fetchStats() {
     const d = await r.json();
 
     // Map global stats to DOM
-    document.getElementById('home-stat-participants').textContent = (d.totalParticipants || 0).toLocaleString();
+    document.getElementById('home-stat-contributions').textContent = (d.totalContributions || 0).toLocaleString();
     document.getElementById('home-stat-gpus').textContent = (d.activeGpus || 0).toLocaleString();
     document.getElementById('home-stat-tokens').textContent = fmtNum(d.totalTokens || 0);
     
@@ -734,7 +734,7 @@ async function fetchStats() {
         const r2 = await fetch(`${API_BASE}/api/stats`, { cache: 'no-store', signal: AbortSignal.timeout(5000) });
         if (r2.ok) {
           const d2 = await r2.json();
-          document.getElementById('home-stat-participants').textContent = (d2.totalParticipants || 0).toLocaleString();
+          document.getElementById('home-stat-contributions').textContent = (d2.totalContributions || 0).toLocaleString();
           document.getElementById('home-stat-gpus').textContent = (d2.activeGpus || 0).toLocaleString();
           document.getElementById('home-stat-tokens').textContent = fmtNum(d2.totalTokens || 0);
           
