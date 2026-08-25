@@ -2,10 +2,10 @@
 """
 CrowdGPT Client - Distributed LLM Training Node
 
-Contributes local GPU compute to train Crowd-v1 (500M parameter transformer).
-Fetches model weights from HuggingFace (first run) or coordinator, trains on 
-raw dataset shards fetched directly via HTTP Range requests, and submits 
-weight deltas back to the coordinator.
+Streams training data from the HF dataset repo's chunks/ folder:
+the coordinator assigns a shard (chunk_XXXX.bin, ~400MB), the client
+pulls 10MB byte slices of it via HTTP Range requests, with a background
+prefetch thread hiding download latency. Only weight deltas are submitted.
 """
 
 import sys
@@ -20,6 +20,7 @@ import logging
 import hashlib
 import math
 import gc
+import threading
 import argparse
 import subprocess
 from pathlib import Path
@@ -45,7 +46,6 @@ console = Console()
 CHECKPOINT_DIR = Path("checkpoints")
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
-# HuggingFace sources
 DATASET_REPO_ID = "Vxtzq/CrowdGPT"
 MODEL_REPO_ID = "Vxtzq/Crowd-v1"
 
@@ -54,17 +54,9 @@ HF_WEIGHTS_URL_FP32 = f"https://huggingface.co/{MODEL_REPO_ID}/resolve/main/mode
 LOCAL_SAFETENSORS_CACHE = CHECKPOINT_DIR / "hf_weights_bf16.safetensors"
 LOCAL_FP32_CACHE = CHECKPOINT_DIR / "hf_weights_fp32.bin"
 
-# Crowd-v1: 500M parameter architecture
 MODEL_CONFIG = {
-    "vocabSize": 151669,
-    "dim": 1536,
-    "nLayers": 24,
-    "nHeads": 16,
-    "nKvHeads": 4,
-    "headDim": 96,
-    "maxSeqLen": 2048,
-    "mlpHidden": 2560,
-    "weightTying": True,
+    "vocabSize": 151669, "dim": 1536, "nLayers": 24, "nHeads": 16, "nKvHeads": 4,
+    "headDim": 96, "maxSeqLen": 2048, "mlpHidden": 2560, "weightTying": True,
     "architecture": "SotaGPT"
 }
 
@@ -93,7 +85,6 @@ def _calc_model_size():
 EXPECTED_MODEL_SIZE = _calc_model_size()
 
 ALLOWED_BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128]
-ALLOWED_SEQ_LENS = [8, 16, 32, 64]
 
 memory_config = {"ram_gb": 12, "safety_margin_gb": 1.0, "is_auto_detected": False, "precision": "bf16"}
 train_device, train_backend = None, None
@@ -116,9 +107,6 @@ def check_cuda_installed():
 
 def suggest_cuda_install():
     console.print("\n[bold red]⚠ PyTorch does NOT detect your GPU![/bold red]")
-    console.print("[yellow]NVIDIA GPU detected but CUDA-enabled PyTorch not installed.[/yellow]\n")
-    console.print("[bold]Fix with one of these commands:[/bold]\n")
-    console.print("[cyan]# For CUDA 12.1 (recommended):[/cyan]")
     console.print("[white]pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121[/white]\n")
 
 # ============ HARDWARE & MEMORY ============
@@ -138,13 +126,10 @@ def detect_training_backend(force=None):
         if not ok:
             raise Exception(f"'{force}': {info}")
         return dev, force.upper()
-    
     if torch.cuda.is_available():
         return torch.device('cuda'), "CUDA"
-    
     if check_cuda_installed():
         suggest_cuda_install()
-    
     return torch.device('cpu'), "CPU"
 
 def auto_detect_vram_budget():
@@ -170,11 +155,9 @@ def estimate_vram_bytes(precision="bf16", batch_size=4, seq_len=64):
     layer_b = (DIM*2 + DIM*(N_HEADS*HEAD_DIM) + DIM*(N_KV_HEADS*HEAD_DIM)*2 + DIM*DIM + DIM*2 + DIM*MLP_HIDDEN*2 + MLP_HIDDEN*DIM) * w
     model_b = vocab_b + (layer_b * N_LAYERS)
     optim_grad_b = model_b * 3
-    act_per_layer = 20 * batch_size * seq_len * DIM * w
-    act_b = act_per_layer * N_LAYERS
+    act_b = 20 * batch_size * seq_len * DIM * w * N_LAYERS
     logits_b = batch_size * seq_len * VOCAB_SIZE * 4
-    total_raw = model_b + optim_grad_b + act_b + logits_b
-    return int(total_raw * 1.1) + int(0.2 * 1024**3)
+    return int((model_b + optim_grad_b + act_b + logits_b) * 1.1) + int(0.2 * 1024**3)
 
 def recommend_optimal_config(precision="bf16", seq_len=64):
     budget = int(memory_config["ram_gb"] * 1024**3)
@@ -231,7 +214,6 @@ class SwiGLU(nn.Module):
         self.w1 = nn.Linear(DIM, h, bias=False)
         self.w2 = nn.Linear(DIM, h, bias=False)
         self.w3 = nn.Linear(h, DIM, bias=False)
-    
     def forward(self, x):
         return self.w3(F.silu(self.w1(x)) * self.w2(x))
 
@@ -242,7 +224,6 @@ class Block(nn.Module):
         self.attn = GroupedQueryAttention()
         self.ln_2 = nn.LayerNorm(DIM)
         self.mlp = SwiGLU()
-    
     def forward(self, x, cos, sin):
         x = x + self.attn(self.ln_1(x), cos, sin)
         return x + self.mlp(self.ln_2(x))
@@ -254,10 +235,8 @@ class SotaGPT(nn.Module):
         self.blocks = nn.ModuleList([Block() for _ in range(N_LAYERS)])
         self.ln_f = nn.LayerNorm(DIM)
         self.lm_head = nn.Linear(DIM, VOCAB_SIZE, bias=False)
-        
         if MODEL_CONFIG["weightTying"]:
             self.wte.weight = self.lm_head.weight
-        
         cm, sm = precompute_freqs(HEAD_DIM, MAX_SEQ_LEN, train_device)
         self.register_buffer("freqs_cos", cm)
         self.register_buffer("freqs_sin", sm)
@@ -279,7 +258,7 @@ class SotaGPT(nn.Module):
             p.data.copy_(ft[o:o+s].view(p.shape).to(p.device))
             o += s
 
-# ============ DATASET & UTILS ============
+# ============ DATASET STREAMING (chunk select + Range inside chunk + prefetch) ============
 def _fetch_with_retry(url, headers=None, timeout=60, retries=3):
     for attempt in range(retries):
         try:
@@ -296,74 +275,164 @@ def _fetch_with_retry(url, headers=None, timeout=60, retries=3):
 
 class StreamingShardDataset:
     """
-    Fetches raw .bin dataset chunks directly from HuggingFace using HTTP Range headers.
-    No local storage required. Automatically requests new chunks from the server when finished.
-    """
-    STEPS_PER_CHUNK = 500  # Request a new chunk after this many steps
+    Streams data from chunks/chunk_XXXX.bin in the HF dataset repo.
 
-    def __init__(self, url, ci, co, cs, tps=65, auth_token=None):
-        self.url = url
-        self.ci = ci          # chunk index
-        self.co = co          # chunk offset (bytes)
-        self.cs = cs          # chunk size (bytes)
-        self.tps = tps        # tokens per sample
+    - Coordinator assigns the shard (chunkIdx).
+    - Client pulls small byte slices (sub_size, default 10MB) via HTTP Range.
+    - A background thread PREFETCHES the next slice while the GPU trains,
+      hiding download latency.
+    - When the Range cursor reaches the end of the 400MB shard, the client
+      asks the coordinator for the next chunkIdx.
+    """
+    STEPS_PER_SUBCHUNK = 500
+
+    def __init__(self, repo_id, chunk_idx, sub_size=10*1024*1024, tps=65, slot=0, auth_token=None):
+        self.repo_id = repo_id
+        self.ci = chunk_idx
+        self.sub_size = sub_size
+        self.tps = tps
         self.auth_token = auth_token
+        self._name_fmt = "chunk_{:04d}.bin"
+
+        self.chunk_size = self._discover_chunk_size(chunk_idx)
+        # stagger start offset per slot so parallel clients on the same shard
+        # don't read the identical slice
+        self.off = (slot * sub_size) % self.chunk_size
+
         self.data = None
         self.n = 0
-        self._l = False
         self.steps_used = 0
 
-    def load_chunk(self):
-        if self._l: return
-        headers = {'Range': f'bytes={self.co}-{self.co+self.cs-1}'}
-        r = _fetch_with_retry(self.url, headers=headers, timeout=60)
-        self.data = r.content
-        # uint32 is required because Qwen vocab size (151669) exceeds uint16 max (65535)
-        self.n = len(np.frombuffer(self.data, dtype=np.uint32)) // self.tps
-        self._l = True
+        self._pf_thread = None
+        self._pf_result = None
+        self._lock = threading.Lock()
+
+        self._load_subchunk(self.off)
+        self._start_prefetch(self.off + self.sub_size)
+
+    # ---- URL / discovery ----
+    def _chunk_url(self):
+        return f"https://huggingface.co/datasets/{self.repo_id}/resolve/main/chunks/" + self._name_fmt.format(self.ci)
+
+    def _discover_chunk_size(self, idx):
+        for fmt in ("chunk_{:04d}.bin", "chunk_{:d}.bin"):
+            url = f"https://huggingface.co/datasets/{self.repo_id}/resolve/main/chunks/" + fmt.format(idx)
+            for attempt in range(2):
+                try:
+                    r = requests.head(url, allow_redirects=True, timeout=30)
+                    if r.status_code == 200:
+                        size = int(r.headers.get('content-length', 0))
+                        if size > 0:
+                            self._name_fmt = fmt
+                            log.info(f"📐 {fmt.format(idx)} size: {size/1024/1024:.1f}MB")
+                            return size
+                except Exception:
+                    time.sleep(1)
+        raise RuntimeError(f"Could not find chunk {idx} in {self.repo_id}/chunks/")
+
+    # ---- slice fetching ----
+    def _fetch_slice(self, off):
+        end = min(off + self.sub_size, self.chunk_size) - 1
+        headers = {'Range': f'bytes={off}-{end}'}
+        return _fetch_with_retry(self._chunk_url(), headers=headers, timeout=120).content
+
+    def _set_data(self, raw):
+        tk = np.frombuffer(raw, dtype=np.uint32)  # uint32: Qwen vocab 151669 > uint16 max
+        self.data = tk
+        self.n = len(tk) // self.tps
         self.steps_used = 0
-        log.info(f"📦 Loaded chunk {self.ci}: {self.n} sequences ({len(self.data)/1024/1024:.1f}MB)")
 
-    def needs_new_chunk(self):
-        return self.steps_used >= self.STEPS_PER_CHUNK
+    def _load_subchunk(self, off):
+        raw = self._fetch_slice(off)
+        self.off = off
+        self._set_data(raw)
+        log.info(f"📦 chunk {self.ci} @ {off/1024/1024:.0f}MB: {self.n:,} sequences ({len(raw)/1024/1024:.1f}MB)")
 
-    def request_new_chunk(self, server_url, mode="balanced", fmt="bf16"):
+    # ---- prefetch (latency hiding) ----
+    def _start_prefetch(self, off):
+        if off >= self.chunk_size:
+            return
+        with self._lock:
+            self._pf_result = None
+        def worker():
+            try:
+                raw = self._fetch_slice(off)
+                with self._lock:
+                    self._pf_result = (off, raw)
+            except Exception as e:
+                log.warning(f"⚠️ Prefetch failed: {e}")
+                with self._lock:
+                    self._pf_result = None
+        self._pf_thread = threading.Thread(target=worker, daemon=True)
+        self._pf_thread.start()
+
+    # ---- rotation ----
+    def needs_new_subchunk(self):
+        return self.n == 0 or self.steps_used >= self.STEPS_PER_SUBCHUNK
+
+    def advance(self, server_url=None, mode="quick", fmt="bf16"):
+        next_off = self.off + self.sub_size
+        if next_off < self.chunk_size:
+            # stay inside current 400MB shard: consume prefetched slice if ready
+            if self._pf_thread is not None:
+                self._pf_thread.join(timeout=120)
+                self._pf_thread = None
+            with self._lock:
+                res = self._pf_result
+                self._pf_result = None
+            if res is not None and res[0] == next_off:
+                self.off = next_off
+                self._set_data(res[1])
+                log.info(f"📦 chunk {self.ci} @ {next_off/1024/1024:.0f}MB (prefetched, {self.n:,} seqs)")
+            else:
+                self._load_subchunk(next_off)
+            self._start_prefetch(next_off + self.sub_size)
+            return True
+
+        # end of shard → coordinator assigns next chunkIdx
+        log.info(f"🔄 End of chunk {self.ci}, requesting next shard from coordinator")
+        self.request_new_chunk(server_url, mode, fmt)
+        self.chunk_size = self._discover_chunk_size(self.ci)
+        self.off = 0
+        self._load_subchunk(0)
+        self._start_prefetch(self.sub_size)
+        return True
+
+    def request_new_chunk(self, server_url, mode="quick", fmt="bf16"):
+        if not server_url:
+            return False
         try:
             headers = {}
             if self.auth_token:
                 headers["Authorization"] = f"Bearer {self.auth_token}"
-            
-            # 🚨 CRITICAL FIX: Add skip_weights=true to avoid re-downloading 2.5GB on chunk rotation!
-            r = requests.get(f"{server_url}/fl/task?mode={mode}&format={fmt}&skip_weights=true", headers=headers, timeout=30)
+            # skip_weights=true: never re-download model weights on rotation
+            r = requests.get(f"{server_url}/fl/task?mode={mode}&format={fmt}&skip_weights=true",
+                             headers=headers, timeout=30)
             if r.status_code == 200:
                 raw = r.content
                 ml = struct.unpack('<I', raw[:4])[0]
                 metadata = json.loads(raw[4:4+ml].decode('utf-8'))
-                ds_cfg = metadata.get("datasetConfig", {})
-                if ds_cfg:
-                    self.ci = ds_cfg.get("chunkIdx", self.ci)
-                    self.co = ds_cfg.get("chunkOffset", self.co)
-                    self.cs = ds_cfg.get("chunkSize", self.cs)
-                    self._l = False
-                    log.info(f"🔄 Requested new chunk {self.ci} from server")
-                    return True
+                new_idx = metadata.get("datasetConfig", {}).get("chunkIdx", self.ci)
+                if new_idx != self.ci:
+                    self.ci = new_idx
+                    log.info(f"🔄 Coordinator assigned shard chunk {self.ci}")
+                return True
         except Exception as e:
-            log.warning(f"⚠️ Failed to request new chunk: {e}")
+            log.warning(f"⚠️ Failed to request new shard: {e}")
         return False
 
+    # ---- batching ----
     def get_batch(self, bs, seed=None):
-        if not self._l: self.load_chunk()
+        if self.data is None or self.n == 0:
+            self.advance()
         self.steps_used += 1
-        
-        tk = np.frombuffer(self.data, dtype=np.uint32)
         rng = np.random.RandomState(seed)
-        inp, tgt = [], []
-        for _ in range(bs):
-            s = rng.randint(0, self.n) * self.tps
-            inp.append(tk[s:s+self.tps-1])
-            tgt.append(tk[s+1:s+self.tps])
-        return torch.tensor(np.array(inp), dtype=torch.long), torch.tensor(np.array(tgt), dtype=torch.long)
+        starts = rng.randint(0, self.n, size=bs) * self.tps
+        inp = np.stack([self.data[s:s+self.tps-1] for s in starts])
+        tgt = np.stack([self.data[s+1:s+self.tps] for s in starts])
+        return torch.tensor(inp, dtype=torch.long), torch.tensor(tgt, dtype=torch.long)
 
+# ============ WEIGHTS ============
 def decompress_weights(raw, fmt="bf16"):
     if len(raw) >= 2 and raw[0] == 0x78:
         raw = zlib.decompress(raw)
@@ -371,53 +440,35 @@ def decompress_weights(raw, fmt="bf16"):
         return np.frombuffer(raw, dtype=np.uint16).view(np.float16).astype(np.float32)
     return torch.from_numpy(np.frombuffer(raw, dtype=np.uint16).copy()).view(torch.bfloat16).to(torch.float32).numpy()
 
-# ============ HUGGINGFACE WEIGHT LOADING ============
 def parse_safetensors(filepath):
     with open(filepath, 'rb') as f:
         header_size_bytes = f.read(8)
         if len(header_size_bytes) < 8:
             raise ValueError("File too small to be a safetensors file")
         header_size = struct.unpack('<Q', header_size_bytes)[0]
-        
         if header_size > 100 * 1024 * 1024:
             raise ValueError(f"Suspicious header size: {header_size}")
-        
-        header_json = f.read(header_size)
-        header = json.loads(header_json.decode('utf-8'))
-        
+        header = json.loads(f.read(header_size).decode('utf-8'))
         tensor_key = 'weights' if 'weights' in header else next((k for k in header if not k.startswith('__')), None)
         if tensor_key is None:
             raise ValueError("No tensor found in safetensors file")
-        
-        tensor_info = header[tensor_key]
-        dtype = tensor_info['dtype']
-        shape = tensor_info['shape']
-        start, end = tensor_info['data_offsets']
-        
+        info = header[tensor_key]
+        start, end = info['data_offsets']
         f.seek(8 + header_size + start)
         raw_bytes = f.read(end - start)
-        
-        total_elements = 1
-        for s in shape: total_elements *= s
-        
-        if dtype == 'F32':
+        if info['dtype'] == 'F32':
             weights = np.frombuffer(raw_bytes, dtype=np.float32).copy()
-        elif dtype == 'BF16':
+        elif info['dtype'] == 'BF16':
             weights = torch.from_numpy(np.frombuffer(raw_bytes, dtype=np.uint16).copy()).view(torch.bfloat16).to(torch.float32).numpy()
-        elif dtype == 'F16':
+        elif info['dtype'] == 'F16':
             weights = np.frombuffer(raw_bytes, dtype=np.float16).astype(np.float32).copy()
         else:
-            raise ValueError(f"Unsupported safetensors dtype: {dtype}")
-        
-        if len(weights) != total_elements:
-            raise ValueError(f"Element count mismatch: {len(weights)} vs {total_elements}")
+            raise ValueError(f"Unsupported safetensors dtype: {info['dtype']}")
         return weights
 
 def download_from_huggingface(precision="bf16"):
     if LOCAL_FP32_CACHE.exists():
-        file_size = LOCAL_FP32_CACHE.stat().st_size
-        expected_size = EXPECTED_MODEL_SIZE * 4
-        if file_size == expected_size:
+        if LOCAL_FP32_CACHE.stat().st_size == EXPECTED_MODEL_SIZE * 4:
             console.print(f"[cyan]📦 Loading cached weights from {LOCAL_FP32_CACHE.name}...[/cyan]")
             try:
                 weights = np.fromfile(LOCAL_FP32_CACHE, dtype=np.float32, count=EXPECTED_MODEL_SIZE)
@@ -427,59 +478,45 @@ def download_from_huggingface(precision="bf16"):
             except Exception as e:
                 console.print(f"[yellow]⚠ Cache read failed: {e}[/yellow]")
                 LOCAL_FP32_CACHE.unlink(missing_ok=True)
-    
+
     url = HF_WEIGHTS_URL_BF16 if precision == "bf16" else HF_WEIGHTS_URL_FP32
     console.print(f"[cyan]🤗 Downloading weights from HuggingFace ({precision})...[/cyan]")
-    
     try:
         r = requests.get(url, stream=True, timeout=600, allow_redirects=True)
         r.raise_for_status()
-        
         total = int(r.headers.get('content-length', 0))
         downloaded = 0
-        chunk_size = 1024 * 1024
-        
         with open(LOCAL_SAFETENSORS_CACHE, 'wb') as f:
-            for chunk in r.iter_content(chunk_size=chunk_size):
+            for chunk in r.iter_content(chunk_size=1024*1024):
                 if chunk:
                     f.write(chunk)
                     downloaded += len(chunk)
                     if total > 0:
-                        pct = downloaded / total * 100
-                        print(f"\r  ↓ {downloaded/1024/1024:.1f}MB / {total/1024/1024:.1f}MB ({pct:.0f}%)", end="", flush=True)
-        
+                        print(f"\r  ↓ {downloaded/1024/1024:.1f}MB / {total/1024/1024:.1f}MB ({downloaded/total*100:.0f}%)", end="", flush=True)
         console.print("")
-        console.print(f"[cyan]📦 Parsing safetensors...[/cyan]")
         weights = parse_safetensors(LOCAL_SAFETENSORS_CACHE)
-        
         if len(weights) != EXPECTED_MODEL_SIZE:
             raise ValueError(f"Weight count mismatch: got {len(weights):,}, expected {EXPECTED_MODEL_SIZE:,}")
-        
-        console.print(f"[cyan]💾 Caching fp32 weights for fast reload...[/cyan]")
         weights.astype(np.float32).tofile(LOCAL_FP32_CACHE)
         console.print(f"[green]✅ Downloaded {len(weights):,} parameters from HuggingFace[/green]")
-        
         LOCAL_SAFETENSORS_CACHE.unlink(missing_ok=True)
         return weights
-        
     except Exception as e:
         console.print(f"[yellow]⚠ HF weight loading failed: {e}[/yellow]")
         LOCAL_SAFETENSORS_CACHE.unlink(missing_ok=True)
         LOCAL_FP32_CACHE.unlink(missing_ok=True)
         return None
 
-# ============ AUTHENTICATION ============
+# ============ AUTH ============
 def authenticate(server_url, username, password):
     if not username or not password: return None
     try:
         r = requests.post(f"{server_url}/auth/login", json={"username": username, "password": password}, timeout=30)
         if r.status_code == 200:
             return r.json().get("token")
-        
         r = requests.post(f"{server_url}/auth/register", json={"username": username, "password": password, "email": f"{username}@crowdgpt.local"}, timeout=30)
         if r.status_code == 200:
             return r.json().get("token")
-        
         console.print(f"[yellow]⚠ Auth failed: {r.text[:100]}[/yellow]")
         return None
     except Exception as e:
@@ -510,7 +547,7 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     use_hf = force_hf or (session_count == 1 and not LOCAL_FP32_CACHE.exists())
     hf_weights = None
     weight_source = "server"
-    
+
     if use_hf:
         hf_weights = download_from_huggingface(args.precision)
         if hf_weights is not None:
@@ -520,17 +557,15 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     task_url = f"{args.server}/fl/task?mode={args.mode}&format={args.precision}"
     if skip_weights:
         task_url += "&skip_weights=true"
-    
+
     console.print(f"[cyan]📡 Requesting shard{' (weights from HF)' if skip_weights else ''}...[/cyan]")
     task_res = requests.get(task_url, headers=headers, timeout=600)
-    
     if task_res.status_code != 200:
         raise Exception(f"Coordinator rejected: {task_res.text[:200]}")
 
     raw = task_res.content
     ml = struct.unpack('<I', raw[:4])[0]
     metadata = json.loads(raw[4:4+ml].decode('utf-8'))
-    
     weights_bytes = None if skip_weights else raw[4+ml:]
 
     train_cfg = metadata.get("trainingConfig", {})
@@ -543,17 +578,17 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     steps = args.steps if args.steps > 0 else train_cfg.get("localSteps", 500)
 
     ds_cfg = metadata.get("datasetConfig", {})
-    
-    # NEW: Direct HTTP Range fetching from HuggingFace
+    shard_cfg = metadata.get("shardConfig", {})
+
     dataset_shard = StreamingShardDataset(
-        url=ds_cfg.get("url", "https://huggingface.co/datasets/Vxtzq/CrowdGPT/resolve/main/fineweb_qwen3.bin"),
-        ci=ds_cfg.get("chunkIdx", 0),
-        co=ds_cfg.get("chunkOffset", 0),
-        cs=ds_cfg.get("chunkSize", 10*1024*1024),
+        repo_id=ds_cfg.get("repoId", DATASET_REPO_ID),
+        chunk_idx=ds_cfg.get("chunkIdx", 0),
+        sub_size=ds_cfg.get("subChunkSize", 10*1024*1024),
         tps=ds_cfg.get("tokensPerSample", seq_len + 1),
-        auth_token=auth_token
+        slot=shard_cfg.get("slot", 0),
+        auth_token=auth_token,
     )
-    console.print(f"[cyan]📚 Streaming directly from HuggingFace chunk {dataset_shard.ci + 1}[/cyan]")
+    console.print(f"[cyan]📚 Streaming chunk {dataset_shard.ci} via Range (10MB slices, prefetched)[/cyan]")
 
     if hf_weights is not None:
         console.print(f"[cyan]📦 Using weights from HuggingFace[/cyan]")
@@ -566,8 +601,6 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
         lora_rank, mode, best_bs, gpu_layers = recommend_optimal_config(args.precision, seq_len)
         batch_size = best_bs
         console.print(f"[green]✅ Optimized config:[/green] Mode: [bold]{mode}[/bold] | BS: [bold]{batch_size}[/bold] | GPU Layers: [bold]{gpu_layers}/{N_LAYERS}[/bold]")
-    else:
-        lora_rank = 0
 
     console.print(f"[cyan]🧠 Initializing SotaGPT...[/cyan]")
     model = SotaGPT().to(train_device)
@@ -575,7 +608,6 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     model.train()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9,0.95), weight_decay=0.01)
-    
     use_autocast = (args.precision == "bf16" and train_backend == "CUDA" and torch.cuda.is_bf16_supported())
     autocast_dtype = torch.bfloat16 if use_autocast else None
 
@@ -590,12 +622,10 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
         total_tok = 0
 
         for step in range(1, steps+1):
-            # Check if we need to fetch the next chunk from the server
-            if dataset_shard.needs_new_chunk():
-                console.print(f"[cyan]🔄 Chunk rotation at step {step}[/cyan]")
-                if dataset_shard.request_new_chunk(args.server, args.mode, args.precision):
-                    dataset_shard.load_chunk()
-            
+            if dataset_shard.needs_new_subchunk():
+                log.info(f"🔄 Advancing data slice at step {step}")
+                dataset_shard.advance(args.server, args.mode, args.precision)
+
             x, y = dataset_shard.get_batch(batch_size, seed=hash("shard")%10000 + step)
             x, y = x.to(train_device), y.to(train_device)
 
@@ -613,24 +643,22 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
-                
+
                 lv = float(loss.item())
                 if math.isnan(lv) or lv <= 0:
                     lv = 10.0
-                
+
                 total_tok += x.numel()
                 elapsed = time.time()-t0
-                current_tps = int(total_tok/max(elapsed,0.01))
                 loss_history.append(lv)
-
-                live.update(create_dashboard(step, steps, lv, current_tps, optimizer.param_groups[0]['lr'], global_step, train_backend, batch_size, seq_len, weight_source))
+                live.update(create_dashboard(step, steps, lv, int(total_tok/max(elapsed,0.01)), optimizer.param_groups[0]['lr'], global_step, train_backend, batch_size, seq_len, weight_source))
             except Exception as e:
                 console.print(f"[bold red]❌ Error: {e}[/bold red]")
                 break
 
     avg_loss = sum(loss_history)/max(1,len(loss_history))
     delta = model.get_flat_weights() - initial_weights
-    
+
     payload = json.dumps({
         "taskId": task_id,
         "loss": float(avg_loss),
@@ -640,22 +668,18 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
         "isDelta": True,
         "weightFormat": "fp32"
     }).encode()
-    
+
     binary = struct.pack('<I', len(payload)) + payload + np.ascontiguousarray(delta.astype(np.float32)).tobytes()
     compressed = gzip.compress(binary, compresslevel=2)
 
     console.print(f"[cyan]📤 Seeding delta ({len(compressed)/1024/1024:.2f} MB)...[/cyan]")
     r = requests.post(
         f"{args.server}/fl/submit",
-        headers={
-            "Content-Type": "application/octet-stream",
-            "Content-Encoding": "gzip",
-            **headers
-        },
+        headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **headers},
         data=compressed,
         timeout=120
     )
-    
+
     if r.status_code == 200:
         console.print(f"[bold green]✅ Seeded successfully![/bold green]")
     else:
@@ -672,7 +696,7 @@ def run_swarm_node(args):
     auth_token = None
     username = args.username or os.environ.get("CROWDGPT_USERNAME")
     password = args.password or os.environ.get("CROWDGPT_PASSWORD")
-    
+
     if username and password:
         console.print(f"[cyan]🔐 Authenticating as {username}...[/cyan]")
         auth_token = authenticate(args.server, username, password)
@@ -686,10 +710,8 @@ def run_swarm_node(args):
     try:
         train_device, train_backend = detect_training_backend(args.backend)
         console.print(f"[green]✅ Backend:[/green] [bold]{train_backend}[/bold] ({train_device})")
-        
         if train_backend == "CPU":
-            console.print("\n[yellow]⚠ Training on CPU will be extremely slow.[/yellow]")
-            console.print("[dim]Consider installing CUDA-enabled PyTorch for GPU acceleration.[/dim]\n")
+            console.print("\n[yellow]⚠ Training on CPU will be extremely slow.[/yellow]\n")
     except Exception as e:
         console.print(f"[bold red]❌ Backend error: {e}[/bold red]")
         sys.exit(1)
