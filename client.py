@@ -112,12 +112,34 @@ def suggest_cuda_install():
 # ============ HARDWARE & MEMORY ============
 def check_backend_available(name):
     name = name.lower()
-    if name == "cpu":
+    if name == "cpu": 
         return True, torch.device('cpu'), "CPU"
     if name == "cuda":
-        if torch.cuda.is_available():
+        if torch.cuda.is_available() and not (hasattr(torch.version,'hip') and torch.version.hip):
             return True, torch.device('cuda'), f"CUDA: {torch.cuda.get_device_name(0)}"
         return False, None, "CUDA not available"
+    if name == "rocm":
+        if hasattr(torch.version,'hip') and torch.version.hip and torch.cuda.is_available():
+            return True, torch.device('cuda'), f"ROCm: {torch.cuda.get_device_name(0)}"
+        return False, None, "ROCm not available"
+    if name == "mps":
+        if hasattr(torch.backends,'mps') and torch.backends.mps.is_available():
+            return True, torch.device('mps'), "MPS (Apple Silicon)"
+        return False, None, "MPS not available"
+    if name in ("xpu","intel"):
+        try:
+            import intel_extension_for_pytorch
+            if hasattr(torch,'xpu') and torch.xpu.is_available():
+                return True, torch.device('xpu'), f"XPU: {torch.xpu.get_device_name(0)}"
+        except ImportError: pass
+        return False, None, "XPU not available"
+    if name == "directml":
+        try:
+            import torch_directml
+            if torch_directml.is_available():
+                return True, torch_directml.device(0), f"DirectML: {torch_directml.device_name(0)}"
+        except ImportError: pass
+        return False, None, "DirectML not available"
     return False, None, f"Unknown: {name}"
 
 def detect_training_backend(force=None):
@@ -126,31 +148,65 @@ def detect_training_backend(force=None):
         if not ok:
             raise Exception(f"'{force}': {info}")
         return dev, force.upper()
-    if torch.cuda.is_available():
+    
+    # Auto-detect priority: CUDA -> ROCm -> XPU -> MPS -> DirectML -> CPU
+    if torch.cuda.is_available() and not (hasattr(torch.version,'hip') and torch.version.hip):
         return torch.device('cuda'), "CUDA"
+    if hasattr(torch.version,'hip') and torch.version.hip and torch.cuda.is_available():
+        return torch.device('cuda'), "ROCM"
+    try:
+        import intel_extension_for_pytorch
+        if hasattr(torch,'xpu') and torch.xpu.is_available():
+            return torch.device('xpu'), "XPU"
+    except ImportError: pass
+    if hasattr(torch.backends,'mps') and torch.backends.mps.is_available():
+        return torch.device('mps'), "MPS"
+    try:
+        import torch_directml
+        if torch_directml.is_available():
+            return torch_directml.device(0), "DIRECTML"
+    except ImportError: pass
+    
     if check_cuda_installed():
         suggest_cuda_install()
+        
     return torch.device('cpu'), "CPU"
 
 def auto_detect_vram_budget():
     global train_backend
-    if train_backend == "CUDA" and torch.cuda.is_available():
+    if train_backend in ("CUDA", "ROCM") and torch.cuda.is_available():
         try:
             free_b, total_b = torch.cuda.mem_get_info(0)
-            usable = max(0.0, (free_b / 1024**3) - memory_config["safety_margin_gb"])
-            memory_config.update({"ram_gb": round(usable, 2), "is_auto_detected": True})
+            usable = max(0.0, (free_b / 1024**3) - 0.5)
+            memory_config.update({"ram_gb": round(usable, 2), "safety_margin_gb": 0.5, "is_auto_detected": True})
             return
         except Exception:
             pass
+    if train_backend == "DIRECTML":
+        try:
+            import torch_directml
+            if torch_directml.is_available():
+                # DirectML doesn't easily expose VRAM, assign a safe default
+                memory_config.update({"ram_gb": 2.0, "safety_margin_gb": 1.0, "is_auto_detected": True})
+                return
+        except ImportError: pass
+    if train_backend == "MPS":
+        try:
+            # Apple Silicon uses unified memory
+            out = subprocess.check_output(["sysctl","-n","hw.memsize"], text=True).strip()
+            usable = max(1.0, int(out)/1024**3*0.75 - 2.0)
+            memory_config.update({"ram_gb": round(usable,2), "safety_margin_gb": 1.0, "is_auto_detected": True})
+            return
+        except Exception: pass
     try:
         import psutil
         avail = psutil.virtual_memory().available / 1024**3
-        memory_config.update({"ram_gb": round(max(1.0, avail - 2.0), 2), "is_auto_detected": True})
-    except ImportError:
-        pass
+        memory_config.update({"ram_gb": round(max(1.0, avail - 2.0), 2), "safety_margin_gb": 1.0, "is_auto_detected": True})
+    except ImportError: pass
 
 def estimate_vram_bytes(precision="bf16", batch_size=4, seq_len=64):
-    w = 2 if (precision == "bf16" and torch.cuda.is_bf16_supported()) else 4
+    # MPS/DirectML/CPU usually train in fp32 unless explicitly cast, so w=4 is safer
+    w = 2 if (precision == "bf16" and train_backend in ("CUDA", "ROCM") and torch.cuda.is_bf16_supported()) else 4
     vocab_b = VOCAB_SIZE * DIM * w
     layer_b = (DIM*2 + DIM*(N_HEADS*HEAD_DIM) + DIM*(N_KV_HEADS*HEAD_DIM)*2 + DIM*DIM + DIM*2 + DIM*MLP_HIDDEN*2 + MLP_HIDDEN*DIM) * w
     model_b = vocab_b + (layer_b * N_LAYERS)
@@ -276,13 +332,6 @@ def _fetch_with_retry(url, headers=None, timeout=60, retries=3):
 class StreamingShardDataset:
     """
     Streams data from chunks/chunk_XXXX.bin in the HF dataset repo.
-
-    - Coordinator assigns the shard (chunkIdx).
-    - Client pulls small byte slices (sub_size, default 10MB) via HTTP Range.
-    - A background thread PREFETCHES the next slice while the GPU trains,
-      hiding download latency.
-    - When the Range cursor reaches the end of the 400MB shard, the client
-      asks the coordinator for the next chunkIdx.
     """
     STEPS_PER_SUBCHUNK = 500
 
@@ -295,8 +344,6 @@ class StreamingShardDataset:
         self._name_fmt = "chunk_{:04d}.bin"
 
         self.chunk_size = self._discover_chunk_size(chunk_idx)
-        # stagger start offset per slot so parallel clients on the same shard
-        # don't read the identical slice
         self.off = (slot * sub_size) % self.chunk_size
 
         self.data = None
@@ -310,7 +357,6 @@ class StreamingShardDataset:
         self._load_subchunk(self.off)
         self._start_prefetch(self.off + self.sub_size)
 
-    # ---- URL / discovery ----
     def _chunk_url(self):
         return f"https://huggingface.co/datasets/{self.repo_id}/resolve/main/chunks/" + self._name_fmt.format(self.ci)
 
@@ -330,14 +376,13 @@ class StreamingShardDataset:
                     time.sleep(1)
         raise RuntimeError(f"Could not find chunk {idx} in {self.repo_id}/chunks/")
 
-    # ---- slice fetching ----
     def _fetch_slice(self, off):
         end = min(off + self.sub_size, self.chunk_size) - 1
         headers = {'Range': f'bytes={off}-{end}'}
         return _fetch_with_retry(self._chunk_url(), headers=headers, timeout=120).content
 
     def _set_data(self, raw):
-        tk = np.frombuffer(raw, dtype=np.uint32)  # uint32: Qwen vocab 151669 > uint16 max
+        tk = np.frombuffer(raw, dtype=np.uint32)
         self.data = tk
         self.n = len(tk) // self.tps
         self.steps_used = 0
@@ -348,7 +393,6 @@ class StreamingShardDataset:
         self._set_data(raw)
         log.info(f"📦 chunk {self.ci} @ {off/1024/1024:.0f}MB: {self.n:,} sequences ({len(raw)/1024/1024:.1f}MB)")
 
-    # ---- prefetch (latency hiding) ----
     def _start_prefetch(self, off):
         if off >= self.chunk_size:
             return
@@ -366,14 +410,12 @@ class StreamingShardDataset:
         self._pf_thread = threading.Thread(target=worker, daemon=True)
         self._pf_thread.start()
 
-    # ---- rotation ----
     def needs_new_subchunk(self):
         return self.n == 0 or self.steps_used >= self.STEPS_PER_SUBCHUNK
 
     def advance(self, server_url=None, mode="quick", fmt="bf16"):
         next_off = self.off + self.sub_size
         if next_off < self.chunk_size:
-            # stay inside current 400MB shard: consume prefetched slice if ready
             if self._pf_thread is not None:
                 self._pf_thread.join(timeout=120)
                 self._pf_thread = None
@@ -389,7 +431,6 @@ class StreamingShardDataset:
             self._start_prefetch(next_off + self.sub_size)
             return True
 
-        # end of shard → coordinator assigns next chunkIdx
         log.info(f"🔄 End of chunk {self.ci}, requesting next shard from coordinator")
         self.request_new_chunk(server_url, mode, fmt)
         self.chunk_size = self._discover_chunk_size(self.ci)
@@ -405,7 +446,6 @@ class StreamingShardDataset:
             headers = {}
             if self.auth_token:
                 headers["Authorization"] = f"Bearer {self.auth_token}"
-            # skip_weights=true: never re-download model weights on rotation
             r = requests.get(f"{server_url}/fl/task?mode={mode}&format={fmt}&skip_weights=true",
                              headers=headers, timeout=30)
             if r.status_code == 200:
@@ -421,7 +461,6 @@ class StreamingShardDataset:
             log.warning(f"⚠️ Failed to request new shard: {e}")
         return False
 
-    # ---- batching ----
     def get_batch(self, bs, seed=None):
         if self.data is None or self.n == 0:
             self.advance()
@@ -608,8 +647,16 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     model.train()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9,0.95), weight_decay=0.01)
-    use_autocast = (args.precision == "bf16" and train_backend == "CUDA" and torch.cuda.is_bf16_supported())
-    autocast_dtype = torch.bfloat16 if use_autocast else None
+    
+    # Autocast is primarily supported seamlessly on CUDA/ROCm for bf16/fp16
+    use_autocast = False
+    autocast_dtype = None
+    if args.precision == "bf16" and train_backend in ("CUDA", "ROCM") and torch.cuda.is_bf16_supported():
+        use_autocast = True
+        autocast_dtype = torch.bfloat16
+    elif args.precision == "fp16" and train_backend in ("CUDA", "ROCM"):
+        use_autocast = True
+        autocast_dtype = torch.float16
 
     loss_history = []
     seed = int(hashlib.md5(task_id.encode()).hexdigest()[:8], 16) + global_step
@@ -686,8 +733,11 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
         raise Exception(f"Seed failed: {r.text[:300]}")
 
     gc.collect()
-    if train_backend == "CUDA":
-        torch.cuda.empty_cache()
+    if train_backend in ("CUDA", "ROCM"):
+        try:
+            torch.cuda.empty_cache()
+        except:
+            pass
 
 def run_swarm_node(args):
     global train_device, train_backend
@@ -741,7 +791,7 @@ def run_swarm_node(args):
 def main():
     parser = argparse.ArgumentParser(description="CrowdGPT distributed training client")
     parser.add_argument("--server", default="http://api.crowdgpt.net:5006", help="Coordinator URL")
-    parser.add_argument("--backend", default="auto", choices=["auto","cuda","cpu"], help="Training backend")
+    parser.add_argument("--backend", default="auto", choices=["auto","cuda","rocm","mps","xpu","directml","cpu"], help="Training backend")
     parser.add_argument("--batch-size", type=int, default=0, help="Override batch size (0=auto)")
     parser.add_argument("--seq-len", type=int, default=0, help="Override sequence length (0=auto)")
     parser.add_argument("--steps", type=int, default=0, help="Override local steps (0=auto)")
