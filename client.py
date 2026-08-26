@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-CrowdGPT Client - Distributed LLM Training
-
+CrowdGPT Client - Distributed LLM Training Node
 """
 
 import os
@@ -10,7 +9,6 @@ os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
 import sys
 import io
 import gzip
-import zlib
 import json
 import time
 import struct
@@ -34,7 +32,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.live import Live
 
-# ============ LOGGING & CONSOLE ============
+# ============ LOGGING ============
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
@@ -82,19 +80,13 @@ def _calc_model_size():
     return size
 
 EXPECTED_MODEL_SIZE = _calc_model_size()
-
 ALLOWED_BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128]
 
 memory_config = {"ram_gb": 12, "safety_margin_gb": 1.0, "is_auto_detected": False, "precision": "bf16"}
 train_device, train_backend = None, None
 
-BANNER = """
-[bold cyan]CrowdGPT[/bold cyan] [dim]::[/dim] [magenta]Distributed LLM Training Node (Crowd-v1)[/magenta]
-[dim]═══════════════════════════════════════════════════════════════[/dim]
-"""
-
 def print_welcome():
-    console.print(BANNER)
+    log.info("CrowdGPT Distributed Training Node initialized.")
 
 # ============ CUDA AUTO-DETECTION ============
 def check_cuda_installed():
@@ -105,8 +97,7 @@ def check_cuda_installed():
         return False
 
 def suggest_cuda_install():
-    console.print("\n[bold red]⚠ PyTorch does NOT detect your GPU![/bold red]")
-    console.print("[white]pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121[/white]\n")
+    log.warning("PyTorch does not detect your GPU. Install CUDA via: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
 
 # ============ HARDWARE & MEMORY ============
 def check_backend_available(name):
@@ -148,7 +139,6 @@ def detect_training_backend(force=None):
             raise Exception(f"'{force}': {info}")
         return dev, force.upper()
     
-    # Auto-detect priority: CUDA -> ROCm -> XPU -> MPS -> DirectML -> CPU
     if torch.cuda.is_available() and not (hasattr(torch.version,'hip') and torch.version.hip):
         return torch.device('cuda'), "CUDA"
     if hasattr(torch.version,'hip') and torch.version.hip and torch.cuda.is_available():
@@ -181,7 +171,6 @@ def auto_detect_vram_budget():
             
             os_reserve_gb = 2.0
             safety_margin_gb = 1.0
-            
             usable = max(1.0, min(free_gb, total_gb - os_reserve_gb) - safety_margin_gb)
             
             memory_config.update({
@@ -214,11 +203,10 @@ def auto_detect_vram_budget():
 
 def estimate_vram_bytes(precision="bf16", batch_size=1, seq_len=2048, use_8bit=False):
     model_b_bf16 = EXPECTED_MODEL_SIZE * 2
-
     bytes_per_param = 7 if use_8bit else 16
     optim_b = EXPECTED_MODEL_SIZE * bytes_per_param
     
-    cs = 64 # attention chunk size
+    cs = 64 
     act_per_layer = (batch_size * seq_len * DIM * 2) + (batch_size * N_HEADS * cs * seq_len * 4)
     act_b = act_per_layer * N_LAYERS
     
@@ -226,7 +214,6 @@ def estimate_vram_bytes(precision="bf16", batch_size=1, seq_len=2048, use_8bit=F
     logits_b = batch_size * logits_chunk * VOCAB_SIZE * 4
     
     total = model_b_bf16 + optim_b + act_b + logits_b
-    
     return int(total) + int(1.5 * 1024**3)
 
 def recommend_optimal_config(precision="bf16", seq_len=2048, use_8bit=False):
@@ -282,7 +269,6 @@ class GroupedQueryAttention(nn.Module):
         return self.wo((a@v).transpose(1,2).contiguous().view(B,T,C))
 
     def _chunked(self, q, k, v, B, T, C, cs=64):
-        """Process attention in chunks of size 'cs' to drastically reduce peak VRAM."""
         m = torch.tril(torch.ones(T,T,device=q.device)).view(1,1,T,T)
         chunks = []
         for i in range(0, T, cs):
@@ -353,7 +339,7 @@ def _fetch_with_retry(url, headers=None, timeout=60, retries=3):
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
             if attempt < retries - 1:
                 wait = 2 ** (attempt + 1)
-                log.warning(f"⚠️ Download failed (attempt {attempt+1}/{retries}), retry in {wait}s: {str(e)[:100]}")
+                log.warning(f"Download failed (attempt {attempt+1}/{retries}), retry in {wait}s: {str(e)[:100]}")
                 time.sleep(wait)
             else:
                 raise
@@ -396,7 +382,7 @@ class StreamingShardDataset:
                         size = int(r.headers.get('content-length', 0))
                         if size > 0:
                             self._name_fmt = fmt
-                            log.info(f"📐 {fmt.format(idx)} size: {size/1024/1024:.1f}MB")
+                            log.info(f"Discovered chunk {idx} size: {size/1024/1024:.1f}MB")
                             return size
                 except Exception:
                     time.sleep(1)
@@ -417,7 +403,7 @@ class StreamingShardDataset:
         raw = self._fetch_slice(off)
         self.off = off
         self._set_data(raw)
-        log.info(f"📦 chunk {self.ci} @ {off/1024/1024:.0f}MB: {self.n:,} sequences ({len(raw)/1024/1024:.1f}MB)")
+        log.info(f"Loaded chunk {self.ci} offset {off/1024/1024:.0f}MB: {self.n:,} sequences")
 
     def _start_prefetch(self, off):
         if off >= self.chunk_size:
@@ -430,7 +416,7 @@ class StreamingShardDataset:
                 with self._lock:
                     self._pf_result = (off, raw)
             except Exception as e:
-                log.warning(f"⚠️ Prefetch failed: {e}")
+                log.warning(f"Prefetch failed: {e}")
                 with self._lock:
                     self._pf_result = None
         self._pf_thread = threading.Thread(target=worker, daemon=True)
@@ -451,13 +437,13 @@ class StreamingShardDataset:
             if res is not None and res[0] == next_off:
                 self.off = next_off
                 self._set_data(res[1])
-                log.info(f"📦 chunk {self.ci} @ {next_off/1024/1024:.0f}MB (prefetched, {self.n:,} seqs)")
+                log.info(f"Loaded chunk {self.ci} offset {next_off/1024/1024:.0f}MB (prefetched)")
             else:
                 self._load_subchunk(next_off)
             self._start_prefetch(next_off + self.sub_size)
             return True
 
-        log.info(f"🔄 End of chunk {self.ci}, requesting next shard from coordinator")
+        log.info(f"End of chunk {self.ci}, requesting next shard.")
         self.request_new_chunk(server_url, mode, fmt)
         self.chunk_size = self._discover_chunk_size(self.ci)
         self.off = 0
@@ -481,10 +467,10 @@ class StreamingShardDataset:
                 new_idx = metadata.get("datasetConfig", {}).get("chunkIdx", self.ci)
                 if new_idx != self.ci:
                     self.ci = new_idx
-                    log.info(f"🔄 Coordinator assigned shard chunk {self.ci}")
+                    log.info(f"Coordinator assigned shard chunk {self.ci}")
                 return True
         except Exception as e:
-            log.warning(f"⚠️ Failed to request new shard: {e}")
+            log.warning(f"Failed to request new shard: {e}")
         return False
 
     def get_batch(self, bs, seed=None):
@@ -534,40 +520,35 @@ def parse_safetensors(filepath):
 def download_from_huggingface(precision="bf16"):
     if LOCAL_FP32_CACHE.exists():
         if LOCAL_FP32_CACHE.stat().st_size == EXPECTED_MODEL_SIZE * 4:
-            console.print(f"[cyan]📦 Loading cached weights from {LOCAL_FP32_CACHE.name}...[/cyan]")
+            log.info(f"Loading cached weights from {LOCAL_FP32_CACHE.name}...")
             try:
                 weights = np.fromfile(LOCAL_FP32_CACHE, dtype=np.float32, count=EXPECTED_MODEL_SIZE)
                 if len(weights) == EXPECTED_MODEL_SIZE:
-                    console.print(f"[green]✅ Loaded {len(weights):,} parameters from cache[/green]")
+                    log.info(f"Loaded {len(weights):,} parameters from cache.")
                     return weights
             except Exception as e:
-                console.print(f"[yellow]⚠ Cache read failed: {e}[/yellow]")
+                log.warning(f"Cache read failed: {e}")
                 LOCAL_FP32_CACHE.unlink(missing_ok=True)
 
     url = HF_WEIGHTS_URL_BF16 if precision == "bf16" else HF_WEIGHTS_URL_FP32
-    console.print(f"[cyan]🤗 Downloading weights from HuggingFace ({precision})...[/cyan]")
+    log.info(f"Downloading weights from HuggingFace ({precision})...")
     try:
         r = requests.get(url, stream=True, timeout=600, allow_redirects=True)
         r.raise_for_status()
-        total = int(r.headers.get('content-length', 0))
-        downloaded = 0
         with open(LOCAL_SAFETENSORS_CACHE, 'wb') as f:
             for chunk in r.iter_content(chunk_size=1024*1024):
                 if chunk:
                     f.write(chunk)
-                    downloaded += len(chunk)
-                    if total > 0:
-                        print(f"\r  ↓ {downloaded/1024/1024:.1f}MB / {total/1024/1024:.1f}MB ({downloaded/total*100:.0f}%)", end="", flush=True)
-        console.print("")
+        log.info("Download complete. Parsing weights...")
         weights = parse_safetensors(LOCAL_SAFETENSORS_CACHE)
         if len(weights) != EXPECTED_MODEL_SIZE:
             raise ValueError(f"Weight count mismatch: got {len(weights):,}, expected {EXPECTED_MODEL_SIZE:,}")
         weights.astype(np.float32).tofile(LOCAL_FP32_CACHE)
-        console.print(f"[green]✅ Downloaded {len(weights):,} parameters from HuggingFace[/green]")
+        log.info(f"Successfully parsed {len(weights):,} parameters.")
         LOCAL_SAFETENSORS_CACHE.unlink(missing_ok=True)
         return weights
     except Exception as e:
-        console.print(f"[yellow]⚠ HF weight loading failed: {e}[/yellow]")
+        log.warning(f"HuggingFace weight loading failed: {e}")
         LOCAL_SAFETENSORS_CACHE.unlink(missing_ok=True)
         LOCAL_FP32_CACHE.unlink(missing_ok=True)
         return None
@@ -582,24 +563,24 @@ def authenticate(server_url, username, password):
         r = requests.post(f"{server_url}/auth/register", json={"username": username, "password": password, "email": f"{username}@crowdgpt.local"}, timeout=30)
         if r.status_code == 200:
             return r.json().get("token")
-        console.print(f"[yellow]⚠ Auth failed: {r.text[:100]}[/yellow]")
+        log.warning(f"Authentication failed: {r.text[:100]}")
         return None
     except Exception as e:
-        console.print(f"[yellow]⚠ Auth request failed: {e}[/yellow]")
+        log.warning(f"Authentication request failed: {e}")
         return None
 
 # ============ TRAINING ============
 def create_dashboard(step, total_steps, loss, tps, lr, global_step, backend_name, batch_size, seq_len, weight_source="server"):
-    table = Table(title=f"🧠 Training Dashboard (Crowd-v1) [{weight_source}]", expand=True, border_style="green")
-    table.add_column("Metric", style="bold cyan")
-    table.add_column("Value", justify="right", style="magenta")
-    table.add_row("📈 Progress", f"{step}/{total_steps} ({step/max(1,total_steps)*100:.1f}%)")
-    table.add_row("📉 Loss", f"{loss:.4f}" if loss > 0 else "—")
-    table.add_row("⚡ Tokens/s", f"{tps:.0f}" if tps else "—")
-    table.add_row("🎛️ LR", f"{lr:.2e}" if lr else "—")
-    table.add_row("🌍 Global Step", str(global_step))
-    table.add_row("🖥️ Backend", backend_name)
-    table.add_row("📦 Batch / SeqLen", f"{batch_size} / {seq_len}")
+    table = Table(title=f"Training Dashboard [{weight_source}]", expand=True, border_style="dim")
+    table.add_column("Metric", style="bold")
+    table.add_column("Value", justify="right")
+    table.add_row("Progress", f"{step}/{total_steps} ({step/max(1,total_steps)*100:.1f}%)")
+    table.add_row("Loss", f"{loss:.4f}" if loss > 0 else "—")
+    table.add_row("Tokens/s", f"{tps:.0f}" if tps else "—")
+    table.add_row("LR", f"{lr:.2e}" if lr else "—")
+    table.add_row("Global Step", str(global_step))
+    table.add_row("Backend", backend_name)
+    table.add_row("Batch / SeqLen", f"{batch_size} / {seq_len}")
     return table
 
 def run_single_contribution(args, session_count, auth_token=None, force_hf=False):
@@ -623,10 +604,10 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     if skip_weights:
         task_url += "&skip_weights=true"
 
-    console.print(f"[cyan]📡 Requesting shard{' (weights from HF)' if skip_weights else ''}...[/cyan]")
+    log.info("Requesting task from coordinator...")
     task_res = requests.get(task_url, headers=headers, timeout=600)
     if task_res.status_code != 200:
-        raise Exception(f"Coordinator rejected: {task_res.text[:200]}")
+        raise Exception(f"Coordinator rejected request: {task_res.text[:200]}")
 
     raw = task_res.content
     ml = struct.unpack('<I', raw[:4])[0]
@@ -651,14 +632,15 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
         slot=shard_cfg.get("slot", 0),
         auth_token=auth_token,
     )
-    console.print(f"[cyan]📚 Streaming chunk {dataset_shard.ci} via Range (10MB slices, prefetched)[/cyan]")
+    log.info(f"Streaming chunk {dataset_shard.ci} via Range requests...")
 
     if hf_weights is not None:
-        console.print(f"[cyan]📦 Using weights from HuggingFace[/cyan]")
+        log.info("Using weights from HuggingFace cache.")
         initial_weights = hf_weights
     else:
-        console.print(f"[cyan]📦 Unpacking weights from coordinator...[/cyan]")
+        log.info("Unpacking weights from coordinator...")
         initial_weights = decompress_weights(weights_bytes, weight_format)
+        
     if args.batch_size > 0:
         batch_size = args.batch_size
     else:
@@ -670,20 +652,20 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
             
         lora_rank, mode, best_bs, gpu_layers = recommend_optimal_config(args.precision, seq_len, use_8bit)
         batch_size = best_bs
-        console.print(f"[green]✅ Auto-tuned config:[/green] Mode: [bold]{mode}[/bold] | BS: [bold]{batch_size}[/bold] for SeqLen: [bold]{seq_len}[/bold]")
+        log.info(f"Auto-tuned config: Mode={mode} | BS={batch_size} | SeqLen={seq_len}")
 
-    console.print(f"[cyan]🧠 Initializing SotaGPT...[/cyan]")
+    log.info("Initializing SotaGPT model...")
     model = SotaGPT().to(train_device)
     model.load_flat_weights(initial_weights)
     model.train()
+    
     try:
         import bitsandbytes as bnb
         optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=args.lr, betas=(0.9,0.95), weight_decay=0.01)
-        console.print("[green]✅ Using 8-bit AdamW (bitsandbytes) to save ~5GB VRAM[/green]")
+        log.info("Using 8-bit AdamW optimizer.")
     except ImportError:
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9,0.95), weight_decay=0.01)
-        console.print("[yellow]⚠ bitsandbytes not installed. Using standard AdamW.[/yellow]")
-        console.print("[yellow]  💡 Tip: Run `pip install bitsandbytes` to prevent OOM on <16GB GPUs![/yellow]")
+        log.warning("bitsandbytes not installed. Using standard AdamW.")
     
     use_autocast = False
     autocast_dtype = None
@@ -697,28 +679,26 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     loss_history = []
     seed = int(hashlib.md5(task_id.encode()).hexdigest()[:8], 16) + global_step
 
-    console.print(f"[bold green]🚀 Training ({steps} steps, BS={batch_size}, SeqLen={seq_len})[/bold green]")
+    log.info(f"Starting training ({steps} steps, BS={batch_size}, SeqLen={seq_len})")
 
     with Live(create_dashboard(0, steps, 0, 0, args.lr, global_step, train_backend, batch_size, seq_len, weight_source),
-              console=console, refresh_per_second=4, screen=False) as live:
+              console=console, refresh_per_second=2, screen=False) as live:
         t0 = time.time()
         total_tok = 0
 
         for step in range(1, steps+1):
             if dataset_shard.needs_new_subchunk():
-                log.info(f"🔄 Advancing data slice at step {step}")
+                log.info(f"Advancing data slice at step {step}")
                 dataset_shard.advance(args.server, args.mode, args.precision)
 
             x, y = dataset_shard.get_batch(batch_size, seed=hash("shard")%10000 + step)
             x, y = x.to(train_device), y.to(train_device)
 
             try:
-                
                 def forward_pass():
                     x_emb = model.wte(x)
                     for b in model.blocks:
                         if model.training:
-                            # Checkpointing drops activation VRAM by 80%, ain't that cool?
                             x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True)
                         else:
                             x_emb = b(x_emb, model.freqs_cos, model.freqs_sin, True)
@@ -727,8 +707,6 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
                 if use_autocast:
                     with torch.autocast(device_type='cuda', dtype=autocast_dtype):
                         x_emb = forward_pass()
-                        
-                        
                         loss = 0.0
                         loss_chunk_size = 256 
                         num_chunks = 0
@@ -741,7 +719,6 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
                         loss.backward()
                 else:
                     x_emb = forward_pass()
-                    
                     loss = 0.0
                     loss_chunk_size = 256
                     num_chunks = 0
@@ -766,7 +743,7 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
                 loss_history.append(lv)
                 live.update(create_dashboard(step, steps, lv, int(total_tok/max(elapsed,0.01)), optimizer.param_groups[0]['lr'], global_step, train_backend, batch_size, seq_len, weight_source))
             except Exception as e:
-                console.print(f"[bold red]❌ Error: {e}[/bold red]")
+                log.error(f"Training step error: {e}")
                 break
 
     avg_loss = sum(loss_history)/max(1,len(loss_history))
@@ -785,7 +762,7 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     binary = struct.pack('<I', len(payload)) + payload + np.ascontiguousarray(delta.astype(np.float32)).tobytes()
     compressed = gzip.compress(binary, compresslevel=2)
 
-    console.print(f"[cyan]📤 Seeding delta ({len(compressed)/1024/1024:.2f} MB)...[/cyan]")
+    log.info(f"Uploading delta ({len(compressed)/1024/1024:.2f} MB)...")
     r = requests.post(
         f"{args.server}/fl/submit",
         headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **headers},
@@ -794,9 +771,9 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     )
 
     if r.status_code == 200:
-        console.print(f"[bold green]✅ Seeded successfully![/bold green]")
+        log.info("Contribution submitted successfully.")
     else:
-        raise Exception(f"Seed failed: {r.text[:300]}")
+        raise Exception(f"Submission failed: {r.text[:300]}")
 
     gc.collect()
     if train_backend in ("CUDA", "ROCM"):
@@ -814,43 +791,43 @@ def run_swarm_node(args):
     password = args.password or os.environ.get("CROWDGPT_PASSWORD")
 
     if username and password:
-        console.print(f"[cyan]🔐 Authenticating as {username}...[/cyan]")
+        log.info(f"Authenticating as {username}...")
         auth_token = authenticate(args.server, username, password)
         if auth_token:
-            console.print(f"[green]✅ Authenticated successfully[/green]")
+            log.info("Authenticated successfully.")
         else:
-            console.print(f"[yellow]⚠ Running anonymously (auth failed)[/yellow]")
+            log.warning("Running anonymously (authentication failed).")
     else:
-        console.print(f"[dim]Running anonymously (set CROWDGPT_USERNAME/PASSWORD or use --username/--password)[/dim]")
+        log.info("Running anonymously.")
 
     try:
         train_device, train_backend = detect_training_backend(args.backend)
-        console.print(f"[green]✅ Backend:[/green] [bold]{train_backend}[/bold] ({train_device})")
+        log.info(f"Backend: {train_backend} ({train_device})")
         if train_backend == "CPU":
-            console.print("\n[yellow]⚠ Training on CPU will be extremely slow.[/yellow]\n")
+            log.warning("Training on CPU will be extremely slow.")
     except Exception as e:
-        console.print(f"[bold red]❌ Backend error: {e}[/bold red]")
+        log.error(f"Backend error: {e}")
         sys.exit(1)
 
     auto_detect_vram_budget()
-    console.print(f"[green]💾 VRAM/RAM Budget:[/green] [bold]{memory_config['ram_gb']:.1f} GB[/bold] usable")
+    log.info(f"VRAM/RAM Budget: {memory_config['ram_gb']:.1f} GB usable")
 
     session_count = 0
     while True:
         session_count += 1
-        console.print(f"\n[bold cyan]🔄 Cycle #{session_count}[/bold cyan]")
+        log.info(f"Starting cycle #{session_count}")
         try:
             force_hf = args.from_hf or (session_count == 1)
             run_single_contribution(args, session_count, auth_token, force_hf=force_hf)
         except KeyboardInterrupt:
             raise
         except Exception as e:
-            console.print(f"[bold red]❌ Cycle failed: {e}[/bold red]")
+            log.error(f"Cycle failed: {e}")
             time.sleep(10)
             continue
 
         if args.single:
-            console.print("[green]✅ Done.[/green]")
+            log.info("Single cycle complete. Exiting.")
             break
         time.sleep(3)
 
@@ -875,6 +852,6 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        console.print("\n[yellow]Disconnected[/yellow]")
+        log.info("Disconnected by user.")
     except Exception as e:
-        console.print(f"\n[red]Fatal: {e}[/red]")
+        log.error(f"Fatal error: {e}")
