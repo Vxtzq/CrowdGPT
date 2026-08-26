@@ -318,7 +318,7 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
         </div>
         <div class="stat-item">
           <div class="stat-val" id="home-stat-loss">—</div>
-          <div class="stat-lbl">Training loss this week</div>
+          <div class="stat-lbl">Current loss</div>
         </div>
         
       </div>
@@ -702,11 +702,10 @@ async function fetchStats() {
     document.getElementById('home-stat-gpus').textContent = (d.activeGpus || 0).toLocaleString();
     document.getElementById('home-stat-tokens').textContent = fmtNum(d.totalTokens || 0);
     
-    const lossChange = d.trainingLossChange != null ? d.trainingLossChange : 0.0;
-    const lossArrow = lossChange < 0 ? '↓' : (lossChange > 0 ? '↑' : '→');
     const lossEl = document.getElementById('home-stat-loss');
-    lossEl.textContent = `${lossArrow} ${Math.abs(lossChange)}%`;
-    lossEl.style.color = lossChange < 0 ? 'var(--accent)' : (lossChange > 0 ? 'var(--term-error)' : 'var(--text-muted)');
+    const currentLoss = d.lastLoss != null ? d.lastLoss : 0.0;
+    lossEl.textContent = currentLoss.toFixed(4);
+    lossEl.style.color = 'var(--text)';
 
 
     
@@ -719,7 +718,7 @@ async function fetchStats() {
     const clientsEl = document.getElementById('status-clients');
     if (clientsEl) clientsEl.textContent = (d.activeGpus || 0).toLocaleString();
     const lossStatusEl = document.getElementById('status-loss');
-    if (lossStatusEl) lossStatusEl.textContent = d.lastLoss != null ? 'last loss ' + d.lastLoss.toFixed(3) : 'no loss data';
+    if (lossStatusEl) lossStatusEl.textContent = d.lastLoss != null ? d.lastLoss.toFixed(4) : 'no loss data';
 
     failedAttempts = 0;
     apiReachable = true;
@@ -738,10 +737,10 @@ async function fetchStats() {
           document.getElementById('home-stat-gpus').textContent = (d2.activeGpus || 0).toLocaleString();
           document.getElementById('home-stat-tokens').textContent = fmtNum(d2.totalTokens || 0);
           
-          const lossChange = d2.trainingLossChange != null ? d2.trainingLossChange : 0.0;
-          const lossArrow = lossChange < 0 ? '↓' : (lossChange > 0 ? '↑' : '→');
           const lossEl = document.getElementById('home-stat-loss');
-          lossEl.textContent = `${lossArrow} ${Math.abs(lossChange)}%`;
+          const currentLoss = d2.lastLoss != null ? d2.lastLoss : 0.0;
+          lossEl.textContent = currentLoss.toFixed(4);
+          lossEl.style.color = 'var(--text)';
           
           
           
