@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
 """
-CrowdGPT Client - Distributed LLM Training Node
+CrowdGPT Client - Distributed LLM Training
 
-Streams training data from the HF dataset repo's chunks/ folder:
-the coordinator assigns a shard (chunk_XXXX.bin, ~400MB), the client
-pulls 10MB byte slices of it via HTTP Range requests, with a background
-prefetch thread hiding download latency. Only weight deltas are submitted.
 """
 
 import os
-# 🚨 CRITICAL: Fixes CUDA OOM fragmentation on 12GB cards
 os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
 
 import sys
@@ -184,12 +179,9 @@ def auto_detect_vram_budget():
             total_gb = total_b / 1024**3
             free_gb = free_b / 1024**3
             
-            # Be highly conservative: The OS/Display permanently reserves ~2.0 GB.
-            # We leave an additional 1.0 GB safety margin for PyTorch context/fragmentation.
             os_reserve_gb = 2.0
             safety_margin_gb = 1.0
             
-            # Use the minimum of currently free VRAM or (Total - OS reserves) to handle background apps
             usable = max(1.0, min(free_gb, total_gb - os_reserve_gb) - safety_margin_gb)
             
             memory_config.update({
@@ -221,27 +213,20 @@ def auto_detect_vram_budget():
     except ImportError: pass
 
 def estimate_vram_bytes(precision="bf16", batch_size=1, seq_len=2048, use_8bit=False):
-    # 1. Model weights (bf16)
     model_b_bf16 = EXPECTED_MODEL_SIZE * 2
-    
-    # 2. Optimizer states
-    # Standard AdamW: fp32 master (4) + momentum (4) + variance (4) + grads (4) = 16 bytes/param
-    # 8-bit AdamW: 8-bit states + fp32 grads = ~7 bytes/param
+
     bytes_per_param = 7 if use_8bit else 16
     optim_b = EXPECTED_MODEL_SIZE * bytes_per_param
     
-    # 3. Activations (with gradient checkpointing + chunked attention)
     cs = 64 # attention chunk size
     act_per_layer = (batch_size * seq_len * DIM * 2) + (batch_size * N_HEADS * cs * seq_len * 4)
     act_b = act_per_layer * N_LAYERS
     
-    # 4. Logits (chunked to 256 tokens, fp32 for CrossEntropy)
     logits_chunk = 256
     logits_b = batch_size * logits_chunk * VOCAB_SIZE * 4
     
     total = model_b_bf16 + optim_b + act_b + logits_b
     
-    # Add CUDA context and PyTorch overhead (approx 1.5 GB)
     return int(total) + int(1.5 * 1024**3)
 
 def recommend_optimal_config(precision="bf16", seq_len=2048, use_8bit=False):
@@ -652,9 +637,7 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     task_id = metadata['taskId']
     global_step = metadata['globalStep']
     weight_format = metadata.get('weightFormat', 'bf16')
-
-    # 🚨 FORCE override server settings to prevent OOM
-    seq_len = args.seq_len if args.seq_len > 0 else 2048  # Ignore server's 64, force 2048
+    seq_len = args.seq_len if args.seq_len > 0 else 2048
     steps = args.steps if args.steps > 0 else train_cfg.get("localSteps", 500)
 
     ds_cfg = metadata.get("datasetConfig", {})
@@ -676,8 +659,6 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     else:
         console.print(f"[cyan]📦 Unpacking weights from coordinator...[/cyan]")
         initial_weights = decompress_weights(weights_bytes, weight_format)
-
-    # 🚨 ALWAYS run the auto-tuner based on YOUR local VRAM, ignoring server's batchSize
     if args.batch_size > 0:
         batch_size = args.batch_size
     else:
@@ -695,8 +676,6 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     model = SotaGPT().to(train_device)
     model.load_flat_weights(initial_weights)
     model.train()
-
-    # 🚨 MEMORY SAVER: Use 8-bit AdamW to cut optimizer VRAM in half (~5GB saved)
     try:
         import bitsandbytes as bnb
         optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=args.lr, betas=(0.9,0.95), weight_decay=0.01)
@@ -734,12 +713,12 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
             x, y = x.to(train_device), y.to(train_device)
 
             try:
-                # 🚨 MEMORY SAVER 1: Gradient Checkpointing + Chunked Attention Forward Pass
+                
                 def forward_pass():
                     x_emb = model.wte(x)
                     for b in model.blocks:
                         if model.training:
-                            # Checkpointing drops activation VRAM by ~80%
+                            # Checkpointing drops activation VRAM by 80%, ain't that cool?
                             x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True)
                         else:
                             x_emb = b(x_emb, model.freqs_cos, model.freqs_sin, True)
@@ -749,7 +728,7 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
                     with torch.autocast(device_type='cuda', dtype=autocast_dtype):
                         x_emb = forward_pass()
                         
-                        # 🚨 MEMORY SAVER 2: Chunked Loss (eliminates the massive 1.2GB logits buffer OOM)
+                        
                         loss = 0.0
                         loss_chunk_size = 256 
                         num_chunks = 0
