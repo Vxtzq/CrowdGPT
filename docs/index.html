@@ -56,6 +56,119 @@ nav a.active { color: var(--text); }
 .gh-btn:hover { color: var(--text); border-color: var(--border-strong); text-decoration: none; }
 .gh-btn svg { width: 18px; height: 18px; }
 
+/* ===== MOBILE MENU BUTTON (hidden on desktop) ===== */
+.mobile-menu-btn {
+  display: none;
+  background: none;
+  border: none;
+  padding: 10px;
+  cursor: pointer;
+  margin-left: auto;
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  transition: background 0.15s;
+}
+.mobile-menu-btn:hover { background: var(--bg-softer); }
+.mobile-menu-btn svg { width: 26px; height: 26px; }
+
+/* ===== MOBILE MENU OVERLAY ===== */
+.mobile-menu-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  transform: translateY(-100%);
+  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.mobile-menu-overlay.open {
+  transform: translateY(0);
+}
+.mobile-menu-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 40px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+.mobile-menu-close {
+  background: none;
+  border: none;
+  padding: 10px;
+  cursor: pointer;
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  transition: background 0.15s;
+}
+.mobile-menu-close:hover { background: var(--bg-softer); }
+.mobile-menu-close svg { width: 26px; height: 26px; }
+.mobile-menu-links {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+}
+.mobile-menu-links a {
+  padding: 18px 22px;
+  font-size: 20px;
+  font-weight: 500;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.mobile-menu-links a::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.mobile-menu-links a:hover,
+.mobile-menu-links a.active {
+  color: var(--text);
+  background: var(--bg-softer);
+  border-color: var(--border-strong);
+}
+.mobile-menu-links a.active::before {
+  opacity: 1;
+  background: var(--accent);
+}
+.mobile-menu-gh {
+  margin-top: 28px;
+  padding: 18px 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 17px;
+  transition: all 0.15s;
+}
+.mobile-menu-gh:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--bg-softer);
+  text-decoration: none;
+}
+.mobile-menu-gh svg { width: 20px; height: 20px; }
+
 .view { display: none; }
 .view.active { display: block; }
 .container { max-width: 1440px; margin: 0 auto; padding: 0 34px; }
@@ -134,15 +247,15 @@ nav a.active { color: var(--text); }
 .terminal-body .line-group { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.05); }
 .terminal-body .line:first-child { margin-top: 0; }
 
-.os-tabs { display: flex; gap: 4px; margin-bottom: 19px; border-bottom: 1px solid var(--border); }
-.os-tab { padding: 10px 20px; font-family: var(--mono); font-size: 14px; font-weight: 500; color: var(--text-muted); background: transparent; border: none; border-bottom: 2px solid transparent; cursor: pointer; transition: all 0.15s; margin-bottom: -1px; }
+.os-tabs { display: flex; gap: 4px; margin-bottom: 19px; border-bottom: 1px solid var(--border); overflow-x: auto; }
+.os-tab { padding: 10px 20px; font-family: var(--mono); font-size: 14px; font-weight: 500; color: var(--text-muted); background: transparent; border: none; border-bottom: 2px solid transparent; cursor: pointer; transition: all 0.15s; margin-bottom: -1px; white-space: nowrap; }
 .os-tab:hover { color: var(--text-dim); }
 .os-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 .os-panel { display: none; }
 .os-panel.active { display: block; }
 
 .install-hero { background: var(--bg-soft); border: 1px solid var(--border); border-radius: 12px; padding: 38px; margin-bottom: 38px; }
-.install-hero h3 { font-size: 24px; font-weight: 600; color: var(--text); margin-bottom: 12px; display: flex; align-items: center; gap: 12px; }
+.install-hero h3 { font-size: 24px; font-weight: 600; color: var(--text); margin-bottom: 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .install-hero h3 .badge { font-family: var(--mono); font-size: 12px; font-weight: 500; color: var(--accent); background: rgba(34, 197, 94, 0.1); border: 1px solid var(--accent); padding: 3px 10px; border-radius: 100px; }
 .install-hero p { font-size: 17px; color: var(--text-dim); margin-bottom: 24px; line-height: 1.6; }
 .install-hero .terminal { margin-bottom: 0; }
@@ -224,36 +337,95 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
   .hero-grid { grid-template-columns: 1fr; gap: 43px; }
   .hero-image-wrap { order: -1; }
   .product-grid { grid-template-columns: 1fr; gap: 43px; }
-  .stats-strip { grid-template-columns: repeat(3, 1fr); }
-  .stats-strip .stat-item:nth-child(3n) { border-right: none; }
-  .stats-strip .stat-item:nth-child(-n+3) { border-bottom: 1px solid var(--border); }
+  .stats-strip { grid-template-columns: repeat(2, 1fr); }
+  .stats-strip .stat-item { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  .stats-strip .stat-item:nth-child(2n) { border-right: none; }
+  .stats-strip .stat-item:nth-child(n+3) { border-bottom: none; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .stats-grid .stat-cell { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
   .stats-grid .stat-cell:nth-child(2n) { border-right: none; }
-  .stats-grid .stat-cell:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+  .stats-grid .stat-cell:nth-child(n+3) { border-bottom: none; }
   .contact-grid { grid-template-columns: 1fr; }
   .contact-card { border-right: none !important; }
   .contact-card:last-child { border-bottom: none; }
   .hero { padding: 48px 0 58px; }
   .fit-image { max-width: 460px; }
 }
+
 @media (max-width: 720px) {
   html { font-size: 17px; }
-  .stats-strip { grid-template-columns: 1fr; }
-  .stats-strip .stat-item { border-right: none; border-bottom: 1px solid var(--border); }
-  .stats-strip .stat-item:last-child { border-bottom: none; }
-  .stats-grid { grid-template-columns: 1fr; }
-  .stats-grid .stat-cell { border-right: none; border-bottom: 1px solid var(--border); }
-  .stats-grid .stat-cell:last-child { border-bottom: none; }
-  .header-inner { padding: 0 24px; }
-  .container { padding: 0 24px; }
-  nav a { padding: 8px 12px; font-size: 16px; }
-  .gh-btn { display: none; }
-  .lb-table th:nth-child(4), .lb-table td:nth-child(4), .lb-table th:nth-child(6), .lb-table td:nth-child(6) { display: none; }
-  .fit-image { max-width: 380px; border-radius: 19px; }
-  .terminal-body { font-size: 14px; padding: 20px 22px; }
-  .install-hero { padding: 24px; }
+  
+  /* ===== MOBILE MENU ACTIVATION ===== */
+  nav, .gh-btn { display: none; }
+  .mobile-menu-btn { display: block; }
+  .header-inner { padding: 0 20px; gap: 16px; height: 72px; }
+  
+  .stats-strip { grid-template-columns: repeat(2, 1fr); }
+  .stats-strip .stat-item { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 24px 20px; }
+  .stats-strip .stat-item:nth-child(2n) { border-right: none; }
+  .stats-strip .stat-item:nth-child(n+3) { border-bottom: none; }
+  .stat-val { font-size: 24px; }
+  .stat-lbl { font-size: 13px; }
+  
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .stats-grid .stat-cell { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 22px 18px; }
+  .stats-grid .stat-cell:nth-child(2n) { border-right: none; }
+  .stats-grid .stat-cell:nth-child(n+3) { border-bottom: none; }
+  .stat-cell .val { font-size: 22px; }
+  .stat-cell .lbl { font-size: 13px; }
+  .stat-cell .sub { font-size: 12px; }
+  
+  .container { padding: 0 20px; }
+  .hero h1 { font-size: clamp(36px, 8vw, 50px); margin-bottom: 20px; }
+  .hero-sub { font-size: 18px; margin-bottom: 28px; }
+  .hero { padding: 36px 0 48px; }
+  .stats-strip { margin-top: 40px; }
+  
+  .product-section { padding: 48px 0 40px; }
+  .product-head h2 { font-size: 28px; }
+  .product-head p { font-size: 17px; }
+  
+  .cta-card { padding: 28px 24px; }
+  .cta-card h3 { font-size: 22px; }
+  
+  .page-head h1 { font-size: 32px; }
+  .page-head p { font-size: 17px; }
+  .page-pad { padding: 36px 0 64px; }
+  
+  .content h2 { font-size: 24px; margin-top: 36px; }
+  .content h3 { font-size: 19px; }
+  .content p, .content li { font-size: 16px; }
+  
+  .install-hero { padding: 22px; }
+  .install-hero h3 { font-size: 20px; }
   .os-tab { padding: 8px 14px; font-size: 13px; }
+  .terminal-body { font-size: 13px; padding: 16px 18px; line-height: 1.7; }
+  .terminal-body .line { white-space: pre-wrap; word-break: break-all; }
+  
+  .cap-item { padding: 14px 18px; font-size: 15px; gap: 14px; }
+  .faq-q { font-size: 18px; }
+  .faq-a { font-size: 15px; }
+  
+  .footer-inner { padding: 0 20px; flex-direction: column; text-align: center; gap: 14px; }
+  .footer-links { gap: 16px; }
+  
+  table { font-size: 15px; }
+  th, td { padding: 12px 14px; }
+  .lb-table th:nth-child(4), .lb-table td:nth-child(4), .lb-table th:nth-child(6), .lb-table td:nth-child(6) { display: none; }
+  
+  .fit-image { max-width: 380px; }
 }
+
+@media (max-width: 420px) {
+  .stats-strip { grid-template-columns: 1fr; }
+  .stats-strip .stat-item { border-right: none !important; border-bottom: 1px solid var(--border); }
+  .stats-strip .stat-item:last-child { border-bottom: none; }
+  
+  .stats-grid { grid-template-columns: 1fr; }
+  .stats-grid .stat-cell { border-right: none !important; border-bottom: 1px solid var(--border); }
+  .stats-grid .stat-cell:last-child { border-bottom: none; }
+}
+
 ::-webkit-scrollbar { width: 11px; height: 11px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 6px; }
@@ -281,8 +453,44 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.21 11.39.6.11.79-.26.79-.58v-2.23c-3.34.73-4.03-1.42-4.03-1.42-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49.99.11-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.3 1.23.96-.27 1.98-.4 3-.4s2.05.13 3.01.4c2.29-1.55 3.3-1.23 3.3-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.8 5.62-5.48 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.19.69.8.58C20.57 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
       source
     </a>
+    <button class="mobile-menu-btn" aria-label="Open menu">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <line x1="3" y1="6" x2="21" y2="6"/>
+        <line x1="3" y1="12" x2="21" y2="12"/>
+        <line x1="3" y1="18" x2="21" y2="18"/>
+      </svg>
+    </button>
   </div>
 </header>
+
+<!-- ===== MOBILE MENU OVERLAY ===== -->
+<div class="mobile-menu-overlay" aria-hidden="true">
+  <div class="mobile-menu-header">
+    <div class="logo" data-view="home">
+      <img src="logo-white.svg" alt="CrowdGPT" class="logo-img" onerror="this.parentElement.classList.add('logo-img-failed')">
+      <div class="logo-fallback">C</div>
+      <span class="logo-text">CrowdGPT</span>
+    </div>
+    <button class="mobile-menu-close" aria-label="Close menu">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <line x1="6" y1="6" x2="18" y2="18"/>
+        <line x1="6" y1="18" x2="18" y2="6"/>
+      </svg>
+    </button>
+  </div>
+  <div class="mobile-menu-links">
+    <a data-view="home" class="active">home</a>
+    <a data-view="install">install</a>
+    <a data-view="protocol">protocol</a>
+    <a data-view="status">status</a>
+    <a data-view="contributors">leaderboard</a>
+    <a data-view="contact">contact</a>
+  </div>
+  <a href="https://github.com/Vxtzq/CrowdGPT" target="_blank" class="mobile-menu-gh">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.21 11.39.6.11.79-.26.79-.58v-2.23c-3.34.73-4.03-1.42-4.03-1.42-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49.99.11-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.3 1.23.96-.27 1.98-.4 3-.4s2.05.13 3.01.4c2.29-1.55 3.3-1.23 3.3-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.8 5.62-5.48 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.19.69.8.58C20.57 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
+    Source on GitHub
+  </a>
+</div>
 
 <!-- ===== HOME ===== -->
 <div id="view-home" class="view active">
@@ -290,7 +498,6 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
     <div class="container">
       <div class="hero-grid">
         <div class="hero-copy">
-          
           <h1>Train a language model with <span class="em">your GPU</span>.</h1>
           <p class="hero-sub">
             CrowdGPT is an open federated training protocol. You run a client on your machine,
@@ -320,7 +527,6 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
           <div class="stat-val" id="home-stat-loss">—</div>
           <div class="stat-lbl">Current loss</div>
         </div>
-        
       </div>
     </div>
   </div>
@@ -668,14 +874,8 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
 </footer>
 
 <script>
-// Read global stats from Hugging Face CDN (infinitely scalable, no CORS)
 const HF_STATUS_URL = 'https://huggingface.co/Vxtzq/Crowd-v1/resolve/main/status.json';
 const API_BASE = 'http://api.crowdgpt.net:5006';
-
-// Helper to get auth token (adjust 'crowdgpt_token' to whatever key your login system uses)
-function getAuthToken() {
-  return localStorage.getItem('crowdgpt_token') || sessionStorage.getItem('crowdgpt_token');
-}
 
 function fmtNum(n) {
   if (n == null || isNaN(n)) return '—';
@@ -692,12 +892,10 @@ let statsInterval, lbInterval;
 
 async function fetchStats() {
   try {
-    // 1. Fetch global stats from Hugging Face
     const r = await fetch(HF_STATUS_URL, { cache: 'no-store' });
     if (!r.ok) throw new Error('HF status fetch failed');
     const d = await r.json();
 
-    // Map global stats to DOM
     document.getElementById('home-stat-contributions').textContent = (d.totalContributions || 0).toLocaleString();
     document.getElementById('home-stat-gpus').textContent = (d.activeGpus || 0).toLocaleString();
     document.getElementById('home-stat-tokens').textContent = fmtNum(d.totalTokens || 0);
@@ -707,10 +905,6 @@ async function fetchStats() {
     lossEl.textContent = currentLoss.toFixed(4);
     lossEl.style.color = 'var(--text)';
 
-
-    
-
-    // Update status view if elements exist
     const stepEl = document.getElementById('status-step');
     if (stepEl) stepEl.textContent = (d.globalStep || 0).toLocaleString();
     const tokensEl = document.getElementById('status-tokens');
@@ -727,7 +921,6 @@ async function fetchStats() {
     console.warn("HF status fetch failed, falling back to direct API:", e);
     failedAttempts++;
     
-    // Fallback to direct API if HF is somehow unavailable
     if (failedAttempts < 3) {
       try {
         const r2 = await fetch(`${API_BASE}/api/stats`, { cache: 'no-store', signal: AbortSignal.timeout(5000) });
@@ -742,15 +935,11 @@ async function fetchStats() {
           lossEl.textContent = currentLoss.toFixed(4);
           lossEl.style.color = 'var(--text)';
           
-          
-          
           failedAttempts = 0;
           apiReachable = true;
-          return; // Success via fallback
+          return;
         }
-      } catch (e2) {
-        // Fall through to offline state
-      }
+      } catch (e2) {}
     }
 
     if (failedAttempts >= 3) {
@@ -808,14 +997,12 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// ===== THEME HANDLER (Logo + Favicon) =====
 function updateThemeAssets() {
-  const logoImg = document.getElementById('logo-img');
+  const logoImgs = document.querySelectorAll('.logo-img');
   const favicon = document.getElementById('favicon');
-  if (!logoImg || !favicon) return;
   const isLight = window.matchMedia('(prefers-color-scheme: light)').matches;
-  logoImg.src = isLight ? 'logo-black.svg' : 'logo-white.svg';
-  favicon.href = isLight ? 'logo-black.svg' : 'logo-white.svg';
+  logoImgs.forEach(img => { img.src = isLight ? 'logo-black.svg' : 'logo-white.svg'; });
+  if (favicon) favicon.href = isLight ? 'logo-black.svg' : 'logo-white.svg';
 }
 window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', updateThemeAssets);
 updateThemeAssets();
@@ -825,12 +1012,21 @@ function showView(viewName) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   const target = document.getElementById('view-' + viewName);
   if (target) target.classList.add('active');
+  
+  // Sync desktop nav
   document.querySelectorAll('nav a').forEach(a => {
     a.classList.toggle('active', a.dataset.view === viewName);
   });
+  
+  // Sync mobile menu
+  document.querySelectorAll('.mobile-menu-links a').forEach(a => {
+    a.classList.toggle('active', a.dataset.view === viewName);
+  });
+  
   window.scrollTo(0, 0);
 }
 
+// Unified click handler for ALL data-view elements (desktop nav + mobile menu + CTAs)
 document.querySelectorAll('[data-view]').forEach(el => {
   el.addEventListener('click', (e) => {
     const view = el.dataset.view;
@@ -838,6 +1034,10 @@ document.querySelectorAll('[data-view]').forEach(el => {
     if (el.tagName === 'A' && el.getAttribute('href') && el.getAttribute('href').startsWith('http')) return;
     e.preventDefault();
     showView(view);
+    // Auto-close mobile menu when a link is clicked
+    if (el.closest('.mobile-menu-overlay')) {
+      closeMobileMenu();
+    }
     if (el.dataset.scroll) {
       setTimeout(() => {
         const target = document.getElementById(el.dataset.scroll);
@@ -850,6 +1050,33 @@ document.querySelectorAll('[data-view]').forEach(el => {
       }, 0);
     }
   });
+});
+
+// ===== MOBILE MENU =====
+const mobileMenuBtn = document.querySelector('.mobile-menu-btn');
+const mobileMenuOverlay = document.querySelector('.mobile-menu-overlay');
+const mobileMenuClose = document.querySelector('.mobile-menu-close');
+
+function openMobileMenu() {
+  mobileMenuOverlay.classList.add('open');
+  mobileMenuOverlay.setAttribute('aria-hidden', 'false');
+  document.body.style.overflow = 'hidden'; // lock scroll
+}
+
+function closeMobileMenu() {
+  mobileMenuOverlay.classList.remove('open');
+  mobileMenuOverlay.setAttribute('aria-hidden', 'true');
+  document.body.style.overflow = '';
+}
+
+if (mobileMenuBtn) mobileMenuBtn.addEventListener('click', openMobileMenu);
+if (mobileMenuClose) mobileMenuClose.addEventListener('click', closeMobileMenu);
+
+// Close on ESC key
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && mobileMenuOverlay.classList.contains('open')) {
+    closeMobileMenu();
+  }
 });
 
 // ===== OS TABS =====
@@ -886,7 +1113,7 @@ function copyTerminal(btn) {
 // ===== INIT =====
 fetchStats();
 fetchLeaderboard();
-statsInterval = setInterval(fetchStats, 15000); // Check every 15s (HF CDN handles this effortlessly)
+statsInterval = setInterval(fetchStats, 15000);
 lbInterval = setInterval(fetchLeaderboard, 30000);
 </script>
 </body>
