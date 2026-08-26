@@ -330,16 +330,22 @@ class SotaGPT(nn.Module):
             o += s
 
 # ============ DATASET STREAMING ============
-def _fetch_with_retry(url, headers=None, timeout=60, retries=3):
+import http.client
+from requests.exceptions import ChunkedEncodingError
+
+def _fetch_with_retry(url, headers=None, timeout=60, retries=5):
     for attempt in range(retries):
         try:
             r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
             r.raise_for_status()
             return r
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        except (requests.exceptions.ConnectionError, 
+                requests.exceptions.Timeout, 
+                ChunkedEncodingError,
+                http.client.IncompleteRead) as e:
             if attempt < retries - 1:
                 wait = 2 ** (attempt + 1)
-                log.warning(f"Download failed (attempt {attempt+1}/{retries}), retry in {wait}s: {str(e)[:100]}")
+                log.warning(f"⚠️ Network drop (attempt {attempt+1}/{retries}), retrying in {wait}s: {str(e)[:80]}")
                 time.sleep(wait)
             else:
                 raise
@@ -749,6 +755,52 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     avg_loss = sum(loss_history)/max(1,len(loss_history))
     delta = model.get_flat_weights() - initial_weights
 
+    # ============================================================
+    # DETERMINISTIC ENERGY-PRESERVING SPARSIFICATION
+    # 200MB payload instead of 2.5GB
+    # ============================================================
+    ENERGY_TARGET = 0.9999    # → <1% L2 error on the applied update
+    MAX_KEEP_FRACTION = 0.25  # hard safety cap: never send >25% of params
+
+    log.info("✂️ Computing deterministic sparse threshold (energy-preserving)...")
+    total_energy = float(np.sum(np.square(delta)))   # pairwise sum: deterministic
+    abs_d = np.abs(delta)
+
+    if total_energy <= 0.0:
+        threshold = np.inf
+        log.info("✂️ Delta is all zeros, sending empty sparse payload.")
+    else:
+        # Bisection on the magnitude threshold (fixed 40 iters → deterministic)
+        lo, hi = 0.0, float(max(np.max(delta), -np.min(delta)))
+        target = ENERGY_TARGET * total_energy
+        for _ in range(40):
+            mid = 0.5 * (lo + hi)
+            e = float(np.sum(np.square(delta[abs_d >= mid])))
+            if e >= target:
+                lo = mid   # energy preserved → we can drop more weights
+            else:
+                hi = mid
+        threshold = lo
+
+    # np.where returns ascending indices → canonical, reproducible order
+    mask = abs_d >= threshold
+    sparse_indices = np.where(mask)[0].astype(np.uint32)
+
+    # Hard cap (deterministic: keep the largest magnitudes only)
+    max_keep = int(len(delta) * MAX_KEEP_FRACTION)
+    if len(sparse_indices) > max_keep:
+        keep = np.argpartition(abs_d[sparse_indices], -max_keep)[-max_keep:]
+        sparse_indices = np.sort(sparse_indices[keep])
+        mask = np.zeros_like(mask)
+        mask[sparse_indices] = True
+
+    retained = float(np.sum(np.square(delta[mask]))) / total_energy if total_energy > 0 else 1.0
+    rel_err = math.sqrt(max(0.0, 1.0 - retained)) * 100.0
+    sparse_values = delta[mask].astype(np.float16)
+    del abs_d, mask
+    log.info(f"✂️ Sparse delta: {len(sparse_indices):,}/{len(delta):,} params | "
+             f"energy retained {retained*100:.4f}% | rel. update error {rel_err:.4f}%")
+
     payload = json.dumps({
         "taskId": task_id,
         "loss": float(avg_loss),
@@ -756,24 +808,45 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
         "tokensProcessed": total_tok,
         "loraRank": 0,
         "isDelta": True,
-        "weightFormat": "fp32"
+        "isSparse": True,
+        "weightFormat": "fp16",
+        "totalParams": len(delta),
+        "sparseCount": len(sparse_indices)
     }).encode()
 
-    binary = struct.pack('<I', len(payload)) + payload + np.ascontiguousarray(delta.astype(np.float32)).tobytes()
-    compressed = gzip.compress(binary, compresslevel=2)
+    binary = struct.pack('<I', len(payload)) + payload + sparse_indices.tobytes() + sparse_values.tobytes()
+    compressed = gzip.compress(binary, compresslevel=1)
 
-    log.info(f"Uploading delta ({len(compressed)/1024/1024:.2f} MB)...")
-    r = requests.post(
-        f"{args.server}/fl/submit",
-        headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **headers},
-        data=compressed,
-        timeout=120
+    log.info(f"📤 Uploading sparse delta ({len(compressed)/1024/1024:.2f} MB)...")
+
+    # ============ BULLETPROOF UPLOAD: automatic retries ============
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
+    session = requests.Session()
+    retries = Retry(
+        total=5,
+        backoff_factor=10,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["POST"]
     )
+    session.mount('http://', HTTPAdapter(max_retries=retries))
+    session.mount('https://', HTTPAdapter(max_retries=retries))
 
-    if r.status_code == 200:
-        log.info("Contribution submitted successfully.")
-    else:
-        raise Exception(f"Submission failed: {r.text[:300]}")
+    try:
+        r = session.post(
+            f"{args.server}/fl/submit",
+            headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **headers},
+            data=compressed,
+            timeout=600
+        )
+        if r.status_code == 200:
+            log.info("✅ Contribution submitted successfully.")
+        else:
+            raise Exception(f"Submission failed: {r.text[:300]}")
+    except Exception as e:
+        log.error(f"❌ Upload failed after retries: {e}")
+        raise
 
     gc.collect()
     if train_backend in ("CUDA", "ROCM"):
