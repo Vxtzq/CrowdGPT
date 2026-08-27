@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CrowdGPT Client - Distributed LLM Training Node
+CrowdGPT Client - Distributed LLM Training Node (Engram Edition)
 """
 
 import os
@@ -66,6 +66,10 @@ HEAD_DIM = MODEL_CONFIG["headDim"]
 MAX_SEQ_LEN = MODEL_CONFIG["maxSeqLen"]
 MLP_HIDDEN = MODEL_CONFIG["mlpHidden"]
 
+# ============ ENGRAM CONFIG ============
+ENG_RAM_PARAMS = 350_000_000
+NUM_BUCKETS = ENG_RAM_PARAMS // DIM  # ~227,864 buckets
+
 def _calc_model_size():
     size = VOCAB_SIZE * DIM
     for _ in range(N_LAYERS):
@@ -86,7 +90,7 @@ memory_config = {"ram_gb": 12, "safety_margin_gb": 1.0, "is_auto_detected": Fals
 train_device, train_backend = None, None
 
 def print_welcome():
-    log.info("CrowdGPT Distributed Training Node initialized.")
+    log.info("CrowdGPT Distributed Training Node (Engram Edition) initialized.")
 
 # ============ CUDA AUTO-DETECTION ============
 def check_cuda_installed():
@@ -299,10 +303,28 @@ class Block(nn.Module):
         x = x + self.attn(self.ln_1(x), cos, sin, use_chunked)
         return x + self.mlp(self.ln_2(x))
 
+class EngramMemory(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # sparse=True enables SparseAdam, keeping memory footprint minimal
+        self.table = nn.Embedding(NUM_BUCKETS, DIM, sparse=True)
+        nn.init.normal_(self.table.weight, mean=0.0, std=0.02)
+        
+    def forward(self, idx):
+        # idx is on GPU, move to CPU for O(1) deterministic lookup
+        idx_cpu = idx.cpu()
+        # Bigram hash: (prev_token * PRIME + current_token) % NUM_BUCKETS
+        prev_x = torch.cat([torch.zeros_like(idx_cpu[:, :1]), idx_cpu[:, :-1]], dim=1)
+        hash_idx = (prev_x * 1000003 + idx_cpu) % NUM_BUCKETS
+        
+        mem_cpu = self.table(hash_idx)
+        return mem_cpu.to(idx.device)
+
 class SotaGPT(nn.Module):
     def __init__(self):
         super().__init__()
         self.wte = nn.Embedding(VOCAB_SIZE, DIM)
+        self.engram = EngramMemory()
         self.blocks = nn.ModuleList([Block() for _ in range(N_LAYERS)])
         self.ln_f = nn.LayerNorm(DIM)
         self.lm_head = nn.Linear(DIM, VOCAB_SIZE, bias=False)
@@ -314,20 +336,24 @@ class SotaGPT(nn.Module):
 
     def forward(self, idx, use_chunked=True):
         x = self.wte(idx)
+        # Fuse Engram conditional memory directly into the residual stream
+        x = x + self.engram(idx)
+        
         for b in self.blocks:
             x = b(x, self.freqs_cos, self.freqs_sin, use_chunked)
         return self.lm_head(self.ln_f(x))
 
-    def get_flat_weights(self):
-        return np.concatenate([p.detach().float().flatten().cpu().numpy() for p in self.parameters()])
+    def get_base_weights(self):
+        return np.concatenate([p.detach().float().flatten().cpu().numpy() for name, p in self.named_parameters() if not name.startswith('engram.')])
 
-    def load_flat_weights(self, fw):
+    def load_base_weights(self, fw):
         ft = torch.from_numpy(fw) if not isinstance(fw, torch.Tensor) else fw
         o = 0
-        for p in self.parameters():
-            s = p.numel()
-            p.data.copy_(ft[o:o+s].view(p.shape).to(p.device))
-            o += s
+        for name, p in self.named_parameters():
+            if not name.startswith('engram.'):
+                s = p.numel()
+                p.data.copy_(ft[o:o+s].view(p.shape).to(p.device))
+                o += s
 
 # ============ DATASET STREAMING ============
 import http.client
@@ -491,6 +517,7 @@ class StreamingShardDataset:
 
 # ============ WEIGHTS ============
 def decompress_weights(raw, fmt="bf16"):
+    import zlib
     if len(raw) >= 2 and raw[0] == 0x78:
         raw = zlib.decompress(raw)
     if fmt == "fp16":
@@ -660,19 +687,29 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
         batch_size = best_bs
         log.info(f"Auto-tuned config: Mode={mode} | BS={batch_size} | SeqLen={seq_len}")
 
-    log.info("Initializing SotaGPT model...")
+    log.info("Initializing SotaGPT model with Engram...")
     model = SotaGPT().to(train_device)
-    model.load_flat_weights(initial_weights)
+    model.load_base_weights(initial_weights)
     model.train()
+    
+    # Separate parameters for optimizers
+    base_params = [p for name, p in model.named_parameters() if not name.startswith('engram.')]
+    engram_params = list(model.engram.parameters())
     
     try:
         import bitsandbytes as bnb
-        optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=args.lr, betas=(0.9,0.95), weight_decay=0.01)
-        log.info("Using 8-bit AdamW optimizer.")
+        optimizer_base = bnb.optim.AdamW8bit(base_params, lr=args.lr, betas=(0.9,0.95), weight_decay=0.01)
+        log.info("Using 8-bit AdamW for base model.")
     except ImportError:
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9,0.95), weight_decay=0.01)
-        log.warning("bitsandbytes not installed. Using standard AdamW.")
+        optimizer_base = torch.optim.AdamW(base_params, lr=args.lr, betas=(0.9,0.95), weight_decay=0.01)
+        log.warning("bitsandbytes not installed. Using standard AdamW for base model.")
+
+    # SparseAdam for Engram on CPU (no weight decay to maintain sparsity)
+    optimizer_engram = torch.optim.SparseAdam(engram_params, lr=args.lr)
     
+    # Save initial Engram weights to compute delta later
+    initial_engram_weights = model.engram.table.weight.data.cpu().clone()
+
     use_autocast = False
     autocast_dtype = None
     if args.precision == "bf16" and train_backend in ("CUDA", "ROCM") and torch.cuda.is_bf16_supported():
@@ -703,6 +740,7 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
             try:
                 def forward_pass():
                     x_emb = model.wte(x)
+                    # Engram fusion happens inside SotaGPT.forward()
                     for b in model.blocks:
                         if model.training:
                             x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True)
@@ -736,9 +774,11 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
                     loss = loss / max(1, num_chunks)
                     loss.backward()
 
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
+                torch.nn.utils.clip_grad_norm_(base_params, 1.0)
+                optimizer_base.step()
+                optimizer_engram.step()
+                optimizer_base.zero_grad(set_to_none=True)
+                optimizer_engram.zero_grad(set_to_none=True)
 
                 lv = float(loss.item())
                 if math.isnan(lv) or lv <= 0:
@@ -747,33 +787,55 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
                 total_tok += x.numel()
                 elapsed = time.time()-t0
                 loss_history.append(lv)
-                live.update(create_dashboard(step, steps, lv, int(total_tok/max(elapsed,0.01)), optimizer.param_groups[0]['lr'], global_step, train_backend, batch_size, seq_len, weight_source))
+                live.update(create_dashboard(step, steps, lv, int(total_tok/max(elapsed,0.01)), optimizer_base.param_groups[0]['lr'], global_step, train_backend, batch_size, seq_len, weight_source))
             except Exception as e:
                 log.error(f"Training step error: {e}")
                 break
 
     avg_loss = sum(loss_history)/max(1,len(loss_history))
-    delta = model.get_flat_weights() - initial_weights
 
-    # 🚨 bf16 delta: half the upload size, ~0.4% rounding noise (invisible at lr=0.1)
-    delta_bf16 = torch.from_numpy(delta).to(torch.bfloat16).view(torch.uint16).numpy()
+    # 1. Base model dense delta
+    delta_base = model.get_base_weights() - initial_weights
+    delta_base_bf16 = torch.from_numpy(delta_base).to(torch.bfloat16).view(torch.uint16).numpy()
 
-    payload = json.dumps({
+    # 2. Engram sparse delta
+    current_engram_weights = model.engram.table.weight.data.cpu()
+    engram_delta = current_engram_weights - initial_engram_weights
+
+    # Find active rows (norm > 1e-8)
+    row_norms = engram_delta.abs().sum(dim=1)
+    active_indices = torch.nonzero(row_norms > 1e-8, as_tuple=False).squeeze(1)
+
+    if len(active_indices) > 0:
+        sparse_indices = active_indices.cpu().numpy().astype(np.uint32)
+        sparse_values = engram_delta[active_indices].to(torch.bfloat16).view(torch.uint16).numpy()
+    else:
+        sparse_indices = np.array([], dtype=np.uint32)
+        sparse_values = np.array([], dtype=np.uint16)
+
+    payload_dict = {
         "taskId": task_id,
         "loss": float(avg_loss),
         "localSteps": steps,
         "tokensProcessed": total_tok,
         "loraRank": 0,
         "isDelta": True,
-        "weightFormat": "bf16"
-    }).encode()
+        "weightFormat": "bf16",
+        "hasEngram": True,
+        "engramSparseCount": len(sparse_indices)
+    }
+    payload = json.dumps(payload_dict).encode()
 
-    binary = struct.pack('<I', len(payload)) + payload + np.ascontiguousarray(delta_bf16).tobytes()
+    # Binary stream: [JSON_LEN][JSON][BASE_DELTA][ENGRAM_INDICES][ENGRAM_VALUES]
+    binary = struct.pack('<I', len(payload)) + payload
+    binary += np.ascontiguousarray(delta_base_bf16).tobytes()
+    binary += np.ascontiguousarray(sparse_indices).tobytes()
+    binary += np.ascontiguousarray(sparse_values).tobytes()
+
     compressed = gzip.compress(binary, compresslevel=2)
 
-    log.info(f"📤 Uploading bf16 delta ({len(compressed)/1024/1024:.2f} MB)...")
+    log.info(f"📤 Uploading delta (Base: {len(delta_base_bf16)/1024/1024:.2f}MB, Engram Sparse: {len(sparse_indices)} rows)...")
 
-    # ============ BULLETPROOF UPLOAD: automatic retries on connection drops ============
     from requests.adapters import HTTPAdapter
     from urllib3.util.retry import Retry
 
