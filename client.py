@@ -555,6 +555,7 @@ def parse_safetensors(filepath):
         return weights
 
 def download_from_huggingface(precision="bf16"):
+    """Download weights using huggingface_hub for fast, resumable, parallel downloads."""
     if LOCAL_FP32_CACHE.exists():
         if LOCAL_FP32_CACHE.stat().st_size == EXPECTED_MODEL_SIZE * 4:
             log.info(f"Loading cached weights from {LOCAL_FP32_CACHE.name}...")
@@ -567,26 +568,37 @@ def download_from_huggingface(precision="bf16"):
                 log.warning(f"Cache read failed: {e}")
                 LOCAL_FP32_CACHE.unlink(missing_ok=True)
 
-    url = HF_WEIGHTS_URL_BF16 if precision == "bf16" else HF_WEIGHTS_URL_FP32
-    log.info(f"Downloading weights from HuggingFace ({precision})...")
+    filename = "model_bf16.safetensors" if precision == "bf16" else "model_fp32.safetensors"
+    log.info(f"Downloading weights from HuggingFace ({precision}) via hf_hub...")
+    
     try:
-        r = requests.get(url, stream=True, timeout=600, allow_redirects=True)
-        r.raise_for_status()
-        with open(LOCAL_SAFETENSORS_CACHE, 'wb') as f:
-            for chunk in r.iter_content(chunk_size=1024*1024):
-                if chunk:
-                    f.write(chunk)
+        from huggingface_hub import hf_hub_download
+        
+        # hf_hub_download shows progress bar, supports resume, parallel chunks
+        local_path = hf_hub_download(
+            repo_id=MODEL_REPO_ID,
+            filename=filename,
+            cache_dir=str(CHECKPOINT_DIR / "hf_cache"),
+            force_download=False,  # Uses cache if already downloaded
+            resume_download=True   # Resumes partial downloads automatically
+        )
+        
         log.info("Download complete. Parsing weights...")
-        weights = parse_safetensors(LOCAL_SAFETENSORS_CACHE)
+        weights = parse_safetensors(local_path)
+        
         if len(weights) != EXPECTED_MODEL_SIZE:
             raise ValueError(f"Weight count mismatch: got {len(weights):,}, expected {EXPECTED_MODEL_SIZE:,}")
+        
+        # Cache as raw FP32 bin for faster subsequent loads
         weights.astype(np.float32).tofile(LOCAL_FP32_CACHE)
         log.info(f"Successfully parsed {len(weights):,} parameters.")
-        LOCAL_SAFETENSORS_CACHE.unlink(missing_ok=True)
         return weights
+        
+    except ImportError:
+        log.error("❌ huggingface_hub not installed! Install via: pip install huggingface_hub")
+        return None
     except Exception as e:
         log.warning(f"HuggingFace weight loading failed: {e}")
-        LOCAL_SAFETENSORS_CACHE.unlink(missing_ok=True)
         LOCAL_FP32_CACHE.unlink(missing_ok=True)
         return None
 
