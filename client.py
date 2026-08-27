@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CrowdGPT Client - Distributed LLM Training Node (Engram Edition)
+CrowdGPT Client - Distributed LLM Training Node (Native Engram Edition)
 """
 
 import os
@@ -67,8 +67,7 @@ MAX_SEQ_LEN = MODEL_CONFIG["maxSeqLen"]
 MLP_HIDDEN = MODEL_CONFIG["mlpHidden"]
 
 # ============ ENGRAM CONFIG ============
-ENG_RAM_PARAMS = 350_000_000
-NUM_BUCKETS = ENG_RAM_PARAMS // DIM  # ~227,864 buckets
+ENG_NUM_BUCKETS = 350_000_000 // DIM  # ~227,864 buckets
 
 def _calc_model_size():
     size = VOCAB_SIZE * DIM
@@ -90,7 +89,7 @@ memory_config = {"ram_gb": 12, "safety_margin_gb": 1.0, "is_auto_detected": Fals
 train_device, train_backend = None, None
 
 def print_welcome():
-    log.info("CrowdGPT Distributed Training Node (Engram Edition) initialized.")
+    log.info("CrowdGPT Distributed Training Node (Native Engram Edition) initialized.")
 
 # ============ CUDA AUTO-DETECTION ============
 def check_cuda_installed():
@@ -304,41 +303,45 @@ class Block(nn.Module):
         return x + self.mlp(self.ln_2(x))
 
 class EngramMemory(nn.Module):
-    def __init__(self):
+    def __init__(self, backend_name, device):
         super().__init__()
-        # sparse=True enables SparseAdam, keeping memory footprint minimal
-        self.table = nn.Embedding(NUM_BUCKETS, DIM, sparse=True)
+        self.backend_name = backend_name
+        # CPU and DirectML use safe CPU offload to prevent VRAM OOM and DirectML sparse tensor crashes
+        self.use_cpu_offload = backend_name in ("CPU", "DIRECTML")
+        
+        target_device = torch.device('cpu') if self.use_cpu_offload else device
+        self.table = nn.Embedding(ENG_NUM_BUCKETS, DIM, sparse=True).to(target_device)
         nn.init.normal_(self.table.weight, mean=0.0, std=0.02)
-        
+
     def forward(self, idx):
-        # idx is on GPU, move to CPU for O(1) deterministic lookup
-        idx_cpu = idx.cpu()
-        # Bigram hash: (prev_token * PRIME + current_token) % NUM_BUCKETS
-        prev_x = torch.cat([torch.zeros_like(idx_cpu[:, :1]), idx_cpu[:, :-1]], dim=1)
-        hash_idx = (prev_x * 1000003 + idx_cpu) % NUM_BUCKETS
-        
-        mem_cpu = self.table(hash_idx)
-        return mem_cpu.to(idx.device)
+        if self.use_cpu_offload:
+            idx_cpu = idx.detach().to("cpu")
+            prev_x = torch.cat([torch.zeros_like(idx_cpu[:, :1]), idx_cpu[:, :-1]], dim=1)
+            hash_idx = (prev_x * 1000003 + idx_cpu) % ENG_NUM_BUCKETS
+            return self.table(hash_idx).to(idx.device)
+        else:
+            # Native GPU execution (CUDA, ROCm, MPS, XPU) - ZERO PCIe overhead!
+            prev_x = torch.cat([torch.zeros_like(idx[:, :1]), idx[:, :-1]], dim=1)
+            hash_idx = (prev_x * 1000003 + idx) % ENG_NUM_BUCKETS
+            return self.table(hash_idx)
 
 class SotaGPT(nn.Module):
-    def __init__(self):
+    def __init__(self, backend_name, device):
         super().__init__()
         self.wte = nn.Embedding(VOCAB_SIZE, DIM)
-        self.engram = EngramMemory()
+        self.engram = EngramMemory(backend_name, device)
         self.blocks = nn.ModuleList([Block() for _ in range(N_LAYERS)])
         self.ln_f = nn.LayerNorm(DIM)
         self.lm_head = nn.Linear(DIM, VOCAB_SIZE, bias=False)
         if MODEL_CONFIG["weightTying"]:
             self.wte.weight = self.lm_head.weight
-        cm, sm = precompute_freqs(HEAD_DIM, MAX_SEQ_LEN, train_device)
+        cm, sm = precompute_freqs(HEAD_DIM, MAX_SEQ_LEN, device)
         self.register_buffer("freqs_cos", cm)
         self.register_buffer("freqs_sin", sm)
 
     def forward(self, idx, use_chunked=True):
         x = self.wte(idx)
-        # Fuse Engram conditional memory directly into the residual stream
         x = x + self.engram(idx)
-        
         for b in self.blocks:
             x = b(x, self.freqs_cos, self.freqs_sin, use_chunked)
         return self.lm_head(self.ln_f(x))
@@ -516,8 +519,9 @@ class StreamingShardDataset:
         return torch.tensor(inp, dtype=torch.long), torch.tensor(tgt, dtype=torch.long)
 
 # ============ WEIGHTS ============
+import zlib
+
 def decompress_weights(raw, fmt="bf16"):
-    import zlib
     if len(raw) >= 2 and raw[0] == 0x78:
         raw = zlib.decompress(raw)
     if fmt == "fp16":
@@ -688,11 +692,13 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
         log.info(f"Auto-tuned config: Mode={mode} | BS={batch_size} | SeqLen={seq_len}")
 
     log.info("Initializing SotaGPT model with Engram...")
-    model = SotaGPT().to(train_device)
+    model = SotaGPT(train_backend, train_device)
+    model.to(train_device)
+    if model.engram.use_cpu_offload:
+        model.engram.table.to('cpu')
     model.load_base_weights(initial_weights)
     model.train()
     
-    # Separate parameters for optimizers
     base_params = [p for name, p in model.named_parameters() if not name.startswith('engram.')]
     engram_params = list(model.engram.parameters())
     
@@ -704,10 +710,13 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
         optimizer_base = torch.optim.AdamW(base_params, lr=args.lr, betas=(0.9,0.95), weight_decay=0.01)
         log.warning("bitsandbytes not installed. Using standard AdamW for base model.")
 
-    # SparseAdam for Engram on CPU (no weight decay to maintain sparsity)
-    optimizer_engram = torch.optim.SparseAdam(engram_params, lr=args.lr)
-    
-    # Save initial Engram weights to compute delta later
+    try:
+        optimizer_engram = torch.optim.SparseAdam(engram_params, lr=args.lr)
+        log.info("Using SparseAdam for Engram.")
+    except Exception as e:
+        log.warning(f"SparseAdam failed ({e}), falling back to dense AdamW for Engram.")
+        optimizer_engram = torch.optim.AdamW(engram_params, lr=args.lr, weight_decay=0.01)
+
     initial_engram_weights = model.engram.table.weight.data.cpu().clone()
 
     use_autocast = False
@@ -740,7 +749,7 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
             try:
                 def forward_pass():
                     x_emb = model.wte(x)
-                    # Engram fusion happens inside SotaGPT.forward()
+                    x_emb = x_emb + model.engram(x)
                     for b in model.blocks:
                         if model.training:
                             x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True)
@@ -793,7 +802,7 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
                 break
 
     avg_loss = sum(loss_history)/max(1,len(loss_history))
-
+    
     # 1. Base model dense delta
     delta_base = model.get_base_weights() - initial_weights
     delta_base_bf16 = torch.from_numpy(delta_base).to(torch.bfloat16).view(torch.uint16).numpy()
@@ -802,9 +811,8 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     current_engram_weights = model.engram.table.weight.data.cpu()
     engram_delta = current_engram_weights - initial_engram_weights
 
-    # Find active rows (norm > 1e-8)
     row_norms = engram_delta.abs().sum(dim=1)
-    active_indices = torch.nonzero(row_norms > 1e-8, as_tuple=False).squeeze(1)
+    active_indices = torch.nonzero(row_norms > 1e-8, as_tuple=False).flatten()
 
     if len(active_indices) > 0:
         sparse_indices = active_indices.cpu().numpy().astype(np.uint32)
