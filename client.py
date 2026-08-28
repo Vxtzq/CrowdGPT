@@ -326,24 +326,23 @@ class EngramMemory(nn.Module):
         
         # 2. Get unique bucket indices we actually need this batch
         unique_indices, inverse_map = torch.unique(hash_idx.flatten(), return_inverse=True)
+        unique_cpu = unique_indices.cpu()
+        
+        # 🚨 CRITICAL FIX: Use self.table() instead of .weight.data to track gradients!
+        # This connects the operation to the autograd graph so SparseAdam gets gradients.
+        cached_rows = self.table(unique_cpu)
         
         # 3. Async transfer ONLY the needed rows from CPU → GPU
         if self.use_async:
             with torch.cuda.stream(self.transfer_stream):
-                # Non-blocking copy of just the accessed rows (~9MB max)
-                cached_rows = self.table.weight.data[unique_indices.cpu()].to(
-                    self.device, non_blocking=True
-                ).detach()
-            # Synchronize: wait for transfer to finish before using cached_rows
+                cached_rows_gpu = cached_rows.to(self.device, non_blocking=True)
             torch.cuda.current_stream(self.device).wait_stream(self.transfer_stream)
         else:
-            # Fallback for MPS/XPU/DirectML
-            cached_rows = self.table.weight.data[unique_indices.cpu()].to(self.device)
+            cached_rows_gpu = cached_rows.to(self.device)
         
         # 4. Reconstruct the full embedding tensor on GPU using inverse_map
-        # This avoids any further CPU interaction
         B, T = idx.shape
-        mem = cached_rows[inverse_map].view(B, T, DIM)
+        mem = cached_rows_gpu[inverse_map].view(B, T, DIM)
         
         return mem
 
@@ -741,14 +740,9 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
         log.info("Using 8-bit AdamW for base model.")
     except ImportError:
         optimizer_base = torch.optim.AdamW(base_params, lr=args.lr, betas=(0.9,0.95), weight_decay=0.01)
-        log.warning("bitsandbytes not installed. Using standard AdamW for base model.")
-
-    try:
-        optimizer_engram = torch.optim.SparseAdam(engram_params, lr=args.lr)
-        log.info("Using SparseAdam for Engram.")
-    except Exception as e:
-        log.warning(f"SparseAdam failed ({e}), falling back to dense AdamW for Engram.")
-        optimizer_engram = torch.optim.AdamW(engram_params, lr=args.lr, weight_decay=0.01)
+    # 🚨 YOU ACCIDENTALLY DELETED THIS! Add it back:
+    optimizer_engram = torch.optim.SparseAdam(engram_params, lr=args.lr)
+    log.info("Using SparseAdam for Engram.")
 
     initial_engram_weights = model.engram.table.weight.data.cpu().clone()
 
@@ -782,14 +776,22 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
             try:
                 def forward_pass():
                     x_emb = model.wte(x)
-                    x_emb = x_emb + model.engram(x)
+                    
+                    # 🚨 CRITICAL FIX: Disable autocast for Engram to preserve SparseAdam gradients
+                    if use_autocast:
+                        with torch.autocast(device_type='cuda', enabled=False):
+                            engram_out = model.engram(x)
+                    else:
+                        engram_out = model.engram(x)
+                    
+                    x_emb = x_emb + engram_out.to(x_emb.dtype)
+                    
                     for b in model.blocks:
                         if model.training:
-                            x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True)
+                            x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True, use_reentrant=False)
                         else:
                             x_emb = b(x_emb, model.freqs_cos, model.freqs_sin, True)
                     return model.ln_f(x_emb)
-
                 if use_autocast:
                     with torch.autocast(device_type='cuda', dtype=autocast_dtype):
                         x_emb = forward_pass()
@@ -819,9 +821,12 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
                 torch.nn.utils.clip_grad_norm_(base_params, 1.0)
                 optimizer_base.step()
                 optimizer_engram.step()
+                
                 optimizer_base.zero_grad(set_to_none=True)
-                optimizer_engram.zero_grad(set_to_none=True)
-
+                try:
+                    optimizer_engram.zero_grad(set_to_none=True)
+                except Exception:
+                    optimizer_engram.zero_grad() # Fallback if SparseAdam complains
                 lv = float(loss.item())
                 if math.isnan(lv) or lv <= 0:
                     lv = 10.0
@@ -844,9 +849,12 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     current_engram_weights = model.engram.table.weight.data.cpu()
     engram_delta = current_engram_weights - initial_engram_weights
 
+    # 🔍 DEBUG: Verify Engram is actually learning
+    max_change = engram_delta.abs().max().item()
+    log.info(f"🔍 Engram max weight change: {max_change:.6f}")
+
     row_norms = engram_delta.abs().sum(dim=1)
     active_indices = torch.nonzero(row_norms > 1e-8, as_tuple=False).flatten()
-
     if len(active_indices) > 0:
         sparse_indices = active_indices.cpu().numpy().astype(np.uint32)
         sparse_values = engram_delta[active_indices].to(torch.bfloat16).view(torch.uint16).numpy()
