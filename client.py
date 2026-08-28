@@ -306,24 +306,46 @@ class EngramMemory(nn.Module):
     def __init__(self, backend_name, device):
         super().__init__()
         self.backend_name = backend_name
-        # CPU and DirectML use safe CPU offload to prevent VRAM OOM and DirectML sparse tensor crashes
-        self.use_cpu_offload = backend_name in ("CPU", "DIRECTML")
+        self.device = device
         
-        target_device = torch.device('cpu') if self.use_cpu_offload else device
-        self.table = nn.Embedding(ENG_NUM_BUCKETS, DIM, sparse=True).to(target_device)
+        # Full table stays on CPU permanently
+        self.table = nn.Embedding(ENG_NUM_BUCKETS, DIM, sparse=True).to('cpu')
         nn.init.normal_(self.table.weight, mean=0.0, std=0.02)
+        
+        # CUDA stream for async transfers (only used on CUDA/ROCm)
+        self.use_async = device.type in ('cuda',) and torch.cuda.is_available()
+        if self.use_async:
+            self.transfer_stream = torch.cuda.Stream(device=device)
+        else:
+            self.transfer_stream = None
 
     def forward(self, idx):
-        if self.use_cpu_offload:
-            idx_cpu = idx.detach().to("cpu")
-            prev_x = torch.cat([torch.zeros_like(idx_cpu[:, :1]), idx_cpu[:, :-1]], dim=1)
-            hash_idx = (prev_x * 1000003 + idx_cpu) % ENG_NUM_BUCKETS
-            return self.table(hash_idx).to(idx.device)
+        # 1. Compute hash on GPU (instant, no PCIe)
+        prev_x = torch.cat([torch.zeros_like(idx[:, :1]), idx[:, :-1]], dim=1)
+        hash_idx = (prev_x * 1000003 + idx) % ENG_NUM_BUCKETS
+        
+        # 2. Get unique bucket indices we actually need this batch
+        unique_indices, inverse_map = torch.unique(hash_idx.flatten(), return_inverse=True)
+        
+        # 3. Async transfer ONLY the needed rows from CPU → GPU
+        if self.use_async:
+            with torch.cuda.stream(self.transfer_stream):
+                # Non-blocking copy of just the accessed rows (~9MB max)
+                cached_rows = self.table.weight.data[unique_indices.cpu()].to(
+                    self.device, non_blocking=True
+                ).detach()
+            # Synchronize: wait for transfer to finish before using cached_rows
+            torch.cuda.current_stream(self.device).wait_stream(self.transfer_stream)
         else:
-            # Native GPU execution (CUDA, ROCm, MPS, XPU) - ZERO PCIe overhead!
-            prev_x = torch.cat([torch.zeros_like(idx[:, :1]), idx[:, :-1]], dim=1)
-            hash_idx = (prev_x * 1000003 + idx) % ENG_NUM_BUCKETS
-            return self.table(hash_idx)
+            # Fallback for MPS/XPU/DirectML
+            cached_rows = self.table.weight.data[unique_indices.cpu()].to(self.device)
+        
+        # 4. Reconstruct the full embedding tensor on GPU using inverse_map
+        # This avoids any further CPU interaction
+        B, T = idx.shape
+        mem = cached_rows[inverse_map].view(B, T, DIM)
+        
+        return mem
 
 class SotaGPT(nn.Module):
     def __init__(self, backend_name, device):
