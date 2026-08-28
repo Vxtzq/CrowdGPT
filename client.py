@@ -728,8 +728,7 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
     log.info("Initializing SotaGPT model with Engram...")
     model = SotaGPT(train_backend, train_device)
     model.to(train_device)
-    if model.engram.use_cpu_offload:
-        model.engram.table.to('cpu')
+    model.engram.table.to('cpu')
     model.load_base_weights(initial_weights)
     model.train()
     
