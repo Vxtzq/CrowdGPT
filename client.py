@@ -788,7 +788,7 @@ def run_single_contribution(args, session_count, auth_token=None, force_hf=False
                     
                     for b in model.blocks:
                         if model.training:
-                            x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True, use_reentrant=False)
+                            x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True, use_reentrant=True)
                         else:
                             x_emb = b(x_emb, model.freqs_cos, model.freqs_sin, True)
                     return model.ln_f(x_emb)
