@@ -47,7 +47,7 @@ N_KV_HEADS = MODEL_CONFIG["nKvHeads"]
 HEAD_DIM = MODEL_CONFIG["headDim"]
 MAX_SEQ_LEN = MODEL_CONFIG["maxSeqLen"]
 MLP_HIDDEN = MODEL_CONFIG["mlpHidden"]
-ENG_NUM_BUCKETS = 350_000_000 // DIM
+ENG_NUM_BUCKETS = 227865
 
 # Time budget constants
 UPLOAD_BUFFER_MIN = 12        # Reserve 12 min for delta computation + upload
@@ -515,7 +515,12 @@ def run_single_round(args, auth_token=None):
         remaining_hours = max(0.1, max_round_hours - round_status.get("round_elapsed_hours", 0))
 
     # 4. Decompress weights
-    initial_weights = decompress_weights(weights_bytes, weight_format)
+    # 4. Decompress weights (Base + Engram)
+    bytes_per_param = 2 if weight_format in ("bf16", "fp16") else 4
+    base_bytes_len = EXPECTED_MODEL_SIZE * bytes_per_param
+    
+    initial_weights = decompress_weights(weights_bytes[:base_bytes_len], weight_format)
+    initial_engram_weights = decompress_weights(weights_bytes[base_bytes_len:], weight_format)
     del weights_bytes; gc.collect()
 
     # 5. Setup dataset
@@ -543,6 +548,11 @@ def run_single_round(args, auth_token=None):
             model = SotaGPT(train_backend, train_device).to(train_device)
             model.engram.table.to('cpu')
             model.load_base_weights(initial_weights)
+            
+            # 🚨 CRITICAL FIX: Load Engram weights from server!
+            ft_eng = torch.from_numpy(initial_engram_weights) if not isinstance(initial_engram_weights, torch.Tensor) else initial_engram_weights
+            model.engram.table.weight.data.copy_(ft_eng.view(model.engram.table.weight.shape))
+            
             model.train()
 
             base_params = [p for n, p in model.named_parameters() if not n.startswith('engram.')]
