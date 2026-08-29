@@ -453,6 +453,10 @@ def wait_for_round(server_url, headers):
             r = requests.get(f"{server_url}/fl/round_status", headers=headers, timeout=30)
             if r.status_code == 200:
                 status = r.json()
+                if status.get("is_aggregating"):
+                    log.info("⏳ Server is aggregating and uploading to HF. Waiting 30s...")
+                    time.sleep(30)
+                    continue
                 if not status.get("in_cooldown", False):
                     return status
                 log.info("Server in cooldown. Waiting 30s...")
@@ -464,15 +468,12 @@ def fetch_task_and_weights(server_url, headers, precision):
     while True:
         try:
             r = requests.get(f"{server_url}/fl/task?format={precision}", headers=headers, timeout=600)
-            if r.status_code != 200:
+            if r.headers.get("X-Status") == "wait":
                 try:
                     body = r.json()
-                    if body.get("status") == "wait":
-                        log.info(f"Server says wait: {body.get('message','')}")
-                        time.sleep(30); continue
-                except Exception: pass
-                raise Exception(f"Task failed: {r.text[:200]}")
-            if r.headers.get("X-Status") == "wait":
+                    log.info(f"⏳ Server says wait: {body.get('message', '')}")
+                except Exception:
+                    log.info("⏳ Server says wait (aggregating or cooldown)")
                 time.sleep(30); continue
             raw = r.content
             ml = struct.unpack('<I', raw[:4])[0]
