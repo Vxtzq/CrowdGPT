@@ -387,7 +387,6 @@ class StreamingShardDataset:
 # ============ WEIGHTS ============
 import zlib
 def decompress_weights(raw, fmt="bf16"):
-    if len(raw) >= 2 and raw[0] == 0x78: raw = zlib.decompress(raw)
     if fmt == "fp16": return np.frombuffer(raw, dtype=np.uint16).view(np.float16).astype(np.float32)
     return torch.from_numpy(np.frombuffer(raw, dtype=np.uint16).copy()).view(torch.bfloat16).to(torch.float32).numpy()
 
