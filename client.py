@@ -387,6 +387,7 @@ class StreamingShardDataset:
 # ============ WEIGHTS ============
 import zlib
 def decompress_weights(raw, fmt="bf16"):
+    if len(raw) >= 2 and raw[0] == 0x78: raw = zlib.decompress(raw)
     if fmt == "fp16": return np.frombuffer(raw, dtype=np.uint16).view(np.float16).astype(np.float32)
     return torch.from_numpy(np.frombuffer(raw, dtype=np.uint16).copy()).view(torch.bfloat16).to(torch.float32).numpy()
 
@@ -466,7 +467,7 @@ def wait_for_round(server_url, headers):
 def fetch_task_and_weights(server_url, headers, precision):
     while True:
         try:
-            r = requests.get(f"{server_url}/fl/task?format={precision}", headers=headers, timeout=600)
+            r = requests.get(f"{server_url}/fl/task?format={precision}", headers=headers, timeout=(15, 3600))
             if r.headers.get("X-Status") == "wait":
                 try:
                     body = r.json()
