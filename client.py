@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CrowdGPT Client - Continuous FL Node (OOM-Proof Edition)
+CrowdGPT Client - Continuous FL Node (Final Verified Edition)
 """
 
 import os
@@ -49,11 +49,10 @@ MAX_SEQ_LEN = MODEL_CONFIG["maxSeqLen"]
 MLP_HIDDEN = MODEL_CONFIG["mlpHidden"]
 ENG_NUM_BUCKETS = 227865
 
-# Time budget constants
-UPLOAD_BUFFER_MIN = 12        # Reserve 12 min for delta computation + upload
-TPS_DEGRADATION = 0.85        # TPS drops ~15% over long runs
-DATASET_PAUSE_PER_ADVANCE = 8 # Seconds lost per subchunk advance
-CALIBRATION_STEPS = 15        # Warmup steps to measure real TPS
+UPLOAD_BUFFER_MIN = 12        
+TPS_DEGRADATION = 0.85        
+DATASET_PAUSE_PER_ADVANCE = 8 
+CALIBRATION_STEPS = 15        
 
 def _calc_model_size():
     size = VOCAB_SIZE * DIM
@@ -121,30 +120,18 @@ def has_bitsandbytes():
         return False
 
 def estimate_vram_bytes(batch_size, seq_len, use_8bit):
-    """Accurate VRAM estimate including gradients and full checkpoint activations"""
-    # 1. Model weights (BF16)
     model_bytes = EXPECTED_MODEL_SIZE * 2  
-    # 2. Optimizer states (8-bit AdamW = ~4 bytes/param, FP32 AdamW = ~12 bytes/param)
     optim_bytes = EXPECTED_MODEL_SIZE * (4 if use_8bit else 12)
-    # 3. Gradients (FP32) - ALWAYS present during backward pass!
     grad_bytes = EXPECTED_MODEL_SIZE * 4  
-    
-    # 4. Activations: Gradient checkpointing stores the input to EVERY block
     act_per_block = batch_size * seq_len * DIM * 2
     attn_act = batch_size * N_HEADS * 64 * seq_len * 4
     act_bytes = N_LAYERS * (act_per_block + attn_act)
-    
-    # 5. Logits chunk & Engram cache
     logits_bytes = batch_size * 256 * VOCAB_SIZE * 4
     engram_bytes = batch_size * seq_len * DIM * 2
-    
-    # 6. CUDA context + safety margin
     safety = int(0.8 * 1024**3)
-    
     return int(model_bytes + optim_bytes + grad_bytes + act_bytes + logits_bytes + engram_bytes + safety)
 
 def recommend_batch_size(seq_len=2048):
-    """Pick largest batch size that fits VRAM"""
     use_8bit = has_bitsandbytes()
     budget = int(memory_config["ram_gb"] * 1024**3)
     best_bs = 1
@@ -385,8 +372,8 @@ class StreamingShardDataset:
         return torch.tensor(inp, dtype=torch.long), torch.tensor(tgt, dtype=torch.long)
 
 # ============ WEIGHTS ============
-import zlib
 def decompress_weights(raw, fmt="bf16"):
+    # 🚨 FIXED: No zlib check!
     if fmt == "fp16": return np.frombuffer(raw, dtype=np.uint16).view(np.float16).astype(np.float32)
     return torch.from_numpy(np.frombuffer(raw, dtype=np.uint16).copy()).view(torch.bfloat16).to(torch.float32).numpy()
 
@@ -466,6 +453,7 @@ def wait_for_round(server_url, headers):
 def fetch_task_and_weights(server_url, headers, precision):
     while True:
         try:
+            # 🚨 FIXED: 1 hour read timeout for massive downloads
             r = requests.get(f"{server_url}/fl/task?format={precision}", headers=headers, timeout=(15, 3600))
             if r.headers.get("X-Status") == "wait":
                 try:
@@ -487,248 +475,229 @@ def run_single_round(args, auth_token=None):
     global train_device, train_backend
     headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
 
-    # 1. Wait for server
     log.info("Checking round status...")
     round_status = wait_for_round(args.server, headers)
     current_round = round_status["current_round"]
     max_round_hours = round_status.get("max_round_hours", 2.0)
 
-    # 2. Fetch fresh weights
-    log.info("Downloading fresh weights...")
-    metadata, weights_bytes = fetch_task_and_weights(args.server, headers, args.precision)
-    task_id = metadata['taskId']
-    global_step = metadata['globalStep']
-    server_round = metadata.get('currentRound', current_round)
-    weight_format = metadata.get('weightFormat', 'bf16')
-    seq_len = args.seq_len if args.seq_len > 0 else 2048
+    # 🚨 CRITICAL: Start heartbeat immediately
+    hb = HeartbeatManager(args.server, headers, current_round)
+    hb.start()
 
-    # 3. RE-SYNC round timer
     try:
-        rs = requests.get(f"{args.server}/fl/round_status", headers=headers, timeout=15)
-        if rs.status_code == 200:
-            fresh = rs.json()
-            round_elapsed = fresh.get("round_elapsed_hours", 0)
-            remaining_hours = max(0.05, fresh.get("max_round_hours", 2.0) - round_elapsed)
-            log.info(f"Round timer re-synced: {remaining_hours*60:.0f} min remaining")
-    except Exception:
-        remaining_hours = max(0.1, max_round_hours - round_status.get("round_elapsed_hours", 0))
+        log.info("Downloading fresh weights...")
+        metadata, weights_bytes = fetch_task_and_weights(args.server, headers, args.precision)
+        task_id = metadata['taskId']
+        global_step = metadata['globalStep']
+        server_round = metadata.get('currentRound', current_round)
+        weight_format = metadata.get('weightFormat', 'bf16')
+        seq_len = args.seq_len if args.seq_len > 0 else 2048
 
-    # 4. Decompress weights
-    # 4. Decompress weights (Base + Engram)
-    bytes_per_param = 2 if weight_format in ("bf16", "fp16") else 4
-    base_bytes_len = EXPECTED_MODEL_SIZE * bytes_per_param
-    
-    initial_weights = decompress_weights(weights_bytes[:base_bytes_len], weight_format)
-    initial_engram_weights = decompress_weights(weights_bytes[base_bytes_len:], weight_format)
-    del weights_bytes; gc.collect()
-
-    # 5. Setup dataset
-    ds_cfg = metadata.get("datasetConfig", {})
-    shard_cfg = metadata.get("shardConfig", {})
-    dataset_shard = StreamingShardDataset(
-        ds_cfg.get("repoId", DATASET_REPO_ID), ds_cfg.get("chunkIdx", 0),
-        ds_cfg.get("subChunkSize", 10*1024*1024), ds_cfg.get("tokensPerSample", seq_len+1),
-        shard_cfg.get("slot", 0), auth_token)
-
-    # 6. Setup model with OOM FALLBACK
-    batch_size = args.batch_size if args.batch_size > 0 else recommend_batch_size(seq_len)
-    
-    total_tok = 0
-    loss_history = []
-    
-    while batch_size >= 1:
         try:
-            if train_backend in ("CUDA", "ROCM"):
-                try: torch.cuda.empty_cache()
-                except: pass
-            gc.collect()
-            
-            log.info(f"Initializing model with BS={batch_size}...")
-            model = SotaGPT(train_backend, train_device).to(train_device)
-            model.engram.table.to('cpu')
-            model.load_base_weights(initial_weights)
-            
-            # 🚨 CRITICAL FIX: Load Engram weights from server!
-            ft_eng = torch.from_numpy(initial_engram_weights) if not isinstance(initial_engram_weights, torch.Tensor) else initial_engram_weights
-            model.engram.table.weight.data.copy_(ft_eng.view(model.engram.table.weight.shape))
-            
-            model.train()
+            rs = requests.get(f"{args.server}/fl/round_status", headers=headers, timeout=15)
+            if rs.status_code == 200:
+                fresh = rs.json()
+                round_elapsed = fresh.get("round_elapsed_hours", 0)
+                remaining_hours = max(0.05, fresh.get("max_round_hours", 2.0) - round_elapsed)
+                log.info(f"Round timer re-synced: {remaining_hours*60:.0f} min remaining")
+        except Exception:
+            remaining_hours = max(0.1, max_round_hours - round_status.get("round_elapsed_hours", 0))
 
-            base_params = [p for n, p in model.named_parameters() if not n.startswith('engram.')]
-            engram_params = list(model.engram.parameters())
+        bytes_per_param = 2 if weight_format in ("bf16", "fp16") else 4
+        base_bytes_len = EXPECTED_MODEL_SIZE * bytes_per_param
+        
+        initial_weights = decompress_weights(weights_bytes[:base_bytes_len], weight_format)
+        initial_engram_weights = decompress_weights(weights_bytes[base_bytes_len:], weight_format)
+        del weights_bytes; gc.collect()
 
+        ds_cfg = metadata.get("datasetConfig", {})
+        shard_cfg = metadata.get("shardConfig", {})
+        dataset_shard = StreamingShardDataset(
+            ds_cfg.get("repoId", DATASET_REPO_ID), ds_cfg.get("chunkIdx", 0),
+            ds_cfg.get("subChunkSize", 10*1024*1024), ds_cfg.get("tokensPerSample", seq_len+1),
+            shard_cfg.get("slot", 0), auth_token)
+
+        batch_size = args.batch_size if args.batch_size > 0 else recommend_batch_size(seq_len)
+        
+        while batch_size >= 1:
             try:
-                import bitsandbytes as bnb
-                optimizer_base = bnb.optim.AdamW8bit(base_params, lr=args.lr, betas=(0.9, 0.95), weight_decay=0.01)
-            except ImportError:
-                optimizer_base = torch.optim.AdamW(base_params, lr=args.lr, betas=(0.9, 0.95), weight_decay=0.01)
-            try:
-                optimizer_engram = torch.optim.SparseAdam(engram_params, lr=args.lr)
-            except Exception:
-                optimizer_engram = torch.optim.AdamW(engram_params, lr=args.lr, weight_decay=0.01)
-
-            initial_engram_weights = model.engram.table.weight.data.cpu().clone()
-            use_autocast = args.precision == "bf16" and train_backend in ("CUDA", "ROCM") and torch.cuda.is_bf16_supported()
-            autocast_dtype = torch.bfloat16 if use_autocast else None
-
-            # 7. TPS Calibration
-            log.info(f"Calibrating TPS ({CALIBRATION_STEPS} steps, BS={batch_size})...")
-            loss_history = []
-            total_tok = 0
-            cal_start = time.time()
-
-            for ci in range(1, CALIBRATION_STEPS + 1):
-                if dataset_shard.needs_new_subchunk(): dataset_shard.advance(args.server, args.precision)
-                x, y = dataset_shard.get_batch(batch_size, seed=hash("cal") % 10000 + ci)
-                x, y = x.to(train_device), y.to(train_device)
-                
-                def fwd():
-                    x_emb = model.wte(x)
-                    if use_autocast:
-                        with torch.autocast(device_type='cuda', enabled=False): eng_out = model.engram(x)
-                    else: eng_out = model.engram(x)
-                    x_emb = x_emb + eng_out.to(x_emb.dtype)
-                    for b in model.blocks:
-                        x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True, use_reentrant=True)
-                    return model.ln_f(x_emb)
-
-                if use_autocast:
-                    with torch.autocast(device_type='cuda', dtype=autocast_dtype):
-                        x_emb = fwd()
-                        loss = sum(F.cross_entropy(model.lm_head(x_emb[:, i:i+256, :]).reshape(-1, VOCAB_SIZE), y[:, i:i+256].reshape(-1)) for i in range(0, seq_len, 256)) / max(1, math.ceil(seq_len/256))
-                        loss.backward()
-                else:
-                    x_emb = fwd()
-                    loss = sum(F.cross_entropy(model.lm_head(x_emb[:, i:i+256, :]).reshape(-1, VOCAB_SIZE), y[:, i:i+256].reshape(-1)) for i in range(0, seq_len, 256)) / max(1, math.ceil(seq_len/256))
-                    loss.backward()
-
-                torch.nn.utils.clip_grad_norm_(base_params, 1.0)
-                optimizer_base.step(); optimizer_engram.step()
-                optimizer_base.zero_grad(set_to_none=True)
-                try: optimizer_engram.zero_grad(set_to_none=True)
-                except Exception: optimizer_engram.zero_grad()
-
-                lv = float(loss.item())
-                if math.isnan(lv) or lv <= 0: lv = 10.0
-                total_tok += x.numel()
-                loss_history.append(lv)
-                
-            # If we get here, calibration succeeded! Break the loop.
-            break 
-            
-        except RuntimeError as e:
-            if "out of memory" in str(e).lower():
-                log.warning(f"CUDA OOM at BS={batch_size}. Halving batch size and retrying...")
-                del model, optimizer_base, optimizer_engram
                 if train_backend in ("CUDA", "ROCM"):
                     try: torch.cuda.empty_cache()
                     except: pass
                 gc.collect()
-                batch_size = max(1, batch_size // 2)
-            else:
-                raise
-
-    cal_elapsed = time.time() - cal_start
-    if cal_elapsed <= 0 or total_tok == 0: raise Exception("Calibration failed")
-
-    measured_tps = total_tok / cal_elapsed
-    tokens_per_step = batch_size * seq_len
-    seconds_per_step = cal_elapsed / CALIBRATION_STEPS
-
-    # 8. TIME BUDGET CALCULATION
-    effective_sps = seconds_per_step / TPS_DEGRADATION
-
-    dataset_advances_remaining = int((remaining_hours * 3600) / effective_sps / StreamingShardDataset.STEPS_PER_SUBCHUNK)
-    dataset_pause_total = dataset_advances_remaining * DATASET_PAUSE_PER_ADVANCE
-
-    training_budget_sec = (remaining_hours * 3600) - cal_elapsed - (UPLOAD_BUFFER_MIN * 60) - dataset_pause_total
-    training_budget_sec = max(60, training_budget_sec)
-
-    target_steps = int(training_budget_sec / effective_sps)
-    target_steps = max(50, min(target_steps, 500_000))
-    estimated_train_min = (target_steps * effective_sps) / 60
-
-    log.info(f"TPS: {measured_tps:.0f} | {seconds_per_step:.3f}s/step (effective: {effective_sps:.3f}s)")
-    log.info(f"Budget: {training_budget_sec/60:.0f} min | Dataset pauses: ~{dataset_pause_total}s | Target: {target_steps} steps (~{estimated_train_min:.0f} min)")
-
-    # 9. Start heartbeat
-    hb = HeartbeatManager(args.server, headers, server_round)
-    hb.start()
-
-    # 10. Training loop
-    step = CALIBRATION_STEPS
-    train_start = time.time()
-    deadline = train_start + training_budget_sec
-
-    with Live(create_dashboard(step, target_steps + CALIBRATION_STEPS, loss_history[-1] if loss_history else 0,
-                               measured_tps, args.lr, global_step, train_backend, batch_size, seq_len,
-                               current_round, estimated_train_min),
-              console=console, refresh_per_second=2, screen=False) as live:
-
-        for _ in range(target_steps):
-            if hb.should_stop():
-                log.warning("Stopped by heartbeat/ultimatum.")
+                
+                log.info(f"Initializing model with BS={batch_size}...")
+                model = SotaGPT(train_backend, train_device).to(train_device)
+                model.engram.table.to('cpu')
+                model.load_base_weights(initial_weights)
+                
+                ft_eng = torch.from_numpy(initial_engram_weights) if not isinstance(initial_engram_weights, torch.Tensor) else initial_engram_weights
+                model.engram.table.weight.data.copy_(ft_eng.view(model.engram.table.weight.shape))
+                
+                model.train()
                 break
-            if time.time() >= deadline:
-                log.info("Time budget reached. Stopping training.")
-                break
-
-            if dataset_shard.needs_new_subchunk(): dataset_shard.advance(args.server, args.precision)
-            x, y = dataset_shard.get_batch(batch_size, seed=hash("t") % 10000 + step)
-            x, y = x.to(train_device), y.to(train_device)
-
-            try:
-                def fwd():
-                    x_emb = model.wte(x)
-                    if use_autocast:
-                        with torch.autocast(device_type='cuda', enabled=False): eng_out = model.engram(x)
-                    else: eng_out = model.engram(x)
-                    x_emb = x_emb + eng_out.to(x_emb.dtype)
-                    for b in model.blocks:
-                        x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True, use_reentrant=True)
-                    return model.ln_f(x_emb)
-
-                if use_autocast:
-                    with torch.autocast(device_type='cuda', dtype=autocast_dtype):
-                        x_emb = fwd()
-                        loss = sum(F.cross_entropy(model.lm_head(x_emb[:, i:i+256, :]).reshape(-1, VOCAB_SIZE), y[:, i:i+256].reshape(-1)) for i in range(0, seq_len, 256)) / max(1, math.ceil(seq_len/256))
-                        loss.backward()
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    log.warning(f"CUDA OOM at BS={batch_size}. Halving batch size and retrying...")
+                    if 'model' in locals(): del model  # 🚨 SAFE DELETE
+                    if train_backend in ("CUDA", "ROCM"):
+                        try: torch.cuda.empty_cache()
+                        except: pass
+                    gc.collect()
+                    batch_size = max(1, batch_size // 2)
                 else:
+                    raise
+
+        base_params = [p for n, p in model.named_parameters() if not n.startswith('engram.')]
+        engram_params = list(model.engram.parameters())
+
+        try:
+            import bitsandbytes as bnb
+            optimizer_base = bnb.optim.AdamW8bit(base_params, lr=args.lr, betas=(0.9, 0.95), weight_decay=0.01)
+        except ImportError:
+            optimizer_base = torch.optim.AdamW(base_params, lr=args.lr, betas=(0.9, 0.95), weight_decay=0.01)
+        try:
+            optimizer_engram = torch.optim.SparseAdam(engram_params, lr=args.lr)
+        except Exception:
+            optimizer_engram = torch.optim.AdamW(engram_params, lr=args.lr, weight_decay=0.01)
+
+        initial_engram_weights = model.engram.table.weight.data.cpu().clone()
+        use_autocast = args.precision == "bf16" and train_backend in ("CUDA", "ROCM") and torch.cuda.is_bf16_supported()
+        autocast_dtype = torch.bfloat16 if use_autocast else None
+
+        log.info(f"Calibrating TPS ({CALIBRATION_STEPS} steps, BS={batch_size})...")
+        loss_history = []
+        total_tok = 0
+        cal_start = time.time()
+
+        for ci in range(1, CALIBRATION_STEPS + 1):
+            if dataset_shard.needs_new_subchunk(): dataset_shard.advance(args.server, args.precision)
+            x, y = dataset_shard.get_batch(batch_size, seed=hash("cal") % 10000 + ci)
+            x, y = x.to(train_device), y.to(train_device)
+            
+            def fwd():
+                x_emb = model.wte(x)
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', enabled=False): eng_out = model.engram(x)
+                else: eng_out = model.engram(x)
+                x_emb = x_emb + eng_out.to(x_emb.dtype)
+                for b in model.blocks:
+                    x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True, use_reentrant=True)
+                return model.ln_f(x_emb)
+
+            if use_autocast:
+                with torch.autocast(device_type='cuda', dtype=autocast_dtype):
                     x_emb = fwd()
                     loss = sum(F.cross_entropy(model.lm_head(x_emb[:, i:i+256, :]).reshape(-1, VOCAB_SIZE), y[:, i:i+256].reshape(-1)) for i in range(0, seq_len, 256)) / max(1, math.ceil(seq_len/256))
                     loss.backward()
+            else:
+                x_emb = fwd()
+                loss = sum(F.cross_entropy(model.lm_head(x_emb[:, i:i+256, :]).reshape(-1, VOCAB_SIZE), y[:, i:i+256].reshape(-1)) for i in range(0, seq_len, 256)) / max(1, math.ceil(seq_len/256))
+                loss.backward()
 
-                torch.nn.utils.clip_grad_norm_(base_params, 1.0)
-                optimizer_base.step(); optimizer_engram.step()
-                optimizer_base.zero_grad(set_to_none=True)
-                try: optimizer_engram.zero_grad(set_to_none=True)
-                except Exception: optimizer_engram.zero_grad()
+            torch.nn.utils.clip_grad_norm_(base_params, 1.0)
+            optimizer_base.step(); optimizer_engram.step()
+            optimizer_base.zero_grad(set_to_none=True)
+            try: optimizer_engram.zero_grad(set_to_none=True)
+            except Exception: optimizer_engram.zero_grad()
+            total_tok += x.numel()
 
-                lv = float(loss.item())
-                if math.isnan(lv) or lv <= 0: lv = 10.0
-                total_tok += x.numel()
-                loss_history.append(lv)
-                step += 1
+        cal_elapsed = time.time() - cal_start
+        measured_tps = total_tok / cal_elapsed
+        seconds_per_step = cal_elapsed / CALIBRATION_STEPS
+        effective_sps = seconds_per_step / TPS_DEGRADATION
+        log.info(f"TPS: {measured_tps:.0f} | {seconds_per_step:.3f}s/step (effective: {effective_sps:.3f}s)")
 
-                elapsed = time.time() - train_start
-                cur_tps = total_tok / max(elapsed + cal_elapsed, 1)
-                time_left = max(0, (deadline - time.time()) / 60)
-                live.update(create_dashboard(step, target_steps + CALIBRATION_STEPS, lv, cur_tps,
-                                             optimizer_base.param_groups[0]['lr'], global_step,
-                                             train_backend, batch_size, seq_len, current_round, time_left))
-            except Exception as e:
-                log.error(f"Training error: {e}"); break
+        dataset_advances_remaining = int((remaining_hours * 3600) / effective_sps / StreamingShardDataset.STEPS_PER_SUBCHUNK)
+        dataset_pause_total = dataset_advances_remaining * DATASET_PAUSE_PER_ADVANCE
 
-    hb.stop()
+        training_budget_sec = (remaining_hours * 3600) - cal_elapsed - (UPLOAD_BUFFER_MIN * 60) - dataset_pause_total
+        training_budget_sec = max(60, training_budget_sec)
 
-    # 11. Compute deltas
+        target_steps = int(training_budget_sec / effective_sps)
+        target_steps = max(50, min(target_steps, 500_000))
+        estimated_train_min = (target_steps * effective_sps) / 60
+
+        log.info(f"Budget: {training_budget_sec/60:.0f} min | Dataset pauses: ~{dataset_pause_total}s | Target: {target_steps} steps (~{estimated_train_min:.0f} min)")
+
+        step = CALIBRATION_STEPS
+        train_start = time.time()
+        deadline = train_start + training_budget_sec
+        loss_history = [] # Reset for main training
+
+        with Live(create_dashboard(step, target_steps + CALIBRATION_STEPS, 0, measured_tps, args.lr, global_step, train_backend, batch_size, seq_len, current_round, estimated_train_min),
+                  console=console, refresh_per_second=2, screen=False) as live:
+
+            for _ in range(target_steps):
+                if hb.should_stop():
+                    log.warning("Stopped by heartbeat/ultimatum.")
+                    break
+                if time.time() >= deadline:
+                    log.info("Time budget reached. Stopping training.")
+                    break
+
+                if dataset_shard.needs_new_subchunk(): dataset_shard.advance(args.server, args.precision)
+                x, y = dataset_shard.get_batch(batch_size, seed=hash("t") % 10000 + step)
+                x, y = x.to(train_device), y.to(train_device)
+
+                try:
+                    def fwd():
+                        x_emb = model.wte(x)
+                        if use_autocast:
+                            with torch.autocast(device_type='cuda', enabled=False): eng_out = model.engram(x)
+                        else: eng_out = model.engram(x)
+                        x_emb = x_emb + eng_out.to(x_emb.dtype)
+                        for b in model.blocks:
+                            x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True, use_reentrant=True)
+                        return model.ln_f(x_emb)
+
+                    if use_autocast:
+                        with torch.autocast(device_type='cuda', dtype=autocast_dtype):
+                            x_emb = fwd()
+                            loss = sum(F.cross_entropy(model.lm_head(x_emb[:, i:i+256, :]).reshape(-1, VOCAB_SIZE), y[:, i:i+256].reshape(-1)) for i in range(0, seq_len, 256)) / max(1, math.ceil(seq_len/256))
+                            loss.backward()
+                    else:
+                        x_emb = fwd()
+                        loss = sum(F.cross_entropy(model.lm_head(x_emb[:, i:i+256, :]).reshape(-1, VOCAB_SIZE), y[:, i:i+256].reshape(-1)) for i in range(0, seq_len, 256)) / max(1, math.ceil(seq_len/256))
+                        loss.backward()
+
+                    torch.nn.utils.clip_grad_norm_(base_params, 1.0)
+                    optimizer_base.step(); optimizer_engram.step()
+                    optimizer_base.zero_grad(set_to_none=True)
+                    try: optimizer_engram.zero_grad(set_to_none=True)
+                    except Exception: optimizer_engram.zero_grad()
+
+                    lv = float(loss.item())
+                    if math.isnan(lv) or lv <= 0: lv = 10.0
+                    total_tok += x.numel()
+                    loss_history.append(lv)
+                    step += 1
+
+                    elapsed = time.time() - train_start
+                    cur_tps = total_tok / max(elapsed + cal_elapsed, 1)
+                    time_left = max(0, (deadline - time.time()) / 60)
+                    live.update(create_dashboard(step, target_steps + CALIBRATION_STEPS, lv, cur_tps,
+                                                 optimizer_base.param_groups[0]['lr'], global_step,
+                                                 train_backend, batch_size, seq_len, current_round, time_left))
+                except Exception as e:
+                    log.error(f"Training error: {e}"); break
+                    
+    finally:
+        hb.stop()
+        # 🚨 DO NOT DELETE MODEL HERE! We need it to calculate the delta below.
+        if 'dataset_shard' in locals() and dataset_shard is not None:
+            del dataset_shard
+        gc.collect()
+        if train_backend in ("CUDA", "ROCM"):
+            try: torch.cuda.empty_cache()
+            except: pass
+
     final_loss = float(loss_history[-1]) if loss_history else 10.0
     log.info(f"Done: {step} steps, loss {final_loss:.4f}")
 
     delta_base_bf16 = torch.from_numpy(model.get_base_weights() - initial_weights).to(torch.bfloat16).view(torch.uint16).numpy()
     engram_delta = model.engram.table.weight.data.cpu() - initial_engram_weights
 
-    # Top-K sparsity (10%)
     row_norms = engram_delta.abs().sum(dim=1)
     k = max(1, int(len(row_norms) * 0.10))
     topk_values, topk_indices = torch.topk(row_norms, k)
@@ -737,7 +706,6 @@ def run_single_round(args, auth_token=None):
     sparse_indices = active_indices.cpu().numpy().astype(np.uint32) if len(active_indices) > 0 else np.array([], dtype=np.uint32)
     sparse_values = engram_delta[active_indices].to(torch.bfloat16).view(torch.uint16).numpy() if len(active_indices) > 0 else np.array([], dtype=np.uint16)
 
-    # 12. Upload
     payload = json.dumps({
         "taskId": task_id, "loss": final_loss, "localSteps": step,
         "tokensProcessed": total_tok, "loraRank": 0, "isDelta": True,
@@ -764,16 +732,17 @@ def run_single_round(args, auth_token=None):
     if r.status_code == 200: log.info("Submitted successfully!")
     else: raise Exception(f"Submit failed: {r.text[:300]}")
 
-    del model, initial_weights, delta_base_bf16, binary
+    # 🚨 SAFE BULK DELETE: Cleans up VRAM without risking UnboundLocalError
+    if 'model' in locals(): del model
+    if 'initial_weights' in locals(): del initial_weights
+    if 'delta_base_bf16' in locals(): del delta_base_bf16
+    if 'binary' in locals(): del binary
     gc.collect()
-    if train_backend in ("CUDA", "ROCM"):
-        try: torch.cuda.empty_cache()
-        except Exception: pass
 
 def run_swarm_node(args):
     global train_device, train_backend
     log.info("=" * 60)
-    log.info("CrowdGPT Continuous FL Node (OOM-Proof Edition)")
+    log.info("CrowdGPT Continuous FL Node (Final Verified Edition)")
     log.info("=" * 60)
 
     username = args.username or os.environ.get("CROWDGPT_USERNAME")
