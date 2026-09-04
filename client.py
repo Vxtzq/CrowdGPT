@@ -582,7 +582,7 @@ def run_single_round(args, auth_token=None):
                 else: eng_out = model.engram(x)
                 x_emb = x_emb + eng_out.to(x_emb.dtype)
                 for b in model.blocks:
-                    x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True, use_reentrant=True)
+                    x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True, use_reentrant=False)
                 return model.ln_f(x_emb)
 
             if use_autocast:
@@ -648,7 +648,7 @@ def run_single_round(args, auth_token=None):
                         else: eng_out = model.engram(x)
                         x_emb = x_emb + eng_out.to(x_emb.dtype)
                         for b in model.blocks:
-                            x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True, use_reentrant=True)
+                            x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True, use_reentrant=False)
                         return model.ln_f(x_emb)
 
                     if use_autocast:
