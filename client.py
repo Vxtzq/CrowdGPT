@@ -181,15 +181,44 @@ class GroupedQueryAttention(nn.Module):
         return self.wo((a @ v).transpose(1, 2).contiguous().view(B, T, C))
 
     def _chunked(self, q, k, v, B, T, C, cs=64):
-        m = torch.tril(torch.ones(T, T, device=q.device)).view(1, 1, T, T)
+        """
+        Memory-efficient chunked causal attention.
+    
+        For each query chunk [i:e], only computes attention over keys [0:e]
+        (the valid causal range), not the full sequence.
+        """
         chunks = []
         for i in range(0, T, cs):
             e = min(i + cs, T)
-            aw = (q[:, :, i:e, :] @ k.transpose(-2, -1)) * (1.0 / math.sqrt(HEAD_DIM))
-            aw = aw.masked_fill(m[:, :, i:e, :] == 0, float('-inf'))
-            chunks.append(F.softmax(aw, dim=-1, dtype=torch.float32).to(q.dtype) @ v)
-        return self.wo(torch.cat(chunks, 2).transpose(1, 2).contiguous().view(B, T, C))
-
+            chunk_size = e - i
+        
+            # Extract query chunk and valid key/value range
+            q_chunk = q[:, :, i:e, :]  # (B, H, chunk_size, D)
+            k_chunk = k[:, :, :e, :]   # (B, H, e, D) - only keys up to position e-1
+            v_chunk = v[:, :, :e, :]   # (B, H, e, D)
+        
+            # Compute attention scores
+            aw = (q_chunk @ k_chunk.transpose(-2, -1)) * (1.0 / math.sqrt(HEAD_DIM))
+        
+            # Create causal mask for this chunk only
+            # Query positions: [i, i+1, ..., e-1]
+            # Key positions: [0, 1, ..., e-1]
+            # Query at position q_pos can attend to key at k_pos iff k_pos <= q_pos
+            row_idx = torch.arange(i, e, device=q.device).unsqueeze(1)  # (chunk_size, 1)
+            col_idx = torch.arange(e, device=q.device).unsqueeze(0)     # (1, e)
+            mask = (col_idx <= row_idx).unsqueeze(0).unsqueeze(0)       # (1, 1, chunk_size, e)
+        
+            # Apply mask and softmax
+            aw = aw.masked_fill(~mask, float('-inf'))
+            attn = F.softmax(aw, dim=-1, dtype=torch.float32).to(q.dtype)
+        
+            # Compute attention output
+            chunks.append(attn @ v_chunk)
+    
+        # Concatenate chunks and project
+        out = torch.cat(chunks, dim=2)  # (B, H, T, D)
+        out = out.transpose(1, 2).contiguous().view(B, T, C)
+        return self.wo(out)
 class SwiGLU(nn.Module):
     def __init__(self):
         super().__init__()
