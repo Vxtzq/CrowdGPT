@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CrowdGPT Client - Continuous FL Node (Final Verified Edition)
+CrowdGPT Client - Continuous FL Node (Final Verified Edition - Connection-Resilient)
 """
 
 import os
@@ -49,7 +49,8 @@ MAX_SEQ_LEN = MODEL_CONFIG["maxSeqLen"]
 MLP_HIDDEN = MODEL_CONFIG["mlpHidden"]
 ENG_NUM_BUCKETS = 227865
 
-UPLOAD_BUFFER_MIN = 12        
+# 🚨 FIX: Increased from 12 to 25 minutes to guarantee slow uploads finish
+UPLOAD_BUFFER_MIN = 25        
 TPS_DEGRADATION = 0.85        
 DATASET_PAUSE_PER_ADVANCE = 8 
 CALIBRATION_STEPS = 15        
@@ -181,44 +182,30 @@ class GroupedQueryAttention(nn.Module):
         return self.wo((a @ v).transpose(1, 2).contiguous().view(B, T, C))
 
     def _chunked(self, q, k, v, B, T, C, cs=64):
-        """
-        Memory-efficient chunked causal attention.
-    
-        For each query chunk [i:e], only computes attention over keys [0:e]
-        (the valid causal range), not the full sequence.
-        """
         chunks = []
         for i in range(0, T, cs):
             e = min(i + cs, T)
             chunk_size = e - i
         
-            # Extract query chunk and valid key/value range
-            q_chunk = q[:, :, i:e, :]  # (B, H, chunk_size, D)
-            k_chunk = k[:, :, :e, :]   # (B, H, e, D) - only keys up to position e-1
-            v_chunk = v[:, :, :e, :]   # (B, H, e, D)
+            q_chunk = q[:, :, i:e, :]
+            k_chunk = k[:, :, :e, :]
+            v_chunk = v[:, :, :e, :]
         
-            # Compute attention scores
             aw = (q_chunk @ k_chunk.transpose(-2, -1)) * (1.0 / math.sqrt(HEAD_DIM))
         
-            # Create causal mask for this chunk only
-            # Query positions: [i, i+1, ..., e-1]
-            # Key positions: [0, 1, ..., e-1]
-            # Query at position q_pos can attend to key at k_pos iff k_pos <= q_pos
-            row_idx = torch.arange(i, e, device=q.device).unsqueeze(1)  # (chunk_size, 1)
-            col_idx = torch.arange(e, device=q.device).unsqueeze(0)     # (1, e)
-            mask = (col_idx <= row_idx).unsqueeze(0).unsqueeze(0)       # (1, 1, chunk_size, e)
+            row_idx = torch.arange(i, e, device=q.device).unsqueeze(1)
+            col_idx = torch.arange(e, device=q.device).unsqueeze(0)
+            mask = (col_idx <= row_idx).unsqueeze(0).unsqueeze(0)
         
-            # Apply mask and softmax
             aw = aw.masked_fill(~mask, float('-inf'))
             attn = F.softmax(aw, dim=-1, dtype=torch.float32).to(q.dtype)
         
-            # Compute attention output
             chunks.append(attn @ v_chunk)
     
-        # Concatenate chunks and project
-        out = torch.cat(chunks, dim=2)  # (B, H, T, D)
+        out = torch.cat(chunks, dim=2)
         out = out.transpose(1, 2).contiguous().view(B, T, C)
         return self.wo(out)
+
 class SwiGLU(nn.Module):
     def __init__(self):
         super().__init__()
@@ -402,7 +389,6 @@ class StreamingShardDataset:
 
 # ============ WEIGHTS ============
 def decompress_weights(raw, fmt="bf16"):
-    # 🚨 FIXED: No zlib check!
     if fmt == "fp16": return np.frombuffer(raw, dtype=np.uint16).view(np.float16).astype(np.float32)
     return torch.from_numpy(np.frombuffer(raw, dtype=np.uint16).copy()).view(torch.bfloat16).to(torch.float32).numpy()
 
@@ -447,8 +433,8 @@ class HeartbeatManager:
     def _run(self):
         while not self.shutdown.is_set():
             try:
-                requests.get(f"{self.server_url}/fl/heartbeat", headers=self.headers, timeout=15)
-                r = requests.get(f"{self.server_url}/fl/round_status", headers=self.headers, timeout=15)
+                requests.get(f"{self.server_url}/fl/heartbeat", headers=self.headers, timeout=10)
+                r = requests.get(f"{self.server_url}/fl/round_status", headers=self.headers, timeout=10)
                 if r.status_code == 200:
                     status = r.json()
                     if status.get("current_round", self.current_round) != self.current_round:
@@ -459,7 +445,8 @@ class HeartbeatManager:
                         log.warning(f"ULTIMATUM: {remaining_min:.0f} min left! Submitting NOW.")
                         self.stop_training.set()
             except Exception: pass
-            self.shutdown.wait(timeout=120)
+            # 🚨 FIX: Check every 15 seconds instead of 120 seconds
+            self.shutdown.wait(timeout=15)
 
 # ============ MAIN TRAINING ============
 def wait_for_round(server_url, headers):
@@ -479,10 +466,13 @@ def wait_for_round(server_url, headers):
             else: time.sleep(10)
         except Exception: time.sleep(10)
 
-def fetch_task_and_weights(server_url, headers, precision):
+def fetch_task_and_weights(server_url, headers, precision, hb=None):
     while True:
+        # 🚨 FIX: Check heartbeat to prevent infinite deadlock during server "wait"
+        if hb and hb.should_stop():
+            return None, None
+            
         try:
-            # 🚨 FIXED: 1 hour read timeout for massive downloads
             r = requests.get(f"{server_url}/fl/task?format={precision}", headers=headers, timeout=(15, 3600))
             if r.headers.get("X-Status") == "wait":
                 try:
@@ -490,13 +480,15 @@ def fetch_task_and_weights(server_url, headers, precision):
                     log.info(f"⏳ Server says wait: {body.get('message', '')}")
                 except Exception:
                     log.info("⏳ Server says wait (aggregating or cooldown)")
-                time.sleep(30); continue
+                time.sleep(10)
+                continue
             raw = r.content
             ml = struct.unpack('<I', raw[:4])[0]
             metadata = json.loads(raw[4:4+ml].decode())
             weights_bytes = raw[4+ml:]
             return metadata, weights_bytes
         except Exception as e:
+            if hb and hb.should_stop(): return None, None
             log.error(f"Task fetch failed: {e}")
             time.sleep(15)
 
@@ -515,7 +507,13 @@ def run_single_round(args, auth_token=None):
 
     try:
         log.info("Downloading fresh weights...")
-        metadata, weights_bytes = fetch_task_and_weights(args.server, headers, args.precision)
+        metadata, weights_bytes = fetch_task_and_weights(args.server, headers, args.precision, hb=hb)
+        
+        # 🚨 FIX: If fetch returned None, the round ended. Abort cleanly.
+        if metadata is None:
+            log.warning("⚠️ Round ended during task fetch. Restarting cycle.")
+            return
+            
         task_id = metadata['taskId']
         global_step = metadata['globalStep']
         server_round = metadata.get('currentRound', current_round)
@@ -573,7 +571,7 @@ def run_single_round(args, auth_token=None):
             except RuntimeError as e:
                 if "out of memory" in str(e).lower():
                     log.warning(f"CUDA OOM at BS={batch_size}. Halving batch size and retrying...")
-                    if 'model' in locals(): del model  # 🚨 SAFE DELETE
+                    if 'model' in locals(): del model
                     if train_backend in ("CUDA", "ROCM"):
                         try: torch.cuda.empty_cache()
                         except: pass
@@ -660,7 +658,7 @@ def run_single_round(args, auth_token=None):
         step = CALIBRATION_STEPS
         train_start = time.time()
         deadline = train_start + training_budget_sec
-        loss_history = [] # Reset for main training
+        loss_history = []
 
         with Live(create_dashboard(step, target_steps + CALIBRATION_STEPS, 0, measured_tps, args.lr, global_step, train_backend, batch_size, seq_len, current_round, estimated_train_min),
                   console=console, refresh_per_second=2, screen=False) as live:
@@ -721,7 +719,6 @@ def run_single_round(args, auth_token=None):
                     
     finally:
         hb.stop()
-        # 🚨 DO NOT DELETE MODEL HERE! We need it to calculate the delta below.
         if 'dataset_shard' in locals() and dataset_shard is not None:
             del dataset_shard
         gc.collect()
@@ -729,8 +726,14 @@ def run_single_round(args, auth_token=None):
             try: torch.cuda.empty_cache()
             except: pass
 
+    # 🚨 FIX: Skip upload if we broke out before doing any actual training steps
+    actual_training_steps = step - CALIBRATION_STEPS
+    if actual_training_steps <= 0 or not loss_history:
+        log.warning(f"⚠️ Round ended before actual training started (only {step} calibration steps). Skipping upload.")
+        return
+
     final_loss = float(loss_history[-1]) if loss_history else 10.0
-    log.info(f"Done: {step} steps, loss {final_loss:.4f}")
+    log.info(f"Done: {actual_training_steps} actual training steps, loss {final_loss:.4f}")
 
     delta_base_bf16 = torch.from_numpy(model.get_base_weights() - initial_weights).to(torch.bfloat16).view(torch.uint16).numpy()
     engram_delta = model.engram.table.weight.data.cpu() - initial_engram_weights
@@ -763,13 +766,15 @@ def run_single_round(args, auth_token=None):
     session.mount('http://', HTTPAdapter(max_retries=retries))
     session.mount('https://', HTTPAdapter(max_retries=retries))
 
-    r = session.post(f"{args.server}/fl/submit",
-                     headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **headers},
-                     data=gzip.compress(binary, compresslevel=2), timeout=600)
-    if r.status_code == 200: log.info("Submitted successfully!")
-    else: raise Exception(f"Submit failed: {r.text[:300]}")
+    try:
+        r = session.post(f"{args.server}/fl/submit",
+                         headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **headers},
+                         data=gzip.compress(binary, compresslevel=2), timeout=600)
+        if r.status_code == 200: log.info("Submitted successfully!")
+        else: log.error(f"Submit failed: {r.text[:300]}")
+    except Exception as e:
+        log.error(f"Upload failed: {e}")
 
-    # 🚨 SAFE BULK DELETE: Cleans up VRAM without risking UnboundLocalError
     if 'model' in locals(): del model
     if 'initial_weights' in locals(): del initial_weights
     if 'delta_base_bf16' in locals(): del delta_base_bf16
@@ -779,7 +784,7 @@ def run_single_round(args, auth_token=None):
 def run_swarm_node(args):
     global train_device, train_backend
     log.info("=" * 60)
-    log.info("CrowdGPT Continuous FL Node (Final Verified Edition)")
+    log.info("CrowdGPT Continuous FL Node (Connection-Resilient Edition)")
     log.info("=" * 60)
 
     username = args.username or os.environ.get("CROWDGPT_USERNAME")
