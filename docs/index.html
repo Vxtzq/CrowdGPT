@@ -96,7 +96,12 @@ nav a.active { color: var(--text); }
 .product-grid { align-items: stretch; }
 .product-side { justify-content: center; }
 .hero h1 { font-size: clamp(50px, 6.5vw, 70px); font-weight: 600; line-height: 1.08; color: var(--text); margin-bottom: 29px; }
-.hero h1 .em { font-family: var(--serif); font-style: italic; font-weight: 400; color: var(--accent); }
+.hero h1 .em { 
+  font-family: var(--sans);
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: -0.02em;
+}
 .hero-sub { font-size: 21px; color: var(--text-dim); margin-bottom: 38px; line-height: 1.6; }
 .hero-btns { display: flex; gap: 14px; flex-wrap: wrap; }
 .btn { padding: 14px 26px; font-size: 17px; font-weight: 500; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 11px; text-decoration: none; cursor: pointer; }
