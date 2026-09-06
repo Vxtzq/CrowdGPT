@@ -522,6 +522,11 @@ def run_single_round(args, auth_token=None):
         weight_format = metadata.get('weightFormat', 'bf16')
         seq_len = args.seq_len if args.seq_len > 0 else 2048
 
+        # 🚨 FIX: Round may have ended during the slow download. Abort if so.
+        if hb.should_stop():
+            log.warning("⚠️ Round ended during weight download. Restarting cycle.")
+            return
+
         try:
             rs = requests.get(f"{args.server}/fl/round_status", headers=headers, timeout=15)
             if rs.status_code == 200:
@@ -600,6 +605,9 @@ def run_single_round(args, auth_token=None):
         cal_start = time.time()
 
         for ci in range(1, CALIBRATION_STEPS + 1):
+            if hb.should_stop():
+                log.warning("⚠️ Round ended during calibration. Restarting cycle.")
+                return
             if dataset_shard.needs_new_subchunk(): dataset_shard.advance(args.server, args.precision)
             x, y = dataset_shard.get_batch(batch_size, seed=hash("cal") % 10000 + ci)
             x, y = x.to(train_device), y.to(train_device)
