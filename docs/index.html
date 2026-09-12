@@ -13,6 +13,7 @@
   --bg: #0a0a0b; --bg-soft: #111113; --bg-softer: #16161a; --text: #f5f5f7;
   --text-dim: #c7c7cc; --text-muted: #8a8a92; --border: #1f1f23; --border-strong: #2a2a30;
   --accent: #22c55e; --accent-dim: #16a34a; --info: #60a5fa; --warn: #fbbf24;
+  --callout-bg: rgba(34,197,94,0.05); --callout-border: rgba(34,197,94,0.22);
   --serif: 'Fraunces', 'Times New Roman', serif;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --mono: 'JetBrains Mono', ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -21,28 +22,21 @@
   --term-accent: #22c55e; --term-info: #60a5fa; --term-warn: #fbbf24; --term-error: #ef4444;
   color-scheme: dark;
 }
-
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #fafaf9; --bg-soft: #ffffff; --bg-softer: #f0f0ee; --text: #111113;
     --text-dim: #3a3a40; --text-muted: #6b6b73; --border: #e4e4e1; --border-strong: #d0d0cb;
     --accent: #16a34a; --accent-dim: #15803d; --info: #2563eb; --warn: #b45309;
+    --callout-bg: rgba(22,163,74,0.05); --callout-border: rgba(22,163,74,0.25);
     --term-bg: #1a1a1e; --term-bar-bg: #0f0f12; --term-border: #2a2a2e; --term-text: #e4e4e7;
     --term-dim: #a1a1aa; --term-accent: #4ade80; --term-info: #60a5fa; --term-warn: #fbbf24; --term-error: #ef4444;
     color-scheme: light;
   }
 }
-
 * { margin: 0; padding: 0; box-sizing: border-box; }
-
-html, body {
-  overflow-x: hidden;
-  width: 100%;
-  max-width: 100vw;
-}
-
+html, body { overflow-x: hidden; width: 100%; max-width: 100vw; }
 html { scroll-behavior: smooth; font-size: 21px; }
-body { background: var(--bg); color: var(--text); font-family: var(--sans); line-height: 1.6; -webkit-font-smoothing: antialiased; font-feature-settings: "kern" 1, "liga" 1; }
+body { background: var(--bg); color: var(--text); font-family: var(--sans); line-height: 1.6; -webkit-font-smoothing: antialiased; }
 img { max-width: 100%; height: auto; }
 code, pre, .mono { font-family: var(--mono); font-size: 0.88em; }
 .serif { font-family: var(--serif); font-style: italic; font-weight: 400; }
@@ -50,7 +44,7 @@ a { color: var(--accent); text-decoration: none; }
 a:hover { color: var(--accent-dim); text-decoration: underline; }
 
 header { position: sticky; top: 0; z-index: 100; border-bottom: 1px solid var(--border); background: var(--bg); width: 100%; }
-.header-inner { max-width: 1440px; margin: 0 auto; padding: 0 34px; height: 86px; display: flex; align-items: center; gap: 38px; width: 100%; box-sizing: border-box; }
+.header-inner { max-width: 1440px; margin: 0 auto; padding: 0 34px; height: 86px; display: flex; align-items: center; gap: 38px; width: 100%; }
 .logo { display: flex; align-items: center; gap: 14px; cursor: pointer; user-select: none; }
 .logo-img { height: 31px; width: auto; display: block; }
 .logo-fallback { width: 34px; height: 34px; border: 1px solid var(--border-strong); display: none; place-items: center; color: var(--text); font-family: var(--serif); font-style: italic; font-size: 21px; }
@@ -66,44 +60,66 @@ nav a.active { color: var(--text); }
 .gh-btn:hover { color: var(--text); border-color: var(--border-strong); text-decoration: none; }
 .gh-btn svg { width: 18px; height: 18px; }
 
-.mobile-menu-btn { display: none; background: none; border: none; padding: 10px; cursor: pointer; margin-left: auto; color: var(--text); border-radius: var(--radius-sm); transition: background 0.15s; }
-.mobile-menu-btn:hover { background: var(--bg-softer); }
+.mobile-menu-btn { display: none; background: none; border: none; padding: 10px; cursor: pointer; margin-left: auto; color: var(--text); border-radius: var(--radius-sm); }
 .mobile-menu-btn svg { width: 26px; height: 26px; }
-
-.mobile-menu-overlay { position: fixed; inset: 0; background: var(--bg); z-index: 200; display: flex; flex-direction: column; padding: 24px; transform: translateY(-100%); transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1); overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.mobile-menu-overlay { position: fixed; inset: 0; background: var(--bg); z-index: 200; display: flex; flex-direction: column; padding: 24px; transform: translateY(-100%); transition: transform 0.35s cubic-bezier(0.4,0,0.2,1); overflow-y: auto; }
 .mobile-menu-overlay.open { transform: translateY(0); }
 .mobile-menu-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px; padding-bottom: 20px; border-bottom: 1px solid var(--border); }
-.mobile-menu-close { background: none; border: none; padding: 10px; cursor: pointer; color: var(--text); border-radius: var(--radius-sm); transition: background 0.15s; }
-.mobile-menu-close:hover { background: var(--bg-softer); }
+.mobile-menu-close { background: none; border: none; padding: 10px; cursor: pointer; color: var(--text); border-radius: var(--radius-sm); }
 .mobile-menu-close svg { width: 26px; height: 26px; }
 .mobile-menu-links { display: flex; flex-direction: column; gap: 10px; flex: 1; }
-.mobile-menu-links a { padding: 18px 22px; font-size: 20px; font-weight: 500; color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--radius); text-decoration: none; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; gap: 14px; }
-.mobile-menu-links a::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted); opacity: 0; transition: opacity 0.15s; }
+.mobile-menu-links a { padding: 18px 22px; font-size: 20px; font-weight: 500; color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--radius); text-decoration: none; cursor: pointer; display: flex; align-items: center; gap: 14px; }
+.mobile-menu-links a::before { content: ''; width: 6px; height: 6px; background: var(--text-muted); opacity: 0; }
 .mobile-menu-links a:hover, .mobile-menu-links a.active { color: var(--text); background: var(--bg-softer); border-color: var(--border-strong); }
 .mobile-menu-links a.active::before { opacity: 1; background: var(--accent); }
-.mobile-menu-gh { margin-top: 28px; padding: 18px 22px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-dim); display: flex; align-items: center; justify-content: center; gap: 12px; text-decoration: none; font-weight: 500; font-size: 17px; transition: all 0.15s; }
-.mobile-menu-gh:hover { color: var(--text); border-color: var(--border-strong); background: var(--bg-softer); text-decoration: none; }
+.mobile-menu-gh { margin-top: 28px; padding: 18px 22px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-dim); display: flex; align-items: center; justify-content: center; gap: 12px; text-decoration: none; font-weight: 500; font-size: 17px; }
 .mobile-menu-gh svg { width: 20px; height: 20px; }
 
 .view { display: none; }
 .view.active { display: block; }
-.container { max-width: 1440px; margin: 0 auto; padding: 0 34px; width: 100%; box-sizing: border-box; }
+.container { max-width: 1440px; margin: 0 auto; padding: 0 34px; width: 100%; }
 .page-pad { padding: 67px 0 108px; }
 
 .hero { padding: 67px 0 77px; border-bottom: 1px solid var(--border); }
 .hero-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 58px; align-items: center; }
-.hero-copy { text-align: left; }
-.product-grid { align-items: stretch; }
-.product-side { justify-content: center; }
-.hero h1 { font-size: clamp(50px, 6.5vw, 70px); font-weight: 600; line-height: 1.08; color: var(--text); margin-bottom: 29px; }
-.hero h1 .em { 
-  font-family: var(--sans);
-  font-weight: 700;
-  color: var(--accent);
-  letter-spacing: -0.02em;
-}
+.hero h1 { font-size: clamp(50px, 6.5vw, 70px); font-weight: 600; line-height: 1.08; margin-bottom: 29px; }
+.hero h1 .em { font-weight: 700; color: var(--accent); letter-spacing: -0.02em; }
 .hero-sub { font-size: 21px; color: var(--text-dim); margin-bottom: 38px; line-height: 1.6; }
-.hero-btns { display: flex; gap: 14px; flex-wrap: wrap; }
+.hero-image-wrap { display: flex; align-items: center; justify-content: center; }
+.fit-image { width: 100%; max-width: 550px; height: auto; object-fit: contain; border-radius: 10px; display: block; }
+
+.stats-strip { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--border); margin-top: 67px; }
+.stat-item { padding: 31px 29px; border-right: 1px solid var(--border); }
+.stat-item:last-child { border-right: none; }
+.stat-val { font-family: var(--mono); font-size: 31px; font-weight: 500; margin-bottom: 6px; }
+.stat-lbl { font-size: 15px; color: var(--text-muted); }
+
+/* Discrete square callout */
+.callout { background: var(--callout-bg); border: 1px solid var(--callout-border); border-radius: 0; padding: 30px 32px; margin: 0 0 58px; }
+.callout-label { display: block; font-family: var(--mono); font-size: 12px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); margin-bottom: 14px; }
+.callout p { font-size: 17px; color: var(--text-dim); line-height: 1.6; margin-bottom: 14px; }
+.callout p:last-child { margin-bottom: 0; }
+.callout ul { list-style: none; }
+.callout li { font-size: 16px; color: var(--text-dim); line-height: 1.6; padding: 5px 0 5px 22px; position: relative; }
+.callout li::before { content: ''; position: absolute; left: 0; top: 14px; width: 6px; height: 6px; background: var(--accent); }
+
+.product-section { padding: 86px 0 77px; border-bottom: 1px solid var(--border); }
+.product-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 67px; align-items: start; }
+.product-head { margin-bottom: 38px; }
+.product-head h2 { font-size: 36px; font-weight: 600; margin-bottom: 17px; line-height: 1.2; }
+.product-head p { font-size: 20px; color: var(--text-dim); line-height: 1.6; }
+.feature-list { display: flex; flex-direction: column; gap: 31px; }
+.feature-item { display: grid; grid-template-columns: 38px 1fr; gap: 19px; }
+.feature-num { font-family: var(--mono); font-size: 15px; color: var(--text-muted); padding-top: 4px; }
+.feature-item h3 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+.feature-item p { font-size: 17px; color: var(--text-dim); line-height: 1.55; }
+.product-side { display: flex; flex-direction: column; gap: 29px; justify-content: center; }
+
+.cta-card { background: var(--bg-soft); border: 1px solid var(--border); padding: 40px 34px; border-radius: 0; }
+.cta-card h3 { font-size: 24px; font-weight: 600; margin-bottom: 12px; line-height: 1.2; }
+.cta-card p { font-size: 17px; color: var(--text-dim); line-height: 1.6; margin-bottom: 24px; }
+.cta-btns { display: flex; flex-direction: column; gap: 12px; }
+.cta-btns .btn { width: 100%; justify-content: center; }
 .btn { padding: 14px 26px; font-size: 17px; font-weight: 500; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 11px; text-decoration: none; cursor: pointer; }
 .btn-primary { background: var(--text); color: var(--bg); }
 .btn-primary:hover { background: var(--text-dim); color: var(--bg); text-decoration: none; }
@@ -111,153 +127,55 @@ nav a.active { color: var(--text); }
 .btn-ghost:hover { border-color: var(--text-muted); text-decoration: none; }
 .btn svg { width: 17px; height: 17px; }
 
-.hero-image-wrap { display: flex; align-items: center; justify-content: center; }
-.fit-image { width: 100%; max-width: 550px; height: auto; object-fit: contain; border-radius: 10px; display: block; }
-
-.stats-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; border: 1px solid var(--border); margin-top: 67px; max-width: 100%; }
-.stat-item { padding: 31px 29px; border-right: 1px solid var(--border); }
-.stat-item:last-child { border-right: none; }
-.stat-val { font-family: var(--mono); font-size: 31px; font-weight: 500; color: var(--text); margin-bottom: 6px; }
-.stat-lbl { font-size: 15px; color: var(--text-muted); }
-
-.product-side { display: flex; flex-direction: column; gap: 29px; }
-.product-side-image { display: flex; align-items: center; justify-content: center; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 8px; padding: 24px; overflow: hidden; }
-.product-side-image .fit-image { max-width: 100%; height: auto; border-radius: 6px; }
-.product-section { padding: 86px 0 77px; border-bottom: 1px solid var(--border); }
-.product-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 67px; align-items: start; }
-.product-head { margin-bottom: 38px; }
-.product-head h2 { font-size: 36px; font-weight: 600; color: var(--text); margin-bottom: 17px; line-height: 1.2; }
-.product-head p { font-size: 20px; color: var(--text-dim); line-height: 1.6; }
-.feature-list { display: flex; flex-direction: column; gap: 31px; }
-.feature-item { display: grid; grid-template-columns: 38px 1fr; gap: 19px; }
-.feature-num { font-family: var(--mono); font-size: 15px; color: var(--text-muted); padding-top: 4px; }
-.feature-item h3 { font-size: 20px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
-.feature-item p { font-size: 17px; color: var(--text-dim); line-height: 1.55; }
-
-.cta-card { background: var(--bg-soft); border: 1px solid var(--border); padding: 48px 38px; border-radius: 8px; max-width: 100%; }
-.cta-card h3 { font-size: 29px; font-weight: 600; color: var(--text); margin-bottom: 14px; line-height: 1.2; }
-.cta-card p { font-size: 17px; color: var(--text-dim); line-height: 1.6; margin-bottom: 29px; }
-.cta-btns { display: flex; flex-direction: column; gap: 12px; }
-.cta-btns .btn { width: 100%; justify-content: center; }
-
-.highlight-card { 
-  background: rgba(34, 197, 94, 0.08); 
-  border: 2px solid var(--accent); 
-  padding: 42px 38px; 
-  border-radius: 12px; 
-  margin: 58px 0; 
-  max-width: 100%;
-}
-.highlight-card h3 { 
-  font-size: 26px; 
-  font-weight: 700; 
-  color: var(--accent); 
-  margin-bottom: 18px; 
-  line-height: 1.2;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.highlight-card h3 .icon {
-  font-size: 28px;
-  line-height: 1;
-}
-.highlight-card p { 
-  font-size: 18px; 
-  color: var(--text); 
-  line-height: 1.7; 
-  margin-bottom: 16px;
-  font-weight: 500;
-}
-.highlight-card p:last-child { margin-bottom: 0; }
-.highlight-card ul { 
-  list-style: none; 
-  padding: 0; 
-  margin: 0;
-}
-.highlight-card li { 
-  font-size: 18px; 
-  color: var(--text); 
-  line-height: 1.7; 
-  padding: 8px 0 8px 32px; 
-  position: relative;
-  font-weight: 500;
-}
-.highlight-card li::before { 
-  content: '✓'; 
-  position: absolute; 
-  left: 0; 
-  color: var(--accent); 
-  font-family: var(--mono); 
-  font-weight: 700;
-  font-size: 20px;
-}
-
-.terminal { position: relative; background: var(--term-bg); border: 1px solid var(--term-border); border-radius: 8px; margin-bottom: 29px; overflow: hidden; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15); max-width: 100%; }
+.terminal { background: var(--term-bg); border: 1px solid var(--term-border); border-radius: 0; margin-bottom: 29px; overflow: hidden; }
 .terminal-bar { display: flex; align-items: center; gap: 11px; padding: 14px 19px; background: var(--term-bar-bg); border-bottom: 1px solid var(--term-border); }
 .terminal-dots { display: flex; gap: 8px; }
-.terminal-dots span { width: 13px; height: 13px; border-radius: 50%; transition: opacity 0.15s; }
+.terminal-dots span { width: 13px; height: 13px; border-radius: 50%; }
 .terminal-dots span:nth-child(1) { background: #ef4444; }
 .terminal-dots span:nth-child(2) { background: #fbbf24; }
 .terminal-dots span:nth-child(3) { background: #22c55e; }
 .terminal-title { font-family: var(--mono); font-size: 13px; color: var(--term-dim); margin-left: 8px; font-weight: 500; }
-.terminal-copy { margin-left: auto; padding: 6px 14px; border: 1px solid var(--term-border); background: rgba(255, 255, 255, 0.05); color: var(--term-dim); font-family: var(--mono); font-size: 13px; font-weight: 500; cursor: pointer; border-radius: 4px; transition: all 0.15s; }
-.terminal-copy:hover { color: var(--term-text); background: rgba(255, 255, 255, 0.08); border-color: var(--text-muted); }
-.terminal-copy.copied { color: var(--term-accent); border-color: var(--term-accent); background: rgba(34, 197, 94, 0.1); }
-.terminal-body { padding: 24px 26px; font-family: var(--mono); font-size: 15px; line-height: 1.9; overflow-x: auto; color: var(--term-text); -webkit-overflow-scrolling: touch; }
+.terminal-copy { margin-left: auto; padding: 6px 14px; border: 1px solid var(--term-border); background: rgba(255,255,255,0.05); color: var(--term-dim); font-family: var(--mono); font-size: 13px; font-weight: 500; cursor: pointer; border-radius: 4px; }
+.terminal-copy:hover { color: var(--term-text); background: rgba(255,255,255,0.08); }
+.terminal-copy.copied { color: var(--term-accent); border-color: var(--term-accent); }
+.terminal-body { padding: 24px 26px; font-family: var(--mono); font-size: 15px; line-height: 1.9; overflow-x: auto; color: var(--term-text); }
 .terminal-body .line { display: block; white-space: pre; padding: 2px 0; }
 .t-prompt { color: var(--term-dim); user-select: none; font-weight: 500; }
 .t-cmd { color: var(--term-text); font-weight: 500; }
-.t-comment { color: var(--term-dim); user-select: none; font-style: italic; }
-.t-flag { color: var(--term-info); font-weight: 500; }
-.t-output { color: var(--term-accent); user-select: none; }
-.t-info { color: var(--term-info); font-weight: 500; }
-.t-warn { color: var(--term-warn); font-weight: 500; }
-.t-success { color: var(--term-accent); font-weight: 600; }
-.t-bold { font-weight: 600; }
-.t-dim { color: var(--term-dim); }
-.terminal-body .line-group { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.05); }
-.terminal-body .line:first-child { margin-top: 0; }
 
 .os-tabs { display: flex; gap: 4px; margin-bottom: 19px; border-bottom: 1px solid var(--border); overflow-x: auto; }
-.os-tab { padding: 10px 20px; font-family: var(--mono); font-size: 14px; font-weight: 500; color: var(--text-muted); background: transparent; border: none; border-bottom: 2px solid transparent; cursor: pointer; transition: all 0.15s; margin-bottom: -1px; white-space: nowrap; }
+.os-tab { padding: 10px 20px; font-family: var(--mono); font-size: 14px; font-weight: 500; color: var(--text-muted); background: transparent; border: none; border-bottom: 2px solid transparent; cursor: pointer; margin-bottom: -1px; white-space: nowrap; }
 .os-tab:hover { color: var(--text-dim); }
 .os-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 .os-panel { display: none; }
 .os-panel.active { display: block; }
 
-.install-hero { background: var(--bg-soft); border: 1px solid var(--border); border-radius: 12px; padding: 38px; margin-bottom: 38px; max-width: 100%; box-sizing: border-box; }
-.install-hero h3 { font-size: 24px; font-weight: 600; color: var(--text); margin-bottom: 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.install-hero h3 .badge { font-family: var(--mono); font-size: 12px; font-weight: 500; color: var(--accent); background: rgba(34, 197, 94, 0.1); border: 1px solid var(--accent); padding: 3px 10px; border-radius: 100px; }
+.install-hero { background: var(--bg-soft); border: 1px solid var(--border); border-radius: 0; padding: 38px; margin-bottom: 38px; }
+.install-hero h3 { font-size: 24px; font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.install-hero h3 .badge { font-family: var(--mono); font-size: 12px; font-weight: 500; color: var(--accent); background: var(--callout-bg); border: 1px solid var(--callout-border); padding: 3px 10px; border-radius: 0; }
 .install-hero p { font-size: 17px; color: var(--text-dim); margin-bottom: 24px; line-height: 1.6; }
 .install-hero .terminal { margin-bottom: 0; }
-.install-divider { display: flex; align-items: center; gap: 19px; margin: 48px 0 38px; color: var(--text-muted); font-family: var(--mono); font-size: 14px; }
-.install-divider::before, .install-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
 
 .page-head { margin-bottom: 58px; padding-bottom: 29px; border-bottom: 1px solid var(--border); }
 .page-head .crumb { font-family: var(--mono); font-size: 15px; color: var(--text-muted); margin-bottom: 14px; }
-.page-head h1 { font-size: 43px; font-weight: 600; margin-bottom: 14px; color: var(--text); }
+.page-head h1 { font-size: 43px; font-weight: 600; margin-bottom: 14px; }
 .page-head p { font-size: 20px; color: var(--text-dim); max-width: 840px; }
 
-.content h2 { font-size: 29px; font-weight: 600; color: var(--text); margin-top: 58px; margin-bottom: 17px; }
-.content h3 { font-size: 21px; font-weight: 600; color: var(--text); margin-top: 38px; margin-bottom: 14px; }
+.content h2 { font-size: 29px; font-weight: 600; margin-top: 58px; margin-bottom: 17px; }
+.content h3 { font-size: 21px; font-weight: 600; margin-top: 38px; margin-bottom: 14px; }
 .content p { margin-bottom: 17px; color: var(--text-dim); line-height: 1.65; font-size: 18px; }
 .content ul, .content ol { margin-bottom: 17px; padding-left: 34px; }
 .content li { margin-bottom: 10px; color: var(--text-dim); line-height: 1.6; font-size: 18px; }
 .content code { background: var(--bg-softer); padding: 2px 8px; border: 1px solid var(--border); color: var(--warn); font-size: 16px; border-radius: 4px; }
-pre { background: var(--bg-softer); border: 1px solid var(--border); padding: 19px 24px; overflow-x: auto; margin-bottom: 24px; font-size: 16px; line-height: 1.6; color: var(--text-dim); border-radius: 6px; max-width: 100%; box-sizing: border-box; -webkit-overflow-scrolling: touch; }
 
-.info { background: var(--bg-soft); border-left: 3px solid var(--info); padding: 17px 22px; margin-bottom: 29px; font-size: 17px; color: var(--text-dim); display: flex; gap: 13px; align-items: flex-start; border-radius: 4px; }
-.info-icon { font-family: var(--mono); font-weight: 600; color: var(--info); flex-shrink: 0; }
-
-.stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; border: 1px solid var(--border); margin-bottom: 38px; border-radius: 6px; overflow: hidden; max-width: 100%; }
+.stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--border); margin-bottom: 38px; overflow: hidden; }
 .stat-cell { padding: 29px 26px; border-right: 1px solid var(--border); }
 .stat-cell:last-child { border-right: none; }
-.stat-cell .val { font-family: var(--mono); font-size: 29px; font-weight: 500; color: var(--text); margin-bottom: 6px; }
+.stat-cell .val { font-family: var(--mono); font-size: 29px; font-weight: 500; margin-bottom: 6px; }
 .stat-cell .lbl { font-size: 15px; color: var(--text-muted); margin-bottom: 5px; }
 .stat-cell .sub { font-size: 14px; color: var(--text-muted); font-family: var(--mono); }
 
-.table-wrap { border: 1px solid var(--border); margin-bottom: 29px; overflow-x: auto; border-radius: 6px; max-width: 100%; box-sizing: border-box; -webkit-overflow-scrolling: touch; }
+.table-wrap { border: 1px solid var(--border); margin-bottom: 29px; overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 17px; }
 thead { background: var(--bg-soft); border-bottom: 1px solid var(--border); }
 th { text-align: left; padding: 16px 19px; font-size: 15px; font-weight: 500; color: var(--text-muted); white-space: nowrap; }
@@ -269,17 +187,17 @@ td code { font-size: 15px; padding: 2px 8px; }
 td.mono { font-family: var(--mono); text-align: right; font-size: 16px; color: var(--text); white-space: nowrap; }
 
 .trust-bar { display: flex; align-items: center; gap: 11px; justify-content: flex-end; }
-.trust-track { width: 67px; height: 5px; background: var(--border); overflow: hidden; border-radius: 3px; }
-.trust-fill { height: 100%; background: var(--accent); border-radius: 3px; }
+.trust-track { width: 67px; height: 5px; background: var(--border); overflow: hidden; }
+.trust-fill { height: 100%; background: var(--accent); }
 .trust-val { font-family: var(--mono); font-size: 15px; color: var(--text-muted); min-width: 43px; text-align: right; }
 
-.cap-list { border: 1px solid var(--border); margin-bottom: 29px; border-radius: 6px; overflow: hidden; max-width: 100%; }
+.cap-list { border: 1px solid var(--border); margin-bottom: 29px; overflow: hidden; }
 .cap-item { display: grid; grid-template-columns: 26px 1fr; gap: 19px; padding: 17px 22px; border-bottom: 1px solid var(--border); font-size: 17px; line-height: 1.5; }
 .cap-item:last-child { border-bottom: none; }
 .cap-marker { font-family: var(--mono); font-weight: 600; color: var(--accent); }
 .cap-text { color: var(--text-dim); }
 
-.contact-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0; border: 1px solid var(--border); margin-bottom: 38px; border-radius: 6px; overflow: hidden; max-width: 100%; }
+.contact-grid { display: grid; grid-template-columns: repeat(2, 1fr); border: 1px solid var(--border); margin-bottom: 38px; overflow: hidden; }
 .contact-card { padding: 31px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .contact-card:nth-child(2n) { border-right: none; }
 .contact-card:nth-last-child(-n+2) { border-bottom: none; }
@@ -291,121 +209,73 @@ td.mono { font-family: var(--mono); text-align: right; font-size: 16px; color: v
 .faq { border-top: 1px solid var(--border); margin-top: 58px; padding-top: 38px; }
 .faq-item { padding: 24px 0; border-bottom: 1px solid var(--border); }
 .faq-item:last-child { border-bottom: none; }
-.faq-q { font-size: 20px; font-weight: 600; color: var(--text); margin-bottom: 12px; line-height: 1.4; }
+.faq-q { font-size: 20px; font-weight: 600; margin-bottom: 12px; line-height: 1.4; }
 .faq-a { font-size: 17px; color: var(--text-dim); line-height: 1.6; }
 
 footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px; width: 100%; }
-.footer-inner { max-width: 1440px; margin: 0 auto; padding: 0 34px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 19px; font-size: 16px; color: var(--text-muted); width: 100%; box-sizing: border-box; }
+.footer-inner { max-width: 1440px; margin: 0 auto; padding: 0 34px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 19px; font-size: 16px; color: var(--text-muted); width: 100%; }
 .footer-links { display: flex; gap: 24px; }
 .footer-links a { color: var(--text-muted); }
 .footer-links a:hover { color: var(--text); }
 
 .empty-state { padding: 48px 29px; text-align: center; color: var(--text-muted); font-size: 16px; font-family: var(--mono); }
 .loading-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-right: 8px; animation: pulse 1.4s ease-in-out infinite; }
-@keyframes pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+@keyframes pulse { 0%,100% { opacity: 0.3; } 50% { opacity: 1; } }
 
 @media (max-width: 1080px) {
   html { font-size: 19px; }
-  .hero-grid { grid-template-columns: 1fr; gap: 43px; }
+  .hero-grid, .product-grid { grid-template-columns: 1fr; gap: 43px; }
   .hero-image-wrap { order: -1; }
-  .product-grid { grid-template-columns: 1fr; gap: 43px; }
-  .stats-strip { grid-template-columns: repeat(2, 1fr); }
-  .stats-strip .stat-item { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-  .stats-strip .stat-item:nth-child(2n) { border-right: none; }
-  .stats-strip .stat-item:nth-child(n+3) { border-bottom: none; }
-  .stats-grid { grid-template-columns: repeat(2, 1fr); }
-  .stats-grid .stat-cell { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-  .stats-grid .stat-cell:nth-child(2n) { border-right: none; }
-  .stats-grid .stat-cell:nth-child(n+3) { border-bottom: none; }
+  .stats-strip, .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .stats-strip .stat-item, .stats-grid .stat-cell { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  .stats-strip .stat-item:nth-child(2n), .stats-grid .stat-cell:nth-child(2n) { border-right: none; }
+  .stats-strip .stat-item:nth-child(n+3), .stats-grid .stat-cell:nth-child(n+3) { border-bottom: none; }
   .contact-grid { grid-template-columns: 1fr; }
   .contact-card { border-right: none !important; }
   .contact-card:last-child { border-bottom: none; }
   .hero { padding: 48px 0 58px; }
   .fit-image { max-width: 460px; }
 }
-
 @media (max-width: 720px) {
   html { font-size: 17px; }
-  
   nav, .gh-btn { display: none; }
   .mobile-menu-btn { display: block; }
   .header-inner { padding: 0 20px; gap: 16px; height: 72px; }
-  
   .container, .footer-inner { padding: 0 20px; }
-  
-  .stats-strip { grid-template-columns: repeat(2, 1fr); margin-top: 40px; }
-  .stats-strip .stat-item { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 24px 20px; }
-  .stats-strip .stat-item:nth-child(2n) { border-right: none; }
-  .stats-strip .stat-item:nth-child(n+3) { border-bottom: none; }
-  .stat-val { font-size: 24px; }
-  .stat-lbl { font-size: 13px; }
-  
-  .stats-grid { grid-template-columns: repeat(2, 1fr); }
-  .stats-grid .stat-cell { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 22px 18px; }
-  .stats-grid .stat-cell:nth-child(2n) { border-right: none; }
-  .stats-grid .stat-cell:nth-child(n+3) { border-bottom: none; }
-  .stat-cell .val { font-size: 22px; }
-  .stat-cell .lbl { font-size: 13px; }
-  .stat-cell .sub { font-size: 12px; }
-  
+  .stats-strip { margin-top: 40px; }
+  .stats-strip .stat-item, .stats-grid .stat-cell { padding: 24px 20px; }
+  .stat-val { font-size: 24px; } .stat-lbl { font-size: 13px; }
+  .stat-cell .val { font-size: 22px; } .stat-cell .lbl { font-size: 13px; } .stat-cell .sub { font-size: 12px; }
   .hero h1 { font-size: clamp(36px, 8vw, 50px); margin-bottom: 20px; }
   .hero-sub { font-size: 18px; margin-bottom: 28px; }
   .hero { padding: 36px 0 48px; }
-  
   .product-section { padding: 48px 0 40px; }
-  .product-head h2 { font-size: 28px; }
-  .product-head p { font-size: 17px; }
-  
-  .cta-card { padding: 28px 20px; }
-  .cta-card h3 { font-size: 22px; }
-  
-  .page-head h1 { font-size: 32px; }
-  .page-head p { font-size: 17px; }
+  .product-head h2 { font-size: 28px; } .product-head p { font-size: 17px; }
+  .cta-card { padding: 28px 20px; } .cta-card h3 { font-size: 22px; }
+  .callout { padding: 24px 22px; margin-bottom: 40px; }
+  .page-head h1 { font-size: 32px; } .page-head p { font-size: 17px; }
   .page-pad { padding: 36px 0 64px; }
-  
-  .content h2 { font-size: 24px; margin-top: 36px; }
-  .content h3 { font-size: 19px; }
+  .content h2 { font-size: 24px; margin-top: 36px; } .content h3 { font-size: 19px; }
   .content p, .content li { font-size: 16px; }
-  
-  .install-hero { padding: 22px 20px; }
-  .install-hero h3 { font-size: 20px; }
+  .install-hero { padding: 22px 20px; } .install-hero h3 { font-size: 20px; }
   .os-tab { padding: 8px 14px; font-size: 13px; }
-  
   .terminal-body { font-size: 13px; padding: 16px; line-height: 1.7; }
-  pre { padding: 16px; font-size: 14px; }
-  
   .cap-item { padding: 14px 18px; font-size: 15px; gap: 14px; }
-  .faq-q { font-size: 18px; }
-  .faq-a { font-size: 15px; }
-  
+  .faq-q { font-size: 18px; } .faq-a { font-size: 15px; }
   .footer-inner { flex-direction: column; text-align: center; gap: 14px; }
   .footer-links { gap: 16px; flex-wrap: wrap; justify-content: center; }
-  
-  table { font-size: 15px; }
-  th, td { padding: 12px 14px; }
+  table { font-size: 15px; } th, td { padding: 12px 14px; }
   .lb-table th:nth-child(4), .lb-table td:nth-child(4), .lb-table th:nth-child(6), .lb-table td:nth-child(6) { display: none; }
-  
   .fit-image { max-width: 380px; }
 }
-
 @media (max-width: 420px) {
   .container, .header-inner, .footer-inner { padding: 0 16px; }
-  
-  .stats-strip { grid-template-columns: 1fr; }
-  .stats-strip .stat-item { border-right: none !important; border-bottom: 1px solid var(--border); }
-  .stats-strip .stat-item:last-child { border-bottom: none; }
-  
-  .stats-grid { grid-template-columns: 1fr; }
-  .stats-grid .stat-cell { border-right: none !important; border-bottom: 1px solid var(--border); }
-  .stats-grid .stat-cell:last-child { border-bottom: none; }
-  
-  .install-hero { padding: 18px 16px; }
-  .cta-card { padding: 24px 16px; }
-  .contact-card { padding: 20px 16px; }
+  .stats-strip, .stats-grid { grid-template-columns: 1fr; }
+  .stats-strip .stat-item, .stats-grid .stat-cell { border-right: none !important; border-bottom: 1px solid var(--border); }
+  .stats-strip .stat-item:last-child, .stats-grid .stat-cell:last-child { border-bottom: none; }
+  .install-hero { padding: 18px 16px; } .cta-card { padding: 24px 16px; } .contact-card { padding: 20px 16px; }
   .terminal-body { padding: 14px; font-size: 12px; }
-  pre { padding: 14px; font-size: 12px; }
 }
-
 ::-webkit-scrollbar { width: 11px; height: 11px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 6px; }
@@ -434,16 +304,11 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
       source
     </a>
     <button class="mobile-menu-btn" aria-label="Open menu">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-        <line x1="3" y1="6" x2="21" y2="6"/>
-        <line x1="3" y1="12" x2="21" y2="12"/>
-        <line x1="3" y1="18" x2="21" y2="18"/>
-      </svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
     </button>
   </div>
 </header>
 
-<!-- ===== MOBILE MENU OVERLAY ===== -->
 <div class="mobile-menu-overlay" aria-hidden="true">
   <div class="mobile-menu-header">
     <div class="logo" data-view="home">
@@ -452,10 +317,7 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
       <span class="logo-text">CrowdGPT</span>
     </div>
     <button class="mobile-menu-close" aria-label="Close menu">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-        <line x1="6" y1="6" x2="18" y2="18"/>
-        <line x1="6" y1="18" x2="18" y2="6"/>
-      </svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
     </button>
   </div>
   <div class="mobile-menu-links">
@@ -477,87 +339,61 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
   <div class="hero">
     <div class="container">
       <div class="hero-grid">
-        <div class="hero-copy">
+        <div>
           <h1>Train a language model with <span class="em">your GPU</span>.</h1>
-          <p class="hero-sub">
-            CrowdGPT is an open federated training protocol. You run a client on your machine,
-            train on a data chunk locally, submit the weight delta, and the global 1B-parameter
-            transformer gets better. No datacenters required.
-          </p>
+          <p class="hero-sub">CrowdGPT is an open federated training protocol. Run a client, train on a data chunk, submit the weight delta. The global model gets better. No datacenters.</p>
         </div>
         <div class="hero-image-wrap">
           <img src="greet.png" class="fit-image" alt="CrowdGPT client dashboard">
         </div>
       </div>
-
       <div class="stats-strip">
-        <div class="stat-item">
-          <div class="stat-val" id="home-stat-contributions">—</div>
-          <div class="stat-lbl">Contributions</div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-val" id="home-stat-gpus">—</div>
-          <div class="stat-lbl">GPUs currently active</div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-val" id="home-stat-tokens">—</div>
-          <div class="stat-lbl">Tokens contributed</div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-val" id="home-stat-loss">—</div>
-          <div class="stat-lbl">Current loss</div>
-        </div>
+        <div class="stat-item"><div class="stat-val" id="home-stat-contributions">—</div><div class="stat-lbl">Contributions</div></div>
+        <div class="stat-item"><div class="stat-val" id="home-stat-gpus">—</div><div class="stat-lbl">GPUs active</div></div>
+        <div class="stat-item"><div class="stat-val" id="home-stat-tokens">—</div><div class="stat-lbl">Tokens contributed</div></div>
+        <div class="stat-item"><div class="stat-val" id="home-stat-loss">—</div><div class="stat-lbl">Current loss</div></div>
       </div>
     </div>
   </div>
 
   <section class="product-section">
     <div class="container">
-      
-      <!-- ============================================ -->
-      <!-- TRUST NOTE - HIGHLIGHTED, GREEN BACKGROUND   -->
-      <!-- ============================================ -->
-      <div class="highlight-card">
-        <h3><span class="icon">🛡️</span> Your safety comes first</h3>
-        <p>The CrowdGPT client is completely safe to run. It cannot and will not compromise your computer, access your personal files, or transmit any data from your machine except the mathematical weight updates.</p>
+      <div class="callout">
+        <span class="callout-label">A note on trust</span>
+        <p>The client is one open-source Python file. It reads public data and sends weight updates. Nothing else.</p>
         <ul>
-          <li>Fully open source and auditable on GitHub, you can read every line of code</li>
-          <li>No binaries, no telemetry, no hidden behavior</li>
-          <li>Only downloads public data from HuggingFace and uploads weight deltas to the coordinator</li>
-          <li>Your files, browser history, and local data are never touched</li>
-          <li>The coordinator server is also protected: every submission is validated for correctness, norm bounds, and statistical anomalies before being applied</li>
-          <li>Malicious or malformed updates are automatically rejected, and repeat offenders are banned by subnet</li>
+          <li>Fully auditable, no binaries, no telemetry</li>
+          <li>Only weight deltas leave your machine</li>
+          <li>It cannot access your files or compromise your PC</li>
+          <li>The server validates every update and bans bad actors</li>
         </ul>
       </div>
-      <!-- ============================================ -->
-      <!-- END TRUST NOTE                               -->
-      <!-- ============================================ -->
 
       <div class="product-grid">
         <div>
           <div class="product-head">
             <h2>Federated pretraining, in the open.</h2>
-            <p>A single company training a frontier model uses thousands of A100s in a datacenter. Most people don't have that hardware. But millions of people have gaming PCs with RTX cards sitting idle. CrowdGPT pools that compute, and the model that gets trained belongs to everyone who helped build it.</p>
+            <p>Frontier labs train on thousands of datacenter GPUs. Millions of people have idle gaming GPUs. CrowdGPT pools them, and the model belongs to everyone who helped build it.</p>
           </div>
           <div class="feature-list">
             <div class="feature-item">
               <div class="feature-num">01</div>
-              <div><h3>Local training, public data.</h3><p>Your GPU trains on 10MB data chunks streamed from the public CrowdGPT dataset on HuggingFace. Anyone can inspect or contribute to this dataset. The weight delta is the only thing that leaves your machine. Your personal files, browser history, and any other local data are never accessed or transmitted.</p></div>
+              <div><h3>Local training, public data.</h3><p>Train on 10MB chunks streamed from the public CrowdGPT dataset on HuggingFace. Anyone can inspect or contribute to it. Only the weight delta is uploaded.</p></div>
             </div>
             <div class="feature-item">
               <div class="feature-num">02</div>
-              <div><h3>A real architecture.</h3><p>1B-parameter dense transformer with grouped-query attention, SwiGLU, RoPE, and engrams. Same building blocks as Llama and Mistral, just scaled to run on consumer hardware.</p></div>
+              <div><h3>A real architecture.</h3><p>1B-parameter dense transformer with grouped-query attention, SwiGLU and RoPE. The same building blocks as Llama and Mistral, scaled to consumer hardware.</p></div>
             </div>
             <div class="feature-item">
               <div class="feature-num">03</div>
-              <div><h3>Auditable end to end.</h3><p>The client is a single Python file. No binaries, no telemetry. Read it, fork it, run your own coordinator. The model weights are downloadable.</p></div>
+              <div><h3>Auditable end to end.</h3><p>One Python file. Read it, fork it, run your own coordinator. Weights are downloadable.</p></div>
             </div>
           </div>
         </div>
         <div class="product-side">
           <div class="cta-card">
             <h3>Help the project grow.</h3>
-            <p>Every contribution, even the smallest, makes the model better. Run a client, star the repo, or open an issue.</p>
+            <p>Every contribution makes the model better. Run a client, star the repo, open an issue.</p>
             <div class="cta-btns">
               <a class="btn btn-primary" data-view="install">Install the client <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg></a>
               <a class="btn btn-ghost" href="https://github.com/Vxtzq/CrowdGPT" target="_blank"><svg viewBox="0 0 24 24" fill="currentColor" width="17" height="17"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.21 11.39.6.11.79-.26.79-.58v-2.23c-3.34.73-4.03-1.42-4.03-1.42-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49.99.11-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.3 1.23.96-.27 1.98-.4 3-.4s2.05.13 3.01.4c2.29-1.55 3.3-1.23 3.3-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.8 5.62-5.48 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.19.69.8.58C20.57 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg> Star on GitHub</a>
@@ -575,44 +411,30 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
     <div class="page-head">
       <div class="crumb">home / install</div>
       <h1>Install the client</h1>
-      <p>Get up and running in under a minute. The client is a single Python script with minimal dependencies.</p>
+      <p>One Python script, minimal dependencies, up and running in a minute.</p>
     </div>
 
-    <!-- ============================================ -->
-    <!-- HARDWARE & DISK SPACE - HIGHLIGHTED SECTION  -->
-    <!-- ============================================ -->
-    <div class="highlight-card">
-      <h3><span class="icon">💻</span> Hardware and disk requirements</h3>
-      <p>Before you start, make sure your setup meets these requirements:</p>
+    <div class="callout">
+      <span class="callout-label">Before you start</span>
       <ul>
-        <li><strong>GPU:</strong> NVIDIA (CUDA, recommended) with 8GB+ VRAM, AMD (ROCm on Linux), or Apple Silicon (M1/M2/M3 via MPS)</li>
-        <li><strong>Disk space:</strong> Around 3-4 GB free for model weights (~1.3 GB bf16 or ~2.6 GB fp32), dataset chunks (10 MB each, streamed on demand), and local checkpoints</li>
-        <li><strong>RAM:</strong> Under 4 GB system RAM usage thanks to disk-streamed uploads and bf16 weights</li>
-        <li><strong>CPU only:</strong> Technically supported but extremely slow, expect days per contribution instead of hours</li>
+        <li>GPU: NVIDIA (CUDA), AMD (ROCm) or Apple Silicon (MPS)</li>
+        <li>Disk: about 4 GB free</li>
+        <li>RAM: under 4 GB in use</li>
+        <li>CPU-only runs but is very slow</li>
       </ul>
-      <p>The client auto-tunes batch size and sequence length to fit your GPU, and automatically cleans up old checkpoints to keep disk usage stable.</p>
     </div>
-    <!-- ============================================ -->
-    <!-- END HARDWARE SECTION                         -->
-    <!-- ============================================ -->
 
     <div class="install-hero" id="quick-install">
       <h3>Quick start <span class="badge">Recommended</span></h3>
-      <p>Clone the repository, install dependencies, and run the client. It will automatically detect your GPU and configure optimal settings.</p>
-      
+      <p>Clone, install, run. The client detects your GPU and tunes settings automatically.</p>
       <div class="os-tabs">
         <button class="os-tab active" data-os="linux">Linux</button>
         <button class="os-tab" data-os="macos">macOS</button>
         <button class="os-tab" data-os="windows">Windows</button>
       </div>
-
       <div class="os-panel active" data-os="linux">
         <div class="terminal">
-          <div class="terminal-bar">
-            <div class="terminal-dots"><span></span><span></span><span></span></div>
-            <div class="terminal-title">bash</div>
-            <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
-          </div>
+          <div class="terminal-bar"><div class="terminal-dots"><span></span><span></span><span></span></div><div class="terminal-title">bash</div><button class="terminal-copy" onclick="copyTerminal(this)">copy</button></div>
           <div class="terminal-body">
             <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">git clone https://github.com/Vxtzq/CrowdGPT.git</span></span>
             <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">cd CrowdGPT</span></span>
@@ -621,14 +443,9 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
           </div>
         </div>
       </div>
-
       <div class="os-panel" data-os="macos">
         <div class="terminal">
-          <div class="terminal-bar">
-            <div class="terminal-dots"><span></span><span></span><span></span></div>
-            <div class="terminal-title">zsh</div>
-            <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
-          </div>
+          <div class="terminal-bar"><div class="terminal-dots"><span></span><span></span><span></span></div><div class="terminal-title">zsh</div><button class="terminal-copy" onclick="copyTerminal(this)">copy</button></div>
           <div class="terminal-body">
             <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">git clone https://github.com/Vxtzq/CrowdGPT.git</span></span>
             <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">cd CrowdGPT</span></span>
@@ -637,14 +454,9 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
           </div>
         </div>
       </div>
-
       <div class="os-panel" data-os="windows">
         <div class="terminal">
-          <div class="terminal-bar">
-            <div class="terminal-dots"><span></span><span></span><span></span></div>
-            <div class="terminal-title">powershell</div>
-            <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
-          </div>
+          <div class="terminal-bar"><div class="terminal-dots"><span></span><span></span><span></span></div><div class="terminal-title">powershell</div><button class="terminal-copy" onclick="copyTerminal(this)">copy</button></div>
           <div class="terminal-body">
             <span class="line"><span class="t-prompt">PS&gt; </span><span class="t-cmd">git clone https://github.com/Vxtzq/CrowdGPT.git</span></span>
             <span class="line"><span class="t-prompt">PS&gt; </span><span class="t-cmd">cd CrowdGPT</span></span>
@@ -657,7 +469,6 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
 
     <div class="content">
       <h2>Configuration</h2>
-      <p>The client can be configured via command-line arguments or environment variables.</p>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Flag</th><th>Description</th><th>Default</th></tr></thead>
@@ -680,49 +491,28 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
     <div class="page-head">
       <div class="crumb">home / protocol</div>
       <h1>The Federated Protocol</h1>
-      <p>How CrowdGPT coordinates thousands of independent GPUs to train a single, cohesive language model without centralizing data.</p>
+      <p>How independent GPUs train one model without centralizing data.</p>
     </div>
-
     <div class="content">
-      <h2>1. Task Assignment</h2>
-      <p>When a client connects, the coordinator assigns it a specific data shard (a 10MB chunk of tokenized text from the <a href="https://huggingface.co/datasets/Vxtzq/CrowdGPT" target="_blank">public CrowdGPT dataset</a> on HuggingFace) and the current global model weights. The client downloads the weights from HuggingFace and streams the data chunk locally via HTTP Range requests. The dataset is fully open and anyone can contribute to it.</p>
-      
-      <h2>2. Local Training</h2>
-      <p>The client performs a set number of forward and backward passes on its local GPU. It calculates the gradient (the "delta") between its starting weights and the newly trained weights. No raw data ever leaves the client's machine. Your files, browsing history, and any other local information are never accessed or transmitted.</p>
-
-      <h2>3. Secure Submission</h2>
-      <p>The client compresses and submits only the weight delta to the coordinator. The coordinator validates the submission:</p>
+      <h2>1. Task assignment</h2>
+      <p>The coordinator assigns a data shard (a 10MB chunk of tokenized text from the public CrowdGPT dataset) and the current global weights. The client downloads weights and streams the chunk via HTTP Range requests.</p>
+      <h2>2. Local training</h2>
+      <p>The client runs forward and backward passes on its GPU and computes the delta between starting and trained weights. No raw data leaves the machine.</p>
+      <h2>3. Secure submission</h2>
+      <p>Only the compressed weight delta is uploaded. The coordinator validates it:</p>
       <div class="cap-list">
-        <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">Checks for NaN or Inf values in the delta.</span></div>
-        <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">Verifies the delta size matches the model architecture exactly.</span></div>
-        <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">Ensures the delta norm is within statistically acceptable bounds to prevent poisoning.</span></div>
+        <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">No NaN or Inf values.</span></div>
+        <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">Size matches the architecture exactly.</span></div>
+        <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">Norm within statistical bounds to prevent poisoning.</span></div>
       </div>
-
-      <h2>4. Sequential Aggregation</h2>
-      <p>Valid deltas are applied to the global model using a decoupled learning rate and weight decay. The global step increments, and the updated weights are periodically pushed to HuggingFace for public auditing and as a bootstrap for new clients.</p>
+      <h2>4. Aggregation</h2>
+      <p>Valid deltas are averaged and applied with a decoupled learning rate and weight decay. Updated weights are pushed to HuggingFace for public audit and as a bootstrap for new clients.</p>
     </div>
-
-    <div class="stats-grid" style="margin-top: 58px;">
-      <div class="stat-cell">
-        <div class="val">1B</div>
-        <div class="lbl">Parameters</div>
-        <div class="sub">Dense Transformer</div>
-      </div>
-      <div class="stat-cell">
-        <div class="val">151K</div>
-        <div class="lbl">Vocabulary</div>
-        <div class="sub">Qwen3 Tokenizer</div>
-      </div>
-      <div class="stat-cell">
-        <div class="val">24</div>
-        <div class="lbl">Layers</div>
-        <div class="sub">Grouped-Query Attention</div>
-      </div>
-      <div class="stat-cell">
-        <div class="val">BF16</div>
-        <div class="lbl">Precision</div>
-        <div class="sub">Native GPU Support</div>
-      </div>
+    <div class="stats-grid" style="margin-top:58px;">
+      <div class="stat-cell"><div class="val">1B</div><div class="lbl">Parameters</div><div class="sub">Dense Transformer</div></div>
+      <div class="stat-cell"><div class="val">151K</div><div class="lbl">Vocabulary</div><div class="sub">Qwen3 Tokenizer</div></div>
+      <div class="stat-cell"><div class="val">24</div><div class="lbl">Layers</div><div class="sub">Grouped-Query Attention</div></div>
+      <div class="stat-cell"><div class="val">BF16</div><div class="lbl">Precision</div><div class="sub">Native GPU Support</div></div>
     </div>
   </div>
 </div>
@@ -733,41 +523,22 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
     <div class="page-head">
       <div class="crumb">home / status</div>
       <h1>Network Status</h1>
-      <p>Real-time metrics of the CrowdGPT federated training network.</p>
+      <p>Live metrics from the training network.</p>
     </div>
-
     <div class="stats-grid">
-      <div class="stat-cell">
-        <div class="val" id="status-step">—</div>
-        <div class="lbl">Global Step</div>
-        <div class="sub">Total optimizer updates</div>
-      </div>
-      <div class="stat-cell">
-        <div class="val" id="status-tokens">—</div>
-        <div class="lbl">Tokens Processed</div>
-        <div class="sub">Across all clients</div>
-      </div>
-      <div class="stat-cell">
-        <div class="val" id="status-clients">—</div>
-        <div class="lbl">Active Clients</div>
-        <div class="sub">Currently training</div>
-      </div>
-      <div class="stat-cell">
-        <div class="val" id="status-loss">—</div>
-        <div class="lbl">Model Loss</div>
-        <div class="sub">Latest aggregated</div>
-      </div>
+      <div class="stat-cell"><div class="val" id="status-step">—</div><div class="lbl">Global Step</div><div class="sub">Optimizer updates</div></div>
+      <div class="stat-cell"><div class="val" id="status-tokens">—</div><div class="lbl">Tokens Processed</div><div class="sub">All clients</div></div>
+      <div class="stat-cell"><div class="val" id="status-clients">—</div><div class="lbl">Active Clients</div><div class="sub">Training now</div></div>
+      <div class="stat-cell"><div class="val" id="status-loss">—</div><div class="lbl">Model Loss</div><div class="sub">Latest aggregated</div></div>
     </div>
-
-    <div class="content" style="margin-top: 58px;">
-      <h2>What the numbers mean</h2>
+    <div class="content">
       <ul>
-        <li><strong>Global Step:</strong> Total aggregated optimizer updates applied to the model, across all contributors.</li>
-        <li><strong>Tokens Processed:</strong> Cumulative tokens trained on by every GPU in the swarm.</li>
-        <li><strong>Active Clients:</strong> GPUs that have pinged the coordinator in the last 10 minutes.</li>
-        <li><strong>Model Loss:</strong> Cross-entropy loss of the most recently aggregated update.</li>
+        <li><strong>Global Step:</strong> aggregated updates applied to the model.</li>
+        <li><strong>Tokens Processed:</strong> cumulative tokens trained across all GPUs.</li>
+        <li><strong>Active Clients:</strong> GPUs seen in the last 10 minutes.</li>
+        <li><strong>Model Loss:</strong> loss of the latest aggregated update.</li>
       </ul>
-      <p>Stats refresh automatically every 15 seconds from the HuggingFace CDN. The global model weights are pushed to HuggingFace every 10 hours after aggregated updates complete.</p>
+      <p>Stats refresh every 15 seconds from the HuggingFace CDN. Weights are pushed every 10 hours.</p>
     </div>
   </div>
 </div>
@@ -778,20 +549,12 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
     <div class="page-head">
       <div class="crumb">home / leaderboard</div>
       <h1>Contributor Leaderboard</h1>
-      <p>The top contributors powering the CrowdGPT training run. Rankings are based on total tokens processed.</p>
+      <p>Ranked by total tokens processed.</p>
     </div>
-
     <div class="table-wrap">
       <table class="lb-table">
         <thead>
-          <tr>
-            <th style="width: 60px;">Rank</th>
-            <th>Username</th>
-            <th class="right">Tokens</th>
-            <th class="right">Steps</th>
-            <th class="right">Trust Score</th>
-            <th class="right">Submissions</th>
-          </tr>
+          <tr><th style="width:60px;">Rank</th><th>Username</th><th class="right">Tokens</th><th class="right">Steps</th><th class="right">Trust Score</th><th class="right">Submissions</th></tr>
         </thead>
         <tbody id="lb-body">
           <tr><td colspan="6" class="empty-state"><span class="loading-dot"></span> Loading leaderboard...</td></tr>
@@ -807,60 +570,26 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
     <div class="page-head">
       <div class="crumb">home / contact</div>
       <h1>Get in Touch</h1>
-      <p>Questions, bug reports, or interested in running your own coordinator? Reach out.</p>
+      <p>Bugs, questions, or running your own coordinator.</p>
     </div>
-
     <div class="contact-grid">
-      <div class="contact-card">
-        <h3>GitHub Issues</h3>
-        <p>The best place to report bugs, request features, or discuss technical details of the protocol.</p>
-        <a href="https://github.com/Vxtzq/CrowdGPT/issues" target="_blank" class="link">github.com/Vxtzq/CrowdGPT/issues</a>
-      </div>
-      <div class="contact-card">
-        <h3>Email</h3>
-        <p>For business inquiries, partnership opportunities, or sensitive security disclosures.</p>
-        <a href="mailto:vxtzqmc@gmail.com" class="link">vxtzqmc@gmail.com</a>
-      </div>
-      <div class="contact-card">
-        <h3>Hosting</h3>
-        <p>The primary coordinator API is proudly hosted and maintained by Xevex.</p>
-        <a href="https://xevex.dev" target="_blank" class="link">xevex.dev</a>
-      </div>
-      <div class="contact-card">
-        <h3>Model Weights</h3>
-        <p>All trained model checkpoints and configuration files are publicly available on HuggingFace.</p>
-        <a href="https://huggingface.co/Vxtzq/Crowd-v1" target="_blank" class="link">huggingface.co/Vxtzq/Crowd-v1</a>
-      </div>
+      <div class="contact-card"><h3>GitHub Issues</h3><p>Report bugs, request features, discuss the protocol.</p><a href="https://github.com/Vxtzq/CrowdGPT/issues" target="_blank" class="link">github.com/Vxtzq/CrowdGPT/issues</a></div>
+      <div class="contact-card"><h3>Email</h3><p>Business, partnerships, security disclosures.</p><a href="mailto:vxtzqmc@gmail.com" class="link">vxtzqmc@gmail.com</a></div>
+      <div class="contact-card"><h3>Hosting</h3><p>Coordinator API hosted and maintained by Xevex.</p><a href="https://xevex.dev" target="_blank" class="link">xevex.dev</a></div>
+      <div class="contact-card"><h3>Model Weights</h3><p>Checkpoints and configs on HuggingFace.</p><a href="https://huggingface.co/Vxtzq/Crowd-v1" target="_blank" class="link">huggingface.co/Vxtzq/Crowd-v1</a></div>
     </div>
-
     <div class="faq">
-      <div class="faq-item">
-        <div class="faq-q">Is my data safe when I run the client?</div>
-        <div class="faq-a">Yes. The client streams 10MB chunks from the public CrowdGPT dataset on HuggingFace, a dataset anyone can inspect or contribute to. Your personal files, browser history, and any other local data are never accessed or transmitted. Only the mathematical weight delta leaves your machine.</div>
-      </div>
-      <div class="faq-item">
-        <div class="faq-q">How much disk space do I need?</div>
-        <div class="faq-a">Around 3-4 GB free. The model weights take ~1.3 GB (bf16) or ~2.6 GB (fp32), and each dataset chunk is only 10 MB, streamed on demand. Local checkpoints for delta computation add another ~1.3 GB. The client auto-cleans old checkpoints, so disk usage stays stable over time.</div>
-      </div>
-      <div class="faq-item">
-        <div class="faq-q">Does it work on AMD or Apple Silicon?</div>
-        <div class="faq-a">Yes. NVIDIA GPUs via CUDA are recommended for best performance, but AMD GPUs are supported through PyTorch's ROCm build (Linux required), and Apple Silicon M1/M2/M3 Macs work via the MPS backend. CPU-only mode is supported but very slow.</div>
-      </div>
-      <div class="faq-item">
-        <div class="faq-q">Can I run this on a CPU?</div>
-        <div class="faq-a">Technically yes, but it will be extremely slow. The client is optimized for CUDA-enabled NVIDIA GPUs. If no GPU is detected, it will fall back to CPU, but contributing meaningful compute will take significantly longer.</div>
-      </div>
-      <div class="faq-item">
-        <div class="faq-q">How are malicious updates prevented?</div>
-        <div class="faq-a">The coordinator enforces strict validation. Every submitted delta is checked for NaN/Inf values, exact size matching, and norm bounds. Updates that deviate too far from expected statistical distributions are rejected, and repeat offenders are temporarily banned by subnet.</div>
-      </div>
+      <div class="faq-item"><div class="faq-q">Is my data safe?</div><div class="faq-a">Yes. The client streams 10MB chunks from the public dataset and uploads only the weight delta. Personal files and history are never touched.</div></div>
+      <div class="faq-item"><div class="faq-q">How much disk space?</div><div class="faq-a">About 4 GB. Weights ~1.3 GB (bf16), chunks 10 MB streamed, checkpoints ~1.3 GB with auto-cleanup.</div></div>
+      <div class="faq-item"><div class="faq-q">AMD or Apple Silicon?</div><div class="faq-a">Yes. CUDA is recommended; ROCm (Linux) and MPS (M1/M2/M3) are supported. CPU is slow.</div></div>
+      <div class="faq-item"><div class="faq-q">How are malicious updates stopped?</div><div class="faq-a">Every delta is checked for NaN/Inf, size and norm bounds. Outliers are rejected and repeat offenders banned by subnet.</div></div>
     </div>
   </div>
 </div>
 
 <footer>
   <div class="footer-inner">
-    <div>CrowdGPT · MIT License · api.crowdgpt.net proudly hosted by <a href="https://xevex.dev" target="_blank" rel="noopener">xevex</a></div>
+    <div>CrowdGPT · MIT License · api.crowdgpt.net hosted by <a href="https://xevex.dev" target="_blank" rel="noopener">xevex</a></div>
     <div class="footer-links">
       <a href="https://github.com/Vxtzq/CrowdGPT" target="_blank">GitHub</a>
       <a href="https://github.com/Vxtzq/CrowdGPT/tree/main/docs" target="_blank">Docs</a>
@@ -883,41 +612,25 @@ function fmtNum(n) {
   return n.toLocaleString();
 }
 
-let apiReachable = null;
-let failedAttempts = 0;
-let statsInterval, lbInterval;
+let apiReachable = null, failedAttempts = 0, statsInterval, lbInterval;
 
 async function fetchStats() {
   try {
     const r = await fetch(HF_STATUS_URL, { cache: 'no-store' });
     if (!r.ok) throw new Error('HF status fetch failed');
     const d = await r.json();
-
     document.getElementById('home-stat-contributions').textContent = (d.totalContributions || 0).toLocaleString();
     document.getElementById('home-stat-gpus').textContent = (d.activeGpus || 0).toLocaleString();
     document.getElementById('home-stat-tokens').textContent = fmtNum(d.totalTokens || 0);
-    
     const lossEl = document.getElementById('home-stat-loss');
-    const currentLoss = d.lastLoss != null ? d.lastLoss : 0.0;
-    lossEl.textContent = currentLoss.toFixed(4);
-    lossEl.style.color = 'var(--text)';
-
-    const stepEl = document.getElementById('status-step');
-    if (stepEl) stepEl.textContent = (d.globalStep || 0).toLocaleString();
-    const tokensEl = document.getElementById('status-tokens');
-    if (tokensEl) tokensEl.textContent = fmtNum(d.totalTokens || 0);
-    const clientsEl = document.getElementById('status-clients');
-    if (clientsEl) clientsEl.textContent = (d.activeGpus || 0).toLocaleString();
-    const lossStatusEl = document.getElementById('status-loss');
-    if (lossStatusEl) lossStatusEl.textContent = d.lastLoss != null ? d.lastLoss.toFixed(4) : 'no loss data';
-
-    failedAttempts = 0;
-    apiReachable = true;
-
+    lossEl.textContent = (d.lastLoss != null ? d.lastLoss : 0).toFixed(4);
+    const stepEl = document.getElementById('status-step'); if (stepEl) stepEl.textContent = (d.globalStep || 0).toLocaleString();
+    const tokensEl = document.getElementById('status-tokens'); if (tokensEl) tokensEl.textContent = fmtNum(d.totalTokens || 0);
+    const clientsEl = document.getElementById('status-clients'); if (clientsEl) clientsEl.textContent = (d.activeGpus || 0).toLocaleString();
+    const lossStatusEl = document.getElementById('status-loss'); if (lossStatusEl) lossStatusEl.textContent = d.lastLoss != null ? d.lastLoss.toFixed(4) : 'no loss data';
+    failedAttempts = 0; apiReachable = true;
   } catch (e) {
-    console.warn("HF status fetch failed, falling back to direct API:", e);
     failedAttempts++;
-    
     if (failedAttempts < 3) {
       try {
         const r2 = await fetch(`${API_BASE}/api/stats`, { cache: 'no-store', signal: AbortSignal.timeout(5000) });
@@ -926,192 +639,92 @@ async function fetchStats() {
           document.getElementById('home-stat-contributions').textContent = (d2.totalContributions || 0).toLocaleString();
           document.getElementById('home-stat-gpus').textContent = (d2.activeGpus || 0).toLocaleString();
           document.getElementById('home-stat-tokens').textContent = fmtNum(d2.totalTokens || 0);
-          
-          const lossEl = document.getElementById('home-stat-loss');
-          const currentLoss = d2.lastLoss != null ? d2.lastLoss : 0.0;
-          lossEl.textContent = currentLoss.toFixed(4);
-          lossEl.style.color = 'var(--text)';
-          
-          failedAttempts = 0;
-          apiReachable = true;
-          return;
+          document.getElementById('home-stat-loss').textContent = (d2.lastLoss != null ? d2.lastLoss : 0).toFixed(4);
+          failedAttempts = 0; apiReachable = true; return;
         }
       } catch (e2) {}
     }
-
-    if (failedAttempts >= 3) {
-      apiReachable = false;
-      const statusText = document.getElementById('home-status-text');
-      if (statusText) statusText.textContent = 'Coordinator offline';
-      if (statsInterval) clearInterval(statsInterval);
-    }
+    if (failedAttempts >= 3) { apiReachable = false; if (statsInterval) clearInterval(statsInterval); }
   }
 }
 
 async function fetchLeaderboard() {
-  const tbody = document.getElementById('lb-body');
-  if (!tbody) return;
-  
+  const tbody = document.getElementById('lb-body'); if (!tbody) return;
   try {
     const r = await fetch(HF_LEADERBOARD_URL, { cache: 'no-store' });
     if (!r.ok) throw new Error('HF leaderboard fetch failed');
-    const users = await r.json();
-    renderLeaderboard(tbody, users);
-    
+    renderLeaderboard(tbody, await r.json());
   } catch (e) {
-    console.warn("HF leaderboard fetch failed, falling back to direct API:", e);
     try {
       const r2 = await fetch(`${API_BASE}/api/leaderboard`, { cache: 'no-store', signal: AbortSignal.timeout(5000) });
-      if (r2.ok) {
-        const users2 = await r2.json();
-        renderLeaderboard(tbody, users2);
-        return;
-      }
+      if (r2.ok) { renderLeaderboard(tbody, await r2.json()); return; }
     } catch (e2) {}
-    
-    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">Leaderboard temporarily unavailable.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">Leaderboard unavailable.</td></tr>';
   }
 }
 
 function renderLeaderboard(tbody, users) {
-  if (!Array.isArray(users) || users.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No contributors yet. Be the first.</td></tr>';
-    return;
-  }
-
-  const top10 = users.slice(0, 10);
-  tbody.innerHTML = top10.map((u, i) => {
-    const rank = i + 1;
-    const trust = (u.trustScore != null) ? u.trustScore : 0;
-    const trustPct = Math.round(trust * 100);
-    return `<tr>
-      <td>${rank}</td>
-      <td><code>${escapeHtml(u.username || 'anon')}</code></td>
-      <td class="mono">${fmtNum(u.totalTokens)}</td>
-      <td class="mono">${(u.totalSteps || 0).toLocaleString()}</td>
-      <td><div class="trust-bar"><div class="trust-track"><div class="trust-fill" style="width:${trustPct}%"></div></div><span class="trust-val">${trust.toFixed(2)}</span></div></td>
-      <td class="mono">${(u.contributions || 0).toLocaleString()}</td>
-    </tr>`;
+  if (!Array.isArray(users) || !users.length) { tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No contributors yet.</td></tr>'; return; }
+  tbody.innerHTML = users.slice(0,10).map((u,i) => {
+    const trust = u.trustScore != null ? u.trustScore : 0;
+    return `<tr><td>${i+1}</td><td><code>${escapeHtml(u.username||'anon')}</code></td><td class="mono">${fmtNum(u.totalTokens)}</td><td class="mono">${(u.totalSteps||0).toLocaleString()}</td><td><div class="trust-bar"><div class="trust-track"><div class="trust-fill" style="width:${Math.round(trust*100)}%"></div></div><span class="trust-val">${trust.toFixed(2)}</span></div></td><td class="mono">${(u.contributions||0).toLocaleString()}</td></tr>`;
   }).join('');
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 
-function updateThemeAssets() {
-  const logoImgs = document.querySelectorAll('.logo-img');
-  const favicon = document.getElementById('favicon');
+function updateThemeAssets(){
   const isLight = window.matchMedia('(prefers-color-scheme: light)').matches;
-  logoImgs.forEach(img => { img.src = isLight ? 'logo-black.svg' : 'logo-white.svg'; });
-  if (favicon) favicon.href = isLight ? 'logo-black.svg' : 'logo-white.svg';
+  document.querySelectorAll('.logo-img').forEach(img=>{img.src=isLight?'logo-black.svg':'logo-white.svg';});
+  const f=document.getElementById('favicon'); if(f) f.href=isLight?'logo-black.svg':'logo-white.svg';
 }
 window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', updateThemeAssets);
 updateThemeAssets();
 
-// ===== VIEW ROUTER =====
-function showView(viewName) {
-  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-  const target = document.getElementById('view-' + viewName);
-  if (target) target.classList.add('active');
-  
-  document.querySelectorAll('nav a').forEach(a => {
-    a.classList.toggle('active', a.dataset.view === viewName);
-  });
-  
-  document.querySelectorAll('.mobile-menu-links a').forEach(a => {
-    a.classList.toggle('active', a.dataset.view === viewName);
-  });
-  
-  window.scrollTo(0, 0);
+function showView(v){
+  document.querySelectorAll('.view').forEach(x=>x.classList.remove('active'));
+  const t=document.getElementById('view-'+v); if(t) t.classList.add('active');
+  document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('active',a.dataset.view===v));
+  document.querySelectorAll('.mobile-menu-links a').forEach(a=>a.classList.toggle('active',a.dataset.view===v));
+  window.scrollTo(0,0);
 }
-
-document.querySelectorAll('[data-view]').forEach(el => {
-  el.addEventListener('click', (e) => {
-    const view = el.dataset.view;
-    if (!view) return;
-    if (el.tagName === 'A' && el.getAttribute('href') && el.getAttribute('href').startsWith('http')) return;
-    e.preventDefault();
-    showView(view);
-    if (el.closest('.mobile-menu-overlay')) {
-      closeMobileMenu();
-    }
-    if (el.dataset.scroll) {
-      setTimeout(() => {
-        const target = document.getElementById(el.dataset.scroll);
-        if (target) {
-          window.scrollTo({
-            top: target.getBoundingClientRect().top + window.scrollY - 125,
-            behavior: 'smooth'
-          });
-        }
-      }, 0);
-    }
+document.querySelectorAll('[data-view]').forEach(el=>{
+  el.addEventListener('click',e=>{
+    const v=el.dataset.view; if(!v) return;
+    if(el.tagName==='A'&&el.getAttribute('href')&&el.getAttribute('href').startsWith('http')) return;
+    e.preventDefault(); showView(v);
+    if(el.closest('.mobile-menu-overlay')) closeMobileMenu();
   });
 });
 
-// ===== MOBILE MENU =====
-const mobileMenuBtn = document.querySelector('.mobile-menu-btn');
-const mobileMenuOverlay = document.querySelector('.mobile-menu-overlay');
-const mobileMenuClose = document.querySelector('.mobile-menu-close');
+const mobileMenuBtn=document.querySelector('.mobile-menu-btn'),mobileMenuOverlay=document.querySelector('.mobile-menu-overlay'),mobileMenuClose=document.querySelector('.mobile-menu-close');
+function openMobileMenu(){mobileMenuOverlay.classList.add('open');mobileMenuOverlay.setAttribute('aria-hidden','false');document.body.style.overflow='hidden';}
+function closeMobileMenu(){mobileMenuOverlay.classList.remove('open');mobileMenuOverlay.setAttribute('aria-hidden','true');document.body.style.overflow='';}
+if(mobileMenuBtn)mobileMenuBtn.addEventListener('click',openMobileMenu);
+if(mobileMenuClose)mobileMenuClose.addEventListener('click',closeMobileMenu);
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&mobileMenuOverlay.classList.contains('open'))closeMobileMenu();});
 
-function openMobileMenu() {
-  mobileMenuOverlay.classList.add('open');
-  mobileMenuOverlay.setAttribute('aria-hidden', 'false');
-  document.body.style.overflow = 'hidden';
-}
-
-function closeMobileMenu() {
-  mobileMenuOverlay.classList.remove('open');
-  mobileMenuOverlay.setAttribute('aria-hidden', 'true');
-  document.body.style.overflow = '';
-}
-
-if (mobileMenuBtn) mobileMenuBtn.addEventListener('click', openMobileMenu);
-if (mobileMenuClose) mobileMenuClose.addEventListener('click', closeMobileMenu);
-
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && mobileMenuOverlay.classList.contains('open')) {
-    closeMobileMenu();
-  }
-});
-
-// ===== OS TABS =====
-document.querySelectorAll('.os-tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    const os = tab.dataset.os;
-    const hero = tab.closest('.install-hero');
-    hero.querySelectorAll('.os-tab').forEach(t => t.classList.remove('active'));
-    hero.querySelectorAll('.os-panel').forEach(p => p.classList.remove('active'));
+document.querySelectorAll('.os-tab').forEach(tab=>{
+  tab.addEventListener('click',()=>{
+    const os=tab.dataset.os,hero=tab.closest('.install-hero');
+    hero.querySelectorAll('.os-tab').forEach(t=>t.classList.remove('active'));
+    hero.querySelectorAll('.os-panel').forEach(p=>p.classList.remove('active'));
     tab.classList.add('active');
     hero.querySelector(`.os-panel[data-os="${os}"]`).classList.add('active');
   });
 });
 
-// ===== TERMINAL COPY =====
-function copyTerminal(btn) {
-  const terminal = btn.closest('.terminal');
-  const cmds = terminal.querySelectorAll('.t-cmd');
-  const text = Array.from(cmds).map(c => c.textContent).join('\n');
-  navigator.clipboard.writeText(text).then(() => {
-    const original = btn.textContent;
-    btn.textContent = 'copied';
-    btn.classList.add('copied');
-    setTimeout(() => {
-      btn.textContent = original;
-      btn.classList.remove('copied');
-    }, 1500);
-  }).catch(() => {
-    btn.textContent = 'failed';
-    setTimeout(() => { btn.textContent = 'copy'; }, 1500);
-  });
+function copyTerminal(btn){
+  const cmds=btn.closest('.terminal').querySelectorAll('.t-cmd');
+  navigator.clipboard.writeText(Array.from(cmds).map(c=>c.textContent).join('\n')).then(()=>{
+    const o=btn.textContent;btn.textContent='copied';btn.classList.add('copied');
+    setTimeout(()=>{btn.textContent=o;btn.classList.remove('copied');},1500);
+  }).catch(()=>{btn.textContent='failed';setTimeout(()=>{btn.textContent='copy';},1500);});
 }
 
-// ===== INIT =====
-fetchStats();
-fetchLeaderboard();
-statsInterval = setInterval(fetchStats, 15000);
-lbInterval = setInterval(fetchLeaderboard, 30000);
+fetchStats(); fetchLeaderboard();
+statsInterval=setInterval(fetchStats,15000);
+lbInterval=setInterval(fetchLeaderboard,30000);
 </script>
 </body>
 </html>
