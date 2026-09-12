@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CrowdGPT Client - Continuous FL Node (Final Verified Edition - Connection-Resilient)
+CrowdGPT Client - Continuous FL Node (Memory-Optimized Edition)
 """
 
 import os
@@ -449,11 +449,7 @@ class HeartbeatManager:
             self.shutdown.wait(timeout=15)
 
 # ============ GRAD ACCUMULATION CONFIG ============
-# 🚨 NEW: target ~256K tokens per optimizer step via gradient accumulation.
-# A single micro-batch (batch_size * seq_len tokens) is far too small on its
-# own for stable LM pretraining gradients at this scale; we accumulate
-# several micro-batches' gradients before every optimizer.step().
-TOKENS_PER_OPT_STEP = 256 * 1024  # 262144
+TOKENS_PER_OPT_STEP = 256 * 1024
 
 def compute_accum_steps(batch_size, seq_len):
     micro_batch_tokens = max(1, batch_size * seq_len)
@@ -503,9 +499,9 @@ def fetch_task_and_weights(server_url, headers, precision, hb=None):
             log.error(f"Task fetch failed: {e}")
             time.sleep(15)
 
-def _forward_and_loss(model, x, y, seq_len, use_autocast, autocast_dtype):
-    """One micro-batch forward pass + loss computation (no backward, no optimizer step).
-    Factored out so calibration and the accumulation loop share identical logic."""
+def _forward_and_loss(model, x, y, seq_len, use_autocast, autocast_dtype, loss_scale=1.0):
+    """One micro-batch forward pass + loss computation.
+    loss_scale: multiply loss by this factor before returning (for grad accumulation)."""
     def fwd():
         x_emb = model.wte(x)
         if use_autocast:
@@ -523,7 +519,9 @@ def _forward_and_loss(model, x, y, seq_len, use_autocast, autocast_dtype):
     else:
         x_emb = fwd()
         loss = sum(F.cross_entropy(model.lm_head(x_emb[:, i:i+256, :]).reshape(-1, VOCAB_SIZE), y[:, i:i+256].reshape(-1)) for i in range(0, seq_len, 256)) / max(1, math.ceil(seq_len/256))
-    return loss
+    
+    # 🚨 KEY FIX: Scale loss BEFORE backward so gradients never grow beyond single micro-batch size
+    return loss * loss_scale
 
 def run_single_round(args, auth_token=None):
     global train_device, train_backend
@@ -534,7 +532,6 @@ def run_single_round(args, auth_token=None):
     current_round = round_status["current_round"]
     max_round_hours = round_status.get("max_round_hours", 2.0)
 
-    # 🚨 CRITICAL: Start heartbeat immediately
     hb = HeartbeatManager(args.server, headers, current_round)
     hb.start()
 
@@ -611,7 +608,6 @@ def run_single_round(args, auth_token=None):
                 else:
                     raise
 
-        # 🚨 NEW: work out how many micro-batches make up one ~256K-token optimizer step
         accum_steps, micro_batch_tokens = compute_accum_steps(batch_size, seq_len)
         log.info(f"Grad accumulation: {accum_steps} micro-batches x {micro_batch_tokens:,} tokens "
                   f"= {accum_steps * micro_batch_tokens:,} tokens/optimizer step (target {TOKENS_PER_OPT_STEP:,})")
@@ -633,21 +629,9 @@ def run_single_round(args, auth_token=None):
         use_autocast = args.precision == "bf16" and train_backend in ("CUDA", "ROCM") and torch.cuda.is_bf16_supported()
         autocast_dtype = torch.bfloat16 if use_autocast else None
 
-        # 🚨 FIX (OOM): the engram table is a SPARSE nn.Embedding. Sparse
-        # gradients from repeated .backward() calls do NOT merge/coalesce
-        # automatically the way dense gradients do -- each micro-batch's
-        # touched-bucket indices just pile up uncoalesced on top of the
-        # previous ones. Stepping the engram optimizer only once per
-        # accum_steps-sized window let that pending sparse gradient grow up
-        # to accum_steps times larger than a single micro-batch's (up to
-        # 128x at batch_size=1) -- that's what OOM'd.
-        #
-        # Fix: step+zero the ENGRAM optimizer every micro-batch, exactly like
-        # the pre-accumulation code did, so its memory footprint never grows
-        # beyond a single micro-batch's touched buckets (identical to before).
-        # Only the dense transformer-body gradient (base_params) accumulates
-        # across the window -- dense accumulation is a same-size in-place add,
-        # so it costs zero extra memory regardless of accum_steps.
+        # 🚨 MEMORY FIX: Scale loss by 1/accum_steps BEFORE backward so gradients stay constant size
+        loss_scale = 1.0 / accum_steps
+
         def zero_base_grad():
             optimizer_base.zero_grad(set_to_none=True)
 
@@ -659,25 +643,13 @@ def run_single_round(args, auth_token=None):
             optimizer_engram.step()
             zero_engram_grad()
 
-        def base_step_and_zero(n_accum):
-            # Average the accumulated (summed) dense gradient over the window
-            # before clipping/stepping, so the update magnitude matches a
-            # single ~256K-token batch rather than a sum of accum_steps raw
-            # micro-batch gradients.
-            for p in base_params:
-                if p.grad is not None:
-                    p.grad.div_(n_accum)
+        def base_step_and_zero():
+            # No need to divide - loss was already scaled before backward
             torch.nn.utils.clip_grad_norm_(base_params, 1.0)
             optimizer_base.step()
             zero_base_grad()
 
-
-
         # ============ CALIBRATION ============
-        # Each calibration "step" is now a full accumulation cycle (accum_steps
-        # micro-batches + one optimizer step), so the measured seconds/step
-        # correctly reflects the cost of one real ~256K-token update -- this
-        # keeps the round time-budgeting math (below) consistent.
         log.info(f"Calibrating TPS ({CALIBRATION_STEPS} optimizer steps, BS={batch_size}, accum={accum_steps})...")
         loss_history = []
         total_tok = 0
@@ -693,16 +665,26 @@ def run_single_round(args, auth_token=None):
                 seed = (hash("cal") % 10000) + ci * accum_steps + mi
                 x, y = dataset_shard.get_batch(batch_size, seed=seed)
                 x, y = x.to(train_device), y.to(train_device)
-                loss = _forward_and_loss(model, x, y, seq_len, use_autocast, autocast_dtype)
-                loss.backward()  # unscaled -- engram steps on the raw per-micro-batch gradient below
-                engram_step_and_zero()  # 🚨 keeps engram's sparse grad bounded to one micro-batch, every time
-                accum_loss_sum += float(loss.item())
+                
+                # 🚨 KEY: Scale loss before backward so gradients don't grow
+                loss = _forward_and_loss(model, x, y, seq_len, use_autocast, autocast_dtype, loss_scale=loss_scale)
+                loss.backward()
+                engram_step_and_zero()
+                
+                # Track unscaled loss for logging
+                accum_loss_sum += float(loss.item()) * accum_steps
                 total_tok += x.numel()
-            base_step_and_zero(accum_steps)
+                
+                # 🚨 Aggressive cache clear every micro-batch
+                if train_backend in ("CUDA", "ROCM") and mi % 4 == 0:
+                    try: torch.cuda.empty_cache()
+                    except: pass
+            
+            base_step_and_zero()
 
         cal_elapsed = time.time() - cal_start
         measured_tps = total_tok / cal_elapsed
-        seconds_per_step = cal_elapsed / CALIBRATION_STEPS   # seconds per OPTIMIZER step now
+        seconds_per_step = cal_elapsed / CALIBRATION_STEPS
         effective_sps = seconds_per_step / TPS_DEGRADATION
         log.info(f"TPS: {measured_tps:.0f} | {seconds_per_step:.3f}s/opt-step (effective: {effective_sps:.3f}s)")
 
@@ -712,7 +694,7 @@ def run_single_round(args, auth_token=None):
         training_budget_sec = (remaining_hours * 3600) - cal_elapsed - (UPLOAD_BUFFER_MIN * 60) - dataset_pause_total
         training_budget_sec = max(60, training_budget_sec)
 
-        target_steps = int(training_budget_sec / effective_sps)   # target OPTIMIZER steps
+        target_steps = int(training_budget_sec / effective_sps)
         target_steps = max(50, min(target_steps, 500_000))
         estimated_train_min = (target_steps * effective_sps) / 60
 
@@ -720,7 +702,7 @@ def run_single_round(args, auth_token=None):
                   f"Target: {target_steps} optimizer steps (~{estimated_train_min:.0f} min, "
                   f"~{target_steps * accum_steps * micro_batch_tokens:,} tokens)")
 
-        step = CALIBRATION_STEPS   # counts OPTIMIZER steps, same semantics the server expects for localSteps
+        step = CALIBRATION_STEPS
         train_start = time.time()
         deadline = train_start + training_budget_sec
         loss_history = []
@@ -748,26 +730,29 @@ def run_single_round(args, auth_token=None):
                     x, y = dataset_shard.get_batch(batch_size, seed=seed)
                     x, y = x.to(train_device), y.to(train_device)
                     try:
-                        loss = _forward_and_loss(model, x, y, seq_len, use_autocast, autocast_dtype)
-                        loss.backward()  # unscaled; engram consumes/clears its own grad immediately below
-                        engram_step_and_zero()  # every micro-batch, same cadence/memory as before accum was added
-                        accum_loss_sum += float(loss.item())
+                        # 🚨 KEY: Scale loss before backward
+                        loss = _forward_and_loss(model, x, y, seq_len, use_autocast, autocast_dtype, loss_scale=loss_scale)
+                        loss.backward()
+                        engram_step_and_zero()
+                        
+                        accum_loss_sum += float(loss.item()) * accum_steps
                         total_tok += x.numel()
                         completed_micro += 1
+                        
+                        # 🚨 Aggressive cache clear every 4 micro-batches
+                        if train_backend in ("CUDA", "ROCM") and mi % 4 == 0:
+                            try: torch.cuda.empty_cache()
+                            except: pass
                     except Exception as e:
                         log.error(f"Training error (micro-batch {mi}/{accum_steps}): {e}")
                         micro_ok = False
                         break
 
                 if not micro_ok or completed_micro == 0:
-                    # Partial accumulation window: any engram updates already applied
-                    # above stand (they're legitimate per-micro-batch updates), but
-                    # discard the half-built dense transformer gradient rather than
-                    # applying an under-weighted update, then stop.
                     zero_base_grad()
                     break
 
-                base_step_and_zero(completed_micro)
+                base_step_and_zero()
 
                 lv = accum_loss_sum / accum_steps
                 if math.isnan(lv) or lv <= 0: lv = 10.0
@@ -848,7 +833,7 @@ def run_single_round(args, auth_token=None):
 def run_swarm_node(args):
     global train_device, train_backend
     log.info("=" * 60)
-    log.info("CrowdGPT Continuous FL Node (Connection-Resilient Edition)")
+    log.info("CrowdGPT Continuous FL Node (Memory-Optimized Edition)")
     log.info("=" * 60)
 
     username = args.username or os.environ.get("CROWDGPT_USERNAME")
