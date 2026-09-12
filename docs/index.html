@@ -140,6 +140,15 @@ nav a.active { color: var(--text); }
 .cta-btns { display: flex; flex-direction: column; gap: 12px; }
 .cta-btns .btn { width: 100%; justify-content: center; }
 
+.trust-card { background: var(--bg-soft); border: 1px solid var(--border); padding: 34px 32px; border-radius: 8px; max-width: 100%; }
+.trust-card h3 { font-size: 20px; font-weight: 600; color: var(--text); margin-bottom: 16px; line-height: 1.2; display: flex; align-items: center; gap: 10px; }
+.trust-card h3 .trust-icon { font-family: var(--mono); font-size: 16px; color: var(--accent); }
+.trust-card p { font-size: 16px; color: var(--text-dim); line-height: 1.6; margin-bottom: 14px; }
+.trust-card p:last-child { margin-bottom: 0; }
+.trust-card ul { list-style: none; padding: 0; margin: 0; }
+.trust-card li { font-size: 16px; color: var(--text-dim); line-height: 1.6; padding: 6px 0 6px 24px; position: relative; }
+.trust-card li::before { content: '✓'; position: absolute; left: 0; color: var(--accent); font-family: var(--mono); font-weight: 600; }
+
 .terminal { position: relative; background: var(--term-bg); border: 1px solid var(--term-border); border-radius: 8px; margin-bottom: 29px; overflow: hidden; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15); max-width: 100%; }
 .terminal-bar { display: flex; align-items: center; gap: 11px; padding: 14px 19px; background: var(--term-bar-bg); border-bottom: 1px solid var(--term-border); }
 .terminal-dots { display: flex; gap: 8px; }
@@ -469,7 +478,7 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
           <div class="feature-list">
             <div class="feature-item">
               <div class="feature-num">01</div>
-              <div><h3>Local training, local data.</h3><p>Your GPU trains on a 1MB data chunk fetched from HuggingFace. The weight delta is the only thing that leaves your machine. Nothing else.</p></div>
+              <div><h3>Local training, public data.</h3><p>Your GPU trains on 10MB data chunks streamed from the public CrowdGPT dataset on HuggingFace — a dataset anyone can contribute to. The weight delta is the only thing that leaves your machine. <strong>No personal files, browser history, or local data are ever accessed or transmitted.</strong></p></div>
             </div>
             <div class="feature-item">
               <div class="feature-num">02</div>
@@ -482,10 +491,23 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
           </div>
         </div>
         <div class="product-side">
-          <div class="cta-card" style="margin-bottom: 0;">
-            <h3 style="font-size: 20px;">A note on trust</h3>
-            <p style="margin-bottom: 0;">Every submitted delta is validated server-side before it touches the global weights. Malformed, oversized, or statistically suspicious updates are rejected automatically, and repeat offenders lose write access. The server never executes anything a client sends; it only ever reads numbers. This makes the global server/coordinator immune to any breaking attacks.</p>
+          <!-- ============================================ -->
+          <!-- TRUST NOTE - Easily modifiable section below -->
+          <!-- ============================================ -->
+          <div class="trust-card">
+            <h3><span class="trust-icon">◆</span> A note on trust</h3>
+            <p>The CrowdGPT coordinator is designed to be safe by construction. Even a malicious client cannot compromise the global model or the server.</p>
+            <ul>
+              <li>Every submitted delta is validated server-side before it touches the global weights.</li>
+              <li>Malformed, oversized, or statistically suspicious updates are rejected automatically.</li>
+              <li>Repeat offenders lose write access via subnet-level temporary bans.</li>
+              <li>The server never executes anything a client sends — it only ever reads numbers.</li>
+            </ul>
           </div>
+          <!-- ============================================ -->
+          <!-- END TRUST NOTE                               -->
+          <!-- ============================================ -->
+
           <div class="cta-card">
             <h3>Help the project grow.</h3>
             <p>Every contribution, even the smallest, makes the model better. Run a client, star the repo, or open an issue.</p>
@@ -587,6 +609,37 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
       </div>
     </div>
 
+    <!-- ============================================ -->
+    <!-- HARDWARE & DISK SPACE - Modifiable section   -->
+    <!-- ============================================ -->
+    <div class="content">
+      <h2>Hardware requirements &amp; disk space</h2>
+      <p>CrowdGPT is designed to run on consumer hardware. Here's what you need to know before running the client.</p>
+
+      <h3>Supported GPUs</h3>
+      <ul>
+        <li><strong>NVIDIA (CUDA):</strong> Full support and recommended. Any RTX 20-series or newer with at least 8GB VRAM works well.</li>
+        <li><strong>AMD (ROCm):</strong> Supported via PyTorch's ROCm build. Requires Linux and a compatible RDNA2/RDNA3 GPU.</li>
+        <li><strong>Apple Silicon (MPS):</strong> Supported for M1/M2/M3 Macs. Training works but is slower than CUDA.</li>
+        <li><strong>CPU only:</strong> Technically supported, but training will be extremely slow — expect days per contribution instead of hours.</li>
+      </ul>
+
+      <h3>Disk space</h3>
+      <p>The client needs roughly <strong>3–4 GB of free disk space</strong> to operate comfortably:</p>
+      <ul>
+        <li><strong>Model weights:</strong> ~1.3 GB (bf16) or ~2.6 GB (fp32), cached locally after first download.</li>
+        <li><strong>Dataset chunks:</strong> 10 MB each, streamed on-demand and not stored permanently.</li>
+        <li><strong>Local checkpoints:</strong> ~1.3 GB each, kept for delta computation.</li>
+      </ul>
+      <p>On systems with limited disk space (e.g., &lt;10 GB free), the client will still work — it streams data and cleans up old checkpoints automatically.</p>
+
+      <h3>Memory (RAM)</h3>
+      <p>System RAM usage stays under <strong>4 GB</strong> thanks to disk-streamed uploads and bf16 weights. VRAM usage depends on your chosen batch size and sequence length — the client auto-tunes these to fit your GPU.</p>
+    </div>
+    <!-- ============================================ -->
+    <!-- END HARDWARE SECTION                         -->
+    <!-- ============================================ -->
+
     <div class="content">
       <h2>Configuration</h2>
       <p>The client can be configured via command-line arguments or environment variables.</p>
@@ -617,10 +670,10 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
 
     <div class="content">
       <h2>1. Task Assignment</h2>
-      <p>When a client connects, the coordinator assigns it a specific data shard (a local chunk of tokenized text) and the current global model weights. The client downloads the weights from HuggingFace (or the coordinator) and loads the data chunk locally.</p>
+      <p>When a client connects, the coordinator assigns it a specific data shard (a 10MB chunk of tokenized text from the <a href="https://huggingface.co/datasets/Vxtzq/CrowdGPT" target="_blank">public CrowdGPT dataset</a> on HuggingFace) and the current global model weights. The client downloads the weights from HuggingFace and streams the data chunk locally via HTTP Range requests. The dataset is fully open — anyone can contribute to it.</p>
       
       <h2>2. Local Training</h2>
-      <p>The client performs a set number of forward and backward passes on its local GPU. It calculates the gradient (the "delta") between its starting weights and the newly trained weights. <strong>No raw data ever leaves the client's machine.</strong></p>
+      <p>The client performs a set number of forward and backward passes on its local GPU. It calculates the gradient (the "delta") between its starting weights and the newly trained weights. <strong>No raw data ever leaves the client's machine.</strong> Your files, browsing history, and any other local information are never accessed or transmitted.</p>
 
       <h2>3. Secure Submission</h2>
       <p>The client compresses and submits only the weight delta to the coordinator. The coordinator validates the submission:</p>
@@ -775,7 +828,15 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
     <div class="faq">
       <div class="faq-item">
         <div class="faq-q">Is my data safe when I run the client?</div>
-        <div class="faq-a">Yes. The client downloads a public, anonymized data chunk to your machine. Your personal files, browser history, or any other local data are never accessed or transmitted. Only the mathematical weight delta is sent to the coordinator.</div>
+        <div class="faq-a">Yes. The client streams 10MB chunks from the public CrowdGPT dataset on HuggingFace — a dataset anyone can inspect or contribute to. Your personal files, browser history, and any other local data are never accessed or transmitted. Only the mathematical weight delta leaves your machine.</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q">How much disk space do I need?</div>
+        <div class="faq-a">Around 3–4 GB free. The model weights take ~1.3 GB (bf16) or ~2.6 GB (fp32), and each dataset chunk is only 10 MB, streamed on-demand. Local checkpoints for delta computation add another ~1.3 GB. The client auto-cleans old checkpoints, so disk usage stays stable over time.</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q">Does it work on AMD or Apple Silicon?</div>
+        <div class="faq-a">Yes. NVIDIA GPUs via CUDA are recommended for best performance, but AMD GPUs are supported through PyTorch's ROCm build (Linux required), and Apple Silicon M1/M2/M3 Macs work via the MPS backend. CPU-only mode is supported but very slow.</div>
       </div>
       <div class="faq-item">
         <div class="faq-q">Can I run this on a CPU?</div>
@@ -884,7 +945,6 @@ async function fetchLeaderboard() {
   if (!tbody) return;
   
   try {
-    // 1. Try fetching from Hugging Face first
     const r = await fetch(HF_LEADERBOARD_URL, { cache: 'no-store' });
     if (!r.ok) throw new Error('HF leaderboard fetch failed');
     const users = await r.json();
@@ -892,7 +952,6 @@ async function fetchLeaderboard() {
     
   } catch (e) {
     console.warn("HF leaderboard fetch failed, falling back to direct API:", e);
-    // 2. Fallback to direct API if HF fails
     try {
       const r2 = await fetch(`${API_BASE}/api/leaderboard`, { cache: 'no-store', signal: AbortSignal.timeout(5000) });
       if (r2.ok) {
@@ -902,7 +961,6 @@ async function fetchLeaderboard() {
       }
     } catch (e2) {}
     
-    // 3. If both fail, show error state
     tbody.innerHTML = '<tr><td colspan="6" class="empty-state">Leaderboard temporarily unavailable.</td></tr>';
   }
 }
@@ -949,12 +1007,10 @@ function showView(viewName) {
   const target = document.getElementById('view-' + viewName);
   if (target) target.classList.add('active');
   
-  // Sync desktop nav
   document.querySelectorAll('nav a').forEach(a => {
     a.classList.toggle('active', a.dataset.view === viewName);
   });
   
-  // Sync mobile menu
   document.querySelectorAll('.mobile-menu-links a').forEach(a => {
     a.classList.toggle('active', a.dataset.view === viewName);
   });
@@ -962,7 +1018,6 @@ function showView(viewName) {
   window.scrollTo(0, 0);
 }
 
-// Unified click handler for ALL data-view elements (desktop nav + mobile menu + CTAs)
 document.querySelectorAll('[data-view]').forEach(el => {
   el.addEventListener('click', (e) => {
     const view = el.dataset.view;
@@ -970,7 +1025,6 @@ document.querySelectorAll('[data-view]').forEach(el => {
     if (el.tagName === 'A' && el.getAttribute('href') && el.getAttribute('href').startsWith('http')) return;
     e.preventDefault();
     showView(view);
-    // Auto-close mobile menu when a link is clicked
     if (el.closest('.mobile-menu-overlay')) {
       closeMobileMenu();
     }
@@ -996,7 +1050,7 @@ const mobileMenuClose = document.querySelector('.mobile-menu-close');
 function openMobileMenu() {
   mobileMenuOverlay.classList.add('open');
   mobileMenuOverlay.setAttribute('aria-hidden', 'false');
-  document.body.style.overflow = 'hidden'; // lock scroll
+  document.body.style.overflow = 'hidden';
 }
 
 function closeMobileMenu() {
@@ -1008,7 +1062,6 @@ function closeMobileMenu() {
 if (mobileMenuBtn) mobileMenuBtn.addEventListener('click', openMobileMenu);
 if (mobileMenuClose) mobileMenuClose.addEventListener('click', closeMobileMenu);
 
-// Close on ESC key
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && mobileMenuOverlay.classList.contains('open')) {
     closeMobileMenu();
