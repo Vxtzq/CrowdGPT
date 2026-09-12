@@ -633,15 +633,45 @@ def run_single_round(args, auth_token=None):
         use_autocast = args.precision == "bf16" and train_backend in ("CUDA", "ROCM") and torch.cuda.is_bf16_supported()
         autocast_dtype = torch.bfloat16 if use_autocast else None
 
-        def zero_all_grads():
+        # 🚨 FIX (OOM): the engram table is a SPARSE nn.Embedding. Sparse
+        # gradients from repeated .backward() calls do NOT merge/coalesce
+        # automatically the way dense gradients do -- each micro-batch's
+        # touched-bucket indices just pile up uncoalesced on top of the
+        # previous ones. Stepping the engram optimizer only once per
+        # accum_steps-sized window let that pending sparse gradient grow up
+        # to accum_steps times larger than a single micro-batch's (up to
+        # 128x at batch_size=1) -- that's what OOM'd.
+        #
+        # Fix: step+zero the ENGRAM optimizer every micro-batch, exactly like
+        # the pre-accumulation code did, so its memory footprint never grows
+        # beyond a single micro-batch's touched buckets (identical to before).
+        # Only the dense transformer-body gradient (base_params) accumulates
+        # across the window -- dense accumulation is a same-size in-place add,
+        # so it costs zero extra memory regardless of accum_steps.
+        def zero_base_grad():
             optimizer_base.zero_grad(set_to_none=True)
+
+        def zero_engram_grad():
             try: optimizer_engram.zero_grad(set_to_none=True)
             except Exception: optimizer_engram.zero_grad()
 
-        def opt_step_and_clip():
+        def engram_step_and_zero():
+            optimizer_engram.step()
+            zero_engram_grad()
+
+        def base_step_and_zero(n_accum):
+            # Average the accumulated (summed) dense gradient over the window
+            # before clipping/stepping, so the update magnitude matches a
+            # single ~256K-token batch rather than a sum of accum_steps raw
+            # micro-batch gradients.
+            for p in base_params:
+                if p.grad is not None:
+                    p.grad.div_(n_accum)
             torch.nn.utils.clip_grad_norm_(base_params, 1.0)
-            optimizer_base.step(); optimizer_engram.step()
-            zero_all_grads()
+            optimizer_base.step()
+            zero_base_grad()
+
+
 
         # ============ CALIBRATION ============
         # Each calibration "step" is now a full accumulation cycle (accum_steps
@@ -664,10 +694,11 @@ def run_single_round(args, auth_token=None):
                 x, y = dataset_shard.get_batch(batch_size, seed=seed)
                 x, y = x.to(train_device), y.to(train_device)
                 loss = _forward_and_loss(model, x, y, seq_len, use_autocast, autocast_dtype)
-                (loss / accum_steps).backward()
+                loss.backward()  # unscaled -- engram steps on the raw per-micro-batch gradient below
+                engram_step_and_zero()  # 🚨 keeps engram's sparse grad bounded to one micro-batch, every time
                 accum_loss_sum += float(loss.item())
                 total_tok += x.numel()
-            opt_step_and_clip()
+            base_step_and_zero(accum_steps)
 
         cal_elapsed = time.time() - cal_start
         measured_tps = total_tok / cal_elapsed
@@ -707,6 +738,7 @@ def run_single_round(args, auth_token=None):
 
                 accum_loss_sum = 0.0
                 micro_ok = True
+                completed_micro = 0
                 for mi in range(accum_steps):
                     if hb.should_stop() or time.time() >= deadline:
                         micro_ok = False
@@ -717,21 +749,25 @@ def run_single_round(args, auth_token=None):
                     x, y = x.to(train_device), y.to(train_device)
                     try:
                         loss = _forward_and_loss(model, x, y, seq_len, use_autocast, autocast_dtype)
-                        (loss / accum_steps).backward()
+                        loss.backward()  # unscaled; engram consumes/clears its own grad immediately below
+                        engram_step_and_zero()  # every micro-batch, same cadence/memory as before accum was added
                         accum_loss_sum += float(loss.item())
                         total_tok += x.numel()
+                        completed_micro += 1
                     except Exception as e:
                         log.error(f"Training error (micro-batch {mi}/{accum_steps}): {e}")
                         micro_ok = False
                         break
 
-                if not micro_ok:
-                    # Partial accumulation window: discard the half-built gradient
-                    # rather than applying an under-weighted update, then stop.
-                    zero_all_grads()
+                if not micro_ok or completed_micro == 0:
+                    # Partial accumulation window: any engram updates already applied
+                    # above stand (they're legitimate per-micro-batch updates), but
+                    # discard the half-built dense transformer gradient rather than
+                    # applying an under-weighted update, then stop.
+                    zero_base_grad()
                     break
 
-                opt_step_and_clip()
+                base_step_and_zero(completed_micro)
 
                 lv = accum_loss_sum / accum_steps
                 if math.isnan(lv) or lv <= 0: lv = 10.0
