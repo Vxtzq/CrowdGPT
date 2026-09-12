@@ -140,14 +140,58 @@ nav a.active { color: var(--text); }
 .cta-btns { display: flex; flex-direction: column; gap: 12px; }
 .cta-btns .btn { width: 100%; justify-content: center; }
 
-.trust-card { background: var(--bg-soft); border: 1px solid var(--border); padding: 34px 32px; border-radius: 8px; max-width: 100%; }
-.trust-card h3 { font-size: 20px; font-weight: 600; color: var(--text); margin-bottom: 16px; line-height: 1.2; display: flex; align-items: center; gap: 10px; }
-.trust-card h3 .trust-icon { font-family: var(--mono); font-size: 16px; color: var(--accent); }
-.trust-card p { font-size: 16px; color: var(--text-dim); line-height: 1.6; margin-bottom: 14px; }
-.trust-card p:last-child { margin-bottom: 0; }
-.trust-card ul { list-style: none; padding: 0; margin: 0; }
-.trust-card li { font-size: 16px; color: var(--text-dim); line-height: 1.6; padding: 6px 0 6px 24px; position: relative; }
-.trust-card li::before { content: '✓'; position: absolute; left: 0; color: var(--accent); font-family: var(--mono); font-weight: 600; }
+.highlight-card { 
+  background: rgba(34, 197, 94, 0.08); 
+  border: 2px solid var(--accent); 
+  padding: 42px 38px; 
+  border-radius: 12px; 
+  margin: 58px 0; 
+  max-width: 100%;
+}
+.highlight-card h3 { 
+  font-size: 26px; 
+  font-weight: 700; 
+  color: var(--accent); 
+  margin-bottom: 18px; 
+  line-height: 1.2;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.highlight-card h3 .icon {
+  font-size: 28px;
+  line-height: 1;
+}
+.highlight-card p { 
+  font-size: 18px; 
+  color: var(--text); 
+  line-height: 1.7; 
+  margin-bottom: 16px;
+  font-weight: 500;
+}
+.highlight-card p:last-child { margin-bottom: 0; }
+.highlight-card ul { 
+  list-style: none; 
+  padding: 0; 
+  margin: 0;
+}
+.highlight-card li { 
+  font-size: 18px; 
+  color: var(--text); 
+  line-height: 1.7; 
+  padding: 8px 0 8px 32px; 
+  position: relative;
+  font-weight: 500;
+}
+.highlight-card li::before { 
+  content: '✓'; 
+  position: absolute; 
+  left: 0; 
+  color: var(--accent); 
+  font-family: var(--mono); 
+  font-weight: 700;
+  font-size: 20px;
+}
 
 .terminal { position: relative; background: var(--term-bg); border: 1px solid var(--term-border); border-radius: 8px; margin-bottom: 29px; overflow: hidden; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15); max-width: 100%; }
 .terminal-bar { display: flex; align-items: center; gap: 11px; padding: 14px 19px; background: var(--term-bar-bg); border-bottom: 1px solid var(--term-border); }
@@ -469,6 +513,26 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
 
   <section class="product-section">
     <div class="container">
+      
+      <!-- ============================================ -->
+      <!-- TRUST NOTE - HIGHLIGHTED, GREEN BACKGROUND   -->
+      <!-- ============================================ -->
+      <div class="highlight-card">
+        <h3><span class="icon">🛡️</span> Your safety comes first</h3>
+        <p>The CrowdGPT client is completely safe to run. It cannot and will not compromise your computer, access your personal files, or transmit any data from your machine except the mathematical weight updates.</p>
+        <ul>
+          <li>Fully open source and auditable on GitHub, you can read every line of code</li>
+          <li>No binaries, no telemetry, no hidden behavior</li>
+          <li>Only downloads public data from HuggingFace and uploads weight deltas to the coordinator</li>
+          <li>Your files, browser history, and local data are never touched</li>
+          <li>The coordinator server is also protected: every submission is validated for correctness, norm bounds, and statistical anomalies before being applied</li>
+          <li>Malicious or malformed updates are automatically rejected, and repeat offenders are banned by subnet</li>
+        </ul>
+      </div>
+      <!-- ============================================ -->
+      <!-- END TRUST NOTE                               -->
+      <!-- ============================================ -->
+
       <div class="product-grid">
         <div>
           <div class="product-head">
@@ -478,7 +542,7 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
           <div class="feature-list">
             <div class="feature-item">
               <div class="feature-num">01</div>
-              <div><h3>Local training, public data.</h3><p>Your GPU trains on 10MB data chunks streamed from the public CrowdGPT dataset on HuggingFace — a dataset anyone can contribute to. The weight delta is the only thing that leaves your machine. <strong>No personal files, browser history, or local data are ever accessed or transmitted.</strong></p></div>
+              <div><h3>Local training, public data.</h3><p>Your GPU trains on 10MB data chunks streamed from the public CrowdGPT dataset on HuggingFace. Anyone can inspect or contribute to this dataset. The weight delta is the only thing that leaves your machine. Your personal files, browser history, and any other local data are never accessed or transmitted.</p></div>
             </div>
             <div class="feature-item">
               <div class="feature-num">02</div>
@@ -491,23 +555,6 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
           </div>
         </div>
         <div class="product-side">
-          <!-- ============================================ -->
-          <!-- TRUST NOTE - Easily modifiable section below -->
-          <!-- ============================================ -->
-          <div class="trust-card">
-            <h3><span class="trust-icon">◆</span> A note on trust</h3>
-            <p>The CrowdGPT coordinator is designed to be safe by construction. Even a malicious client cannot compromise the global model or the server.</p>
-            <ul>
-              <li>Every submitted delta is validated server-side before it touches the global weights.</li>
-              <li>Malformed, oversized, or statistically suspicious updates are rejected automatically.</li>
-              <li>Repeat offenders lose write access via subnet-level temporary bans.</li>
-              <li>The server never executes anything a client sends — it only ever reads numbers.</li>
-            </ul>
-          </div>
-          <!-- ============================================ -->
-          <!-- END TRUST NOTE                               -->
-          <!-- ============================================ -->
-
           <div class="cta-card">
             <h3>Help the project grow.</h3>
             <p>Every contribution, even the smallest, makes the model better. Run a client, star the repo, or open an issue.</p>
@@ -530,6 +577,24 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
       <h1>Install the client</h1>
       <p>Get up and running in under a minute. The client is a single Python script with minimal dependencies.</p>
     </div>
+
+    <!-- ============================================ -->
+    <!-- HARDWARE & DISK SPACE - HIGHLIGHTED SECTION  -->
+    <!-- ============================================ -->
+    <div class="highlight-card">
+      <h3><span class="icon">💻</span> Hardware and disk requirements</h3>
+      <p>Before you start, make sure your setup meets these requirements:</p>
+      <ul>
+        <li><strong>GPU:</strong> NVIDIA (CUDA, recommended) with 8GB+ VRAM, AMD (ROCm on Linux), or Apple Silicon (M1/M2/M3 via MPS)</li>
+        <li><strong>Disk space:</strong> Around 3-4 GB free for model weights (~1.3 GB bf16 or ~2.6 GB fp32), dataset chunks (10 MB each, streamed on demand), and local checkpoints</li>
+        <li><strong>RAM:</strong> Under 4 GB system RAM usage thanks to disk-streamed uploads and bf16 weights</li>
+        <li><strong>CPU only:</strong> Technically supported but extremely slow, expect days per contribution instead of hours</li>
+      </ul>
+      <p>The client auto-tunes batch size and sequence length to fit your GPU, and automatically cleans up old checkpoints to keep disk usage stable.</p>
+    </div>
+    <!-- ============================================ -->
+    <!-- END HARDWARE SECTION                         -->
+    <!-- ============================================ -->
 
     <div class="install-hero" id="quick-install">
       <h3>Quick start <span class="badge">Recommended</span></h3>
@@ -590,56 +655,6 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
       </div>
     </div>
 
-    <div class="install-divider">or run via Docker</div>
-
-    <div class="install-hero">
-      <h3>Docker deployment</h3>
-      <p>For users who prefer containerized environments or want to run the client as a background service.</p>
-      <div class="terminal">
-        <div class="terminal-bar">
-          <div class="terminal-dots"><span></span><span></span><span></span></div>
-          <div class="terminal-title">bash</div>
-          <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
-        </div>
-        <div class="terminal-body">
-          <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">docker run -d --gpus all --name crowdgpt-node \</span></span>
-          <span class="line"><span class="t-prompt">  </span><span class="t-cmd">-v $(pwd)/checkpoints:/app/checkpoints \</span></span>
-          <span class="line"><span class="t-prompt">  </span><span class="t-cmd">vxtzq/crowdgpt-client:latest</span></span>
-        </div>
-      </div>
-    </div>
-
-    <!-- ============================================ -->
-    <!-- HARDWARE & DISK SPACE - Modifiable section   -->
-    <!-- ============================================ -->
-    <div class="content">
-      <h2>Hardware requirements &amp; disk space</h2>
-      <p>CrowdGPT is designed to run on consumer hardware. Here's what you need to know before running the client.</p>
-
-      <h3>Supported GPUs</h3>
-      <ul>
-        <li><strong>NVIDIA (CUDA):</strong> Full support and recommended. Any RTX 20-series or newer with at least 8GB VRAM works well.</li>
-        <li><strong>AMD (ROCm):</strong> Supported via PyTorch's ROCm build. Requires Linux and a compatible RDNA2/RDNA3 GPU.</li>
-        <li><strong>Apple Silicon (MPS):</strong> Supported for M1/M2/M3 Macs. Training works but is slower than CUDA.</li>
-        <li><strong>CPU only:</strong> Technically supported, but training will be extremely slow — expect days per contribution instead of hours.</li>
-      </ul>
-
-      <h3>Disk space</h3>
-      <p>The client needs roughly <strong>3–4 GB of free disk space</strong> to operate comfortably:</p>
-      <ul>
-        <li><strong>Model weights:</strong> ~1.3 GB (bf16) or ~2.6 GB (fp32), cached locally after first download.</li>
-        <li><strong>Dataset chunks:</strong> 10 MB each, streamed on-demand and not stored permanently.</li>
-        <li><strong>Local checkpoints:</strong> ~1.3 GB each, kept for delta computation.</li>
-      </ul>
-      <p>On systems with limited disk space (e.g., &lt;10 GB free), the client will still work — it streams data and cleans up old checkpoints automatically.</p>
-
-      <h3>Memory (RAM)</h3>
-      <p>System RAM usage stays under <strong>4 GB</strong> thanks to disk-streamed uploads and bf16 weights. VRAM usage depends on your chosen batch size and sequence length — the client auto-tunes these to fit your GPU.</p>
-    </div>
-    <!-- ============================================ -->
-    <!-- END HARDWARE SECTION                         -->
-    <!-- ============================================ -->
-
     <div class="content">
       <h2>Configuration</h2>
       <p>The client can be configured via command-line arguments or environment variables.</p>
@@ -670,10 +685,10 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
 
     <div class="content">
       <h2>1. Task Assignment</h2>
-      <p>When a client connects, the coordinator assigns it a specific data shard (a 10MB chunk of tokenized text from the <a href="https://huggingface.co/datasets/Vxtzq/CrowdGPT" target="_blank">public CrowdGPT dataset</a> on HuggingFace) and the current global model weights. The client downloads the weights from HuggingFace and streams the data chunk locally via HTTP Range requests. The dataset is fully open — anyone can contribute to it.</p>
+      <p>When a client connects, the coordinator assigns it a specific data shard (a 10MB chunk of tokenized text from the <a href="https://huggingface.co/datasets/Vxtzq/CrowdGPT" target="_blank">public CrowdGPT dataset</a> on HuggingFace) and the current global model weights. The client downloads the weights from HuggingFace and streams the data chunk locally via HTTP Range requests. The dataset is fully open and anyone can contribute to it.</p>
       
       <h2>2. Local Training</h2>
-      <p>The client performs a set number of forward and backward passes on its local GPU. It calculates the gradient (the "delta") between its starting weights and the newly trained weights. <strong>No raw data ever leaves the client's machine.</strong> Your files, browsing history, and any other local information are never accessed or transmitted.</p>
+      <p>The client performs a set number of forward and backward passes on its local GPU. It calculates the gradient (the "delta") between its starting weights and the newly trained weights. No raw data ever leaves the client's machine. Your files, browsing history, and any other local information are never accessed or transmitted.</p>
 
       <h2>3. Secure Submission</h2>
       <p>The client compresses and submits only the weight delta to the coordinator. The coordinator validates the submission:</p>
@@ -744,22 +759,15 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
       </div>
     </div>
 
-    <div class="content">
-      <h2>Live Terminal</h2>
-      <p>The coordinator outputs real-time aggregation events. This is a simulated view of the server logs.</p>
-      <div class="terminal">
-        <div class="terminal-bar">
-          <div class="terminal-dots"><span></span><span></span><span></span></div>
-          <div class="terminal-title">coordinator.log</div>
-        </div>
-        <div class="terminal-body">
-          <span class="line"><span class="t-dim">[14:02:11]</span> <span class="t-info">INFO</span> 📦 New shard shard_0_42_1710000000 chunk=42 mode=quick (consensus)</span>
-          <span class="line"><span class="t-dim">[14:02:15]</span> <span class="t-info">INFO</span> 📥 shard_0_42_1710000000: tracking submission 1/3 (ip=192.168.1.10, norm=482.12)</span>
-          <span class="line"><span class="t-dim">[14:02:18]</span> <span class="t-info">INFO</span> 📥 shard_0_42_1710000000: tracking submission 2/3 (ip=10.0.0.55, norm=491.05)</span>
-          <span class="line"><span class="t-dim">[14:02:22]</span> <span class="t-success">SUCCESS</span> ✅ Sequential update step 1402 from 10.0.0.55 (rank=1536)</span>
-          <span class="line"><span class="t-dim">[14:02:22]</span> <span class="t-warn">WATCH</span> 🧹 Watchdog cleaning stale shard shard_0_41_1709999000 (age=1805s)</span>
-        </div>
-      </div>
+    <div class="content" style="margin-top: 58px;">
+      <h2>What the numbers mean</h2>
+      <ul>
+        <li><strong>Global Step:</strong> Total aggregated optimizer updates applied to the model, across all contributors.</li>
+        <li><strong>Tokens Processed:</strong> Cumulative tokens trained on by every GPU in the swarm.</li>
+        <li><strong>Active Clients:</strong> GPUs that have pinged the coordinator in the last 10 minutes.</li>
+        <li><strong>Model Loss:</strong> Cross-entropy loss of the most recently aggregated update.</li>
+      </ul>
+      <p>Stats refresh automatically every 15 seconds from the HuggingFace CDN. The global model weights are pushed to HuggingFace every 10 hours after aggregated updates complete.</p>
     </div>
   </div>
 </div>
@@ -828,11 +836,11 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
     <div class="faq">
       <div class="faq-item">
         <div class="faq-q">Is my data safe when I run the client?</div>
-        <div class="faq-a">Yes. The client streams 10MB chunks from the public CrowdGPT dataset on HuggingFace — a dataset anyone can inspect or contribute to. Your personal files, browser history, and any other local data are never accessed or transmitted. Only the mathematical weight delta leaves your machine.</div>
+        <div class="faq-a">Yes. The client streams 10MB chunks from the public CrowdGPT dataset on HuggingFace, a dataset anyone can inspect or contribute to. Your personal files, browser history, and any other local data are never accessed or transmitted. Only the mathematical weight delta leaves your machine.</div>
       </div>
       <div class="faq-item">
         <div class="faq-q">How much disk space do I need?</div>
-        <div class="faq-a">Around 3–4 GB free. The model weights take ~1.3 GB (bf16) or ~2.6 GB (fp32), and each dataset chunk is only 10 MB, streamed on-demand. Local checkpoints for delta computation add another ~1.3 GB. The client auto-cleans old checkpoints, so disk usage stays stable over time.</div>
+        <div class="faq-a">Around 3-4 GB free. The model weights take ~1.3 GB (bf16) or ~2.6 GB (fp32), and each dataset chunk is only 10 MB, streamed on demand. Local checkpoints for delta computation add another ~1.3 GB. The client auto-cleans old checkpoints, so disk usage stays stable over time.</div>
       </div>
       <div class="faq-item">
         <div class="faq-q">Does it work on AMD or Apple Silicon?</div>
