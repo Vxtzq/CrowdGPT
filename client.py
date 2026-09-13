@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-CrowdGPT Client - Continuous FL Node (Vanilla Edition - No Grad Accum)
+CrowdGPT Client - Continuous FL Node (Adaptive Grad-Accum Edition)
+Grad accum that cannot crash: checkpointed head+CE removes the stored softmaxes,
+and OOM automatically halves the accumulation window (down to vanilla if needed).
 """
 
 import os
@@ -49,6 +51,7 @@ MAX_SEQ_LEN = MODEL_CONFIG["maxSeqLen"]
 MLP_HIDDEN = MODEL_CONFIG["mlpHidden"]
 ENG_NUM_BUCKETS = 227865
 
+LOSS_CHUNK = 256
 UPLOAD_BUFFER_MIN = 25        
 TPS_DEGRADATION = 0.85        
 DATASET_PAUSE_PER_ADVANCE = 8 
@@ -126,7 +129,7 @@ def estimate_vram_bytes(batch_size, seq_len, use_8bit):
     act_per_block = batch_size * seq_len * DIM * 2
     attn_act = batch_size * N_HEADS * 64 * seq_len * 4
     act_bytes = N_LAYERS * (act_per_block + attn_act)
-    logits_bytes = batch_size * 256 * VOCAB_SIZE * 4
+    logits_bytes = batch_size * LOSS_CHUNK * VOCAB_SIZE * 4
     engram_bytes = batch_size * seq_len * DIM * 2
     safety = int(0.8 * 1024**3)
     return int(model_bytes + optim_bytes + grad_bytes + act_bytes + logits_bytes + engram_bytes + safety)
@@ -396,7 +399,7 @@ def authenticate(server_url, username, password):
     return None
 
 # ============ DASHBOARD ============
-def create_dashboard(step, target_steps, loss, tps, lr, global_step, backend_name, batch_size, seq_len, current_round, time_remaining_min):
+def create_dashboard(step, target_steps, loss, tps, lr, global_step, backend_name, batch_size, seq_len, current_round, time_remaining_min, accum_steps=1, tokens_per_opt_step=None):
     table = Table(title=f"Round {current_round} Training", expand=True, border_style="dim")
     table.add_column("Metric", style="bold"); table.add_column("Value", justify="right")
     table.add_row("Progress", f"{step}/{target_steps} ({step/max(1,target_steps)*100:.1f}%)")
@@ -408,6 +411,8 @@ def create_dashboard(step, target_steps, loss, tps, lr, global_step, backend_nam
     table.add_row("Time Left", f"{time_remaining_min:.0f} min")
     table.add_row("Backend", backend_name)
     table.add_row("Batch / SeqLen", f"{batch_size} / {seq_len}")
+    if accum_steps > 1:
+        table.add_row("Grad Accum", f"{accum_steps}x (~{tokens_per_opt_step:,} tok/opt-step)")
     return table
 
 # ============ HEARTBEAT ============
@@ -461,15 +466,10 @@ def fetch_task_and_weights(server_url, headers, precision, hb=None):
     while True:
         if hb and hb.should_stop():
             return None, None
-            
         try:
             r = requests.get(f"{server_url}/fl/task?format={precision}", headers=headers, timeout=(15, 3600))
             if r.headers.get("X-Status") == "wait":
-                try:
-                    body = r.json()
-                    log.info(f"⏳ Server says wait: {body.get('message', '')}")
-                except Exception:
-                    log.info("⏳ Server says wait (aggregating or cooldown)")
+                log.info("⏳ Server says wait (aggregating or cooldown)")
                 time.sleep(10)
                 continue
             raw = r.content
@@ -482,6 +482,35 @@ def fetch_task_and_weights(server_url, headers, precision, hb=None):
             log.error(f"Task fetch failed: {e}")
             time.sleep(15)
 
+# 🚨 THE FIX: checkpoint each lm_head+cross_entropy chunk so the ~300MB fp32 softmax
+# is NOT stored during forward. It is recomputed inside backward, one chunk at a time.
+def _chunk_ce(model, x_slice, y_slice):
+    logits = model.lm_head(x_slice)
+    return F.cross_entropy(logits.reshape(-1, VOCAB_SIZE), y_slice.reshape(-1))
+
+def _forward_and_loss(model, x, y, seq_len, use_autocast, autocast_dtype, loss_scale=1.0):
+    def fwd():
+        x_emb = model.wte(x)
+        if use_autocast:
+            with torch.autocast(device_type='cuda', enabled=False): eng_out = model.engram(x)
+        else: eng_out = model.engram(x)
+        x_emb = x_emb + eng_out.to(x_emb.dtype)
+        for b in model.blocks:
+            x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True, use_reentrant=False)
+        return model.ln_f(x_emb)
+
+    n_chunks = max(1, math.ceil(seq_len / LOSS_CHUNK))
+    if use_autocast:
+        with torch.autocast(device_type='cuda', dtype=autocast_dtype):
+            x_emb = fwd()
+            loss = sum(checkpoint(_chunk_ce, model, x_emb[:, i:i+LOSS_CHUNK, :], y[:, i:i+LOSS_CHUNK],
+                                  use_reentrant=False) for i in range(0, seq_len, LOSS_CHUNK)) / n_chunks
+    else:
+        x_emb = fwd()
+        loss = sum(checkpoint(_chunk_ce, model, x_emb[:, i:i+LOSS_CHUNK, :], y[:, i:i+LOSS_CHUNK],
+                              use_reentrant=False) for i in range(0, seq_len, LOSS_CHUNK)) / n_chunks
+    return loss * loss_scale
+
 def run_single_round(args, auth_token=None):
     global train_device, train_backend
     headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
@@ -489,7 +518,6 @@ def run_single_round(args, auth_token=None):
     log.info("Checking round status...")
     round_status = wait_for_round(args.server, headers)
     current_round = round_status["current_round"]
-    max_round_hours = round_status.get("max_round_hours", 2.0)
 
     hb = HeartbeatManager(args.server, headers, current_round)
     hb.start()
@@ -497,14 +525,12 @@ def run_single_round(args, auth_token=None):
     try:
         log.info("Downloading fresh weights...")
         metadata, weights_bytes = fetch_task_and_weights(args.server, headers, args.precision, hb=hb)
-        
         if metadata is None:
             log.warning("⚠️ Round ended during task fetch. Restarting cycle.")
             return
-            
+
         task_id = metadata['taskId']
         global_step = metadata['globalStep']
-        server_round = metadata.get('currentRound', current_round)
         weight_format = metadata.get('weightFormat', 'bf16')
         seq_len = args.seq_len if args.seq_len > 0 else 2048
 
@@ -516,15 +542,13 @@ def run_single_round(args, auth_token=None):
             rs = requests.get(f"{args.server}/fl/round_status", headers=headers, timeout=15)
             if rs.status_code == 200:
                 fresh = rs.json()
-                round_elapsed = fresh.get("round_elapsed_hours", 0)
-                remaining_hours = max(0.05, fresh.get("max_round_hours", 2.0) - round_elapsed)
+                remaining_hours = max(0.05, fresh.get("max_round_hours", 2.0) - fresh.get("round_elapsed_hours", 0))
                 log.info(f"Round timer re-synced: {remaining_hours*60:.0f} min remaining")
         except Exception:
-            remaining_hours = max(0.1, max_round_hours - round_status.get("round_elapsed_hours", 0))
+            remaining_hours = max(0.1, round_status.get("max_round_hours", 2.0) - round_status.get("round_elapsed_hours", 0))
 
         bytes_per_param = 2 if weight_format in ("bf16", "fp16") else 4
         base_bytes_len = EXPECTED_MODEL_SIZE * bytes_per_param
-        
         initial_weights = decompress_weights(weights_bytes[:base_bytes_len], weight_format)
         initial_engram_weights = decompress_weights(weights_bytes[base_bytes_len:], weight_format)
         del weights_bytes; gc.collect()
@@ -537,27 +561,24 @@ def run_single_round(args, auth_token=None):
             shard_cfg.get("slot", 0), auth_token)
 
         batch_size = args.batch_size if args.batch_size > 0 else recommend_batch_size(seq_len)
-        
+
         while batch_size >= 1:
             try:
                 if train_backend in ("CUDA", "ROCM"):
                     try: torch.cuda.empty_cache()
                     except: pass
                 gc.collect()
-                
                 log.info(f"Initializing model with BS={batch_size}...")
                 model = SotaGPT(train_backend, train_device).to(train_device)
                 model.engram.table.to('cpu')
                 model.load_base_weights(initial_weights)
-                
-                ft_eng = torch.from_numpy(initial_engram_weights) if not isinstance(initial_engram_weights, torch.Tensor) else initial_engram_weights
+                ft_eng = torch.from_numpy(initial_engram_weights)
                 model.engram.table.weight.data.copy_(ft_eng.view(model.engram.table.weight.shape))
-                
                 model.train()
                 break
             except RuntimeError as e:
                 if "out of memory" in str(e).lower():
-                    log.warning(f"CUDA OOM at BS={batch_size}. Halving batch size and retrying...")
+                    log.warning(f"CUDA OOM at BS={batch_size}. Halving batch size...")
                     if 'model' in locals(): del model
                     if train_backend in ("CUDA", "ROCM"):
                         try: torch.cuda.empty_cache()
@@ -567,7 +588,23 @@ def run_single_round(args, auth_token=None):
                 else:
                     raise
 
-        log.info(f"Training with BS={batch_size}, SeqLen={seq_len} ({batch_size * seq_len:,} tokens/step)")
+        # ===== Adaptive accumulation =====
+        micro_batch_tokens = batch_size * seq_len
+        accum_steps = max(1, round(args.tokens_per_step / micro_batch_tokens))
+        loss_scale = 1.0 / accum_steps
+
+        def halve_accum():
+            nonlocal accum_steps, loss_scale
+            accum_steps = max(1, accum_steps // 2)
+            loss_scale = 1.0 / accum_steps
+            optimizer_base.zero_grad(set_to_none=True)
+            gc.collect()
+            if train_backend in ("CUDA", "ROCM"):
+                try: torch.cuda.empty_cache()
+                except: pass
+            log.warning(f"⚠️ OOM in accumulation window -> accum now {accum_steps}x "
+                        f"({accum_steps * micro_batch_tokens:,} tok/opt-step)"
+                        + (" [vanilla mode]" if accum_steps == 1 else ""))
 
         base_params = [p for n, p in model.named_parameters() if not n.startswith('engram.')]
         engram_params = list(model.engram.parameters())
@@ -586,82 +623,69 @@ def run_single_round(args, auth_token=None):
         use_autocast = args.precision == "bf16" and train_backend in ("CUDA", "ROCM") and torch.cuda.is_bf16_supported()
         autocast_dtype = torch.bfloat16 if use_autocast else None
 
+        log.info(f"Grad accumulation: {accum_steps}x micro-batches = {accum_steps * micro_batch_tokens:,} tok/opt-step")
+
         # ============ CALIBRATION ============
-        log.info(f"Calibrating TPS ({CALIBRATION_STEPS} steps, BS={batch_size})...")
-        loss_history = []
+        log.info(f"Calibrating TPS ({CALIBRATION_STEPS} opt-steps, BS={batch_size}, accum={accum_steps})...")
         total_tok = 0
         cal_start = time.time()
-
-        for ci in range(1, CALIBRATION_STEPS + 1):
+        ci = 0
+        while ci < CALIBRATION_STEPS:
             if hb.should_stop():
                 log.warning("⚠️ Round ended during calibration. Restarting cycle.")
                 return
-            if dataset_shard.needs_new_subchunk(): dataset_shard.advance(args.server, args.precision)
-            seed = (hash("cal") % 10000) + ci
-            x, y = dataset_shard.get_batch(batch_size, seed=seed)
-            x, y = x.to(train_device), y.to(train_device)
-            
             optimizer_base.zero_grad(set_to_none=True)
-            try: optimizer_engram.zero_grad(set_to_none=True)
-            except: optimizer_engram.zero_grad()
-
-            def fwd():
-                x_emb = model.wte(x)
-                if use_autocast:
-                    with torch.autocast(device_type='cuda', enabled=False): eng_out = model.engram(x)
-                else: eng_out = model.engram(x)
-                x_emb = x_emb + eng_out.to(x_emb.dtype)
-                for b in model.blocks:
-                    x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True, use_reentrant=False)
-                return model.ln_f(x_emb)
-
-            if use_autocast:
-                with torch.autocast(device_type='cuda', dtype=autocast_dtype):
-                    x_emb = fwd()
-                    loss = sum(F.cross_entropy(model.lm_head(x_emb[:, i:i+256, :]).reshape(-1, VOCAB_SIZE), y[:, i:i+256].reshape(-1)) for i in range(0, seq_len, 256)) / max(1, math.ceil(seq_len/256))
-            else:
-                x_emb = fwd()
-                loss = sum(F.cross_entropy(model.lm_head(x_emb[:, i:i+256, :]).reshape(-1, VOCAB_SIZE), y[:, i:i+256].reshape(-1)) for i in range(0, seq_len, 256)) / max(1, math.ceil(seq_len/256))
-
-            loss.backward()
+            try:
+                accum_loss_sum = 0.0
+                for mi in range(accum_steps):
+                    if dataset_shard.needs_new_subchunk(): dataset_shard.advance(args.server, args.precision)
+                    seed = (hash("cal") % 10000) + ci * 1000 + mi
+                    x, y = dataset_shard.get_batch(batch_size, seed=seed)
+                    x, y = x.to(train_device), y.to(train_device)
+                    loss = _forward_and_loss(model, x, y, seq_len, use_autocast, autocast_dtype, loss_scale)
+                    loss.backward()
+                    # engram: sparse grads must NOT accumulate; step+clear every micro-batch
+                    optimizer_engram.step()
+                    optimizer_engram.zero_grad(set_to_none=True)
+                    accum_loss_sum += float(loss.item()) * accum_steps
+                    total_tok += x.numel()
+                    del loss, x, y
+            except RuntimeError as e:
+                if "out of memory" not in str(e).lower(): raise
+                halve_accum()
+                continue
             torch.nn.utils.clip_grad_norm_(base_params, 1.0)
             optimizer_base.step()
-            optimizer_engram.step()
-
-            lv = float(loss.item())
-            if math.isnan(lv) or lv <= 0: lv = 10.0
-            loss_history.append(lv)
-            total_tok += x.numel()
+            optimizer_base.zero_grad(set_to_none=True)
+            gc.collect()
+            ci += 1
 
         cal_elapsed = time.time() - cal_start
         measured_tps = total_tok / cal_elapsed
         seconds_per_step = cal_elapsed / CALIBRATION_STEPS
         effective_sps = seconds_per_step / TPS_DEGRADATION
-        log.info(f"TPS: {measured_tps:.0f} | {seconds_per_step:.3f}s/step (effective: {effective_sps:.3f}s)")
+        log.info(f"TPS: {measured_tps:.0f} | {seconds_per_step:.3f}s/opt-step (effective: {effective_sps:.3f}s)")
 
         dataset_advances_remaining = int((remaining_hours * 3600) / effective_sps / StreamingShardDataset.STEPS_PER_SUBCHUNK)
         dataset_pause_total = dataset_advances_remaining * DATASET_PAUSE_PER_ADVANCE
+        training_budget_sec = max(60, (remaining_hours * 3600) - cal_elapsed - (UPLOAD_BUFFER_MIN * 60) - dataset_pause_total)
 
-        training_budget_sec = (remaining_hours * 3600) - cal_elapsed - (UPLOAD_BUFFER_MIN * 60) - dataset_pause_total
-        training_budget_sec = max(60, training_budget_sec)
-
-        target_steps = int(training_budget_sec / effective_sps)
-        target_steps = max(50, min(target_steps, 500_000))
+        target_steps = max(50, min(int(training_budget_sec / effective_sps), 500_000))
         estimated_train_min = (target_steps * effective_sps) / 60
-
-        log.info(f"Budget: {training_budget_sec/60:.0f} min | Dataset pauses: ~{dataset_pause_total}s | "
-                  f"Target: {target_steps} steps (~{estimated_train_min:.0f} min, "
-                  f"~{target_steps * batch_size * seq_len:,} tokens)")
+        log.info(f"Budget: {training_budget_sec/60:.0f} min | Target: {target_steps} opt-steps "
+                  f"(~{estimated_train_min:.0f} min, ~{target_steps * accum_steps * micro_batch_tokens:,} tokens)")
 
         step = CALIBRATION_STEPS
         train_start = time.time()
         deadline = train_start + training_budget_sec
         loss_history = []
 
-        with Live(create_dashboard(step, target_steps + CALIBRATION_STEPS, 0, measured_tps, args.lr, global_step, train_backend, batch_size, seq_len, current_round, estimated_train_min),
+        with Live(create_dashboard(step, target_steps + CALIBRATION_STEPS, 0, measured_tps, args.lr, global_step,
+                                   train_backend, batch_size, seq_len, current_round, estimated_train_min,
+                                   accum_steps, accum_steps * micro_batch_tokens),
                   console=console, refresh_per_second=2, screen=False) as live:
 
-            for _ in range(target_steps):
+            while step < target_steps + CALIBRATION_STEPS:
                 if hb.should_stop():
                     log.warning("Stopped by heartbeat/ultimatum.")
                     break
@@ -669,56 +693,50 @@ def run_single_round(args, auth_token=None):
                     log.info("Time budget reached. Stopping training.")
                     break
 
-                if dataset_shard.needs_new_subchunk(): dataset_shard.advance(args.server, args.precision)
-                seed = (hash("t") % 10000) + step
-                x, y = dataset_shard.get_batch(batch_size, seed=seed)
-                x, y = x.to(train_device), y.to(train_device)
-
                 optimizer_base.zero_grad(set_to_none=True)
-                try: optimizer_engram.zero_grad(set_to_none=True)
-                except: optimizer_engram.zero_grad()
-
                 try:
-                    def fwd():
-                        x_emb = model.wte(x)
-                        if use_autocast:
-                            with torch.autocast(device_type='cuda', enabled=False): eng_out = model.engram(x)
-                        else: eng_out = model.engram(x)
-                        x_emb = x_emb + eng_out.to(x_emb.dtype)
-                        for b in model.blocks:
-                            x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True, use_reentrant=False)
-                        return model.ln_f(x_emb)
+                    accum_loss_sum = 0.0
+                    completed = 0
+                    for mi in range(accum_steps):
+                        if hb.should_stop() or time.time() >= deadline: break
+                        if dataset_shard.needs_new_subchunk(): dataset_shard.advance(args.server, args.precision)
+                        seed = (hash("t") % 10000) + step * 1000 + mi
+                        x, y = dataset_shard.get_batch(batch_size, seed=seed)
+                        x, y = x.to(train_device), y.to(train_device)
+                        loss = _forward_and_loss(model, x, y, seq_len, use_autocast, autocast_dtype, loss_scale)
+                        loss.backward()
+                        optimizer_engram.step()
+                        optimizer_engram.zero_grad(set_to_none=True)
+                        accum_loss_sum += float(loss.item()) * accum_steps
+                        total_tok += x.numel()
+                        completed += 1
+                        del loss, x, y
+                except RuntimeError as e:
+                    if "out of memory" not in str(e).lower(): raise
+                    halve_accum()
+                    continue
 
-                    if use_autocast:
-                        with torch.autocast(device_type='cuda', dtype=autocast_dtype):
-                            x_emb = fwd()
-                            loss = sum(F.cross_entropy(model.lm_head(x_emb[:, i:i+256, :]).reshape(-1, VOCAB_SIZE), y[:, i:i+256].reshape(-1)) for i in range(0, seq_len, 256)) / max(1, math.ceil(seq_len/256))
-                    else:
-                        x_emb = fwd()
-                        loss = sum(F.cross_entropy(model.lm_head(x_emb[:, i:i+256, :]).reshape(-1, VOCAB_SIZE), y[:, i:i+256].reshape(-1)) for i in range(0, seq_len, 256)) / max(1, math.ceil(seq_len/256))
-
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(base_params, 1.0)
-                    optimizer_base.step()
-                    optimizer_engram.step()
-
-                    lv = float(loss.item())
-                    if math.isnan(lv) or lv <= 0: lv = 10.0
-                    loss_history.append(lv)
-                    total_tok += x.numel()
-                    step += 1
-
-                except Exception as e:
-                    log.error(f"Training error: {e}")
+                if completed == 0:
+                    optimizer_base.zero_grad(set_to_none=True)
                     break
+
+                torch.nn.utils.clip_grad_norm_(base_params, 1.0)
+                optimizer_base.step()
+                optimizer_base.zero_grad(set_to_none=True)
+
+                lv = accum_loss_sum / completed
+                if math.isnan(lv) or lv <= 0: lv = 10.0
+                loss_history.append(lv)
+                step += 1
 
                 elapsed = time.time() - train_start
                 cur_tps = total_tok / max(elapsed + cal_elapsed, 1)
                 time_left = max(0, (deadline - time.time()) / 60)
                 live.update(create_dashboard(step, target_steps + CALIBRATION_STEPS, lv, cur_tps,
                                              optimizer_base.param_groups[0]['lr'], global_step,
-                                             train_backend, batch_size, seq_len, current_round, time_left))
-                    
+                                             train_backend, batch_size, seq_len, current_round, time_left,
+                                             accum_steps, accum_steps * micro_batch_tokens))
+
     finally:
         hb.stop()
         if 'dataset_shard' in locals() and dataset_shard is not None:
@@ -730,11 +748,11 @@ def run_single_round(args, auth_token=None):
 
     actual_training_steps = step - CALIBRATION_STEPS
     if actual_training_steps <= 0 or not loss_history:
-        log.warning(f"⚠️ Round ended before actual training started (only {step} calibration steps). Skipping upload.")
+        log.warning("⚠️ Round ended before actual training started. Skipping upload.")
         return
 
     final_loss = float(loss_history[-1]) if loss_history else 10.0
-    log.info(f"Done: {actual_training_steps} steps, loss {final_loss:.4f}")
+    log.info(f"Done: {actual_training_steps} opt-steps, loss {final_loss:.4f}")
 
     delta_base_bf16 = torch.from_numpy(model.get_base_weights() - initial_weights).to(torch.bfloat16).view(torch.uint16).numpy()
     engram_delta = model.engram.table.weight.data.cpu() - initial_engram_weights
@@ -785,7 +803,7 @@ def run_single_round(args, auth_token=None):
 def run_swarm_node(args):
     global train_device, train_backend
     log.info("=" * 60)
-    log.info("CrowdGPT Continuous FL Node (Vanilla Edition)")
+    log.info("CrowdGPT Continuous FL Node (Adaptive Grad-Accum Edition)")
     log.info("=" * 60)
 
     username = args.username or os.environ.get("CROWDGPT_USERNAME")
@@ -828,6 +846,8 @@ if __name__ == "__main__":
     parser.add_argument("--backend", default="auto")
     parser.add_argument("--batch-size", type=int, default=0)
     parser.add_argument("--seq-len", type=int, default=0)
+    parser.add_argument("--tokens-per-step", type=int, default=131072,
+                        help="Target tokens per optimizer step (grad accum). 4096 = vanilla.")
     parser.add_argument("--precision", default="bf16")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--username", default=None)
