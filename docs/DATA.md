@@ -9,11 +9,11 @@ Our global dataset lives on HuggingFace: **[Vxtzq/CrowdGPT](https://huggingface.
 **However**, the *content* of the tokens matters. We review all submissions to ensure the underlying text is high-quality, legal, and free of severe toxicity or PII. We do not train on unmoderated noise.
 
 ## 📦 The Format
-To ensure the swarm trains efficiently without downloading massive text files or running tokenizers on the fly, we use **1MB pre-tokenized binary shards**.
+To ensure the swarm trains efficiently without downloading massive text files or running tokenizers on the fly, we use **10MB pre-tokenized binary shards**.
 - **Format:** Raw binary (`.bin`)
 - **Dtype:** `uint16` (supports GPT-2 vocab size of 50,257)
 - **Shard Size:** Exactly 1 MB (`1,048,576` bytes) per file.
-- **Sequence Length:** Tokens are packed continuously. The client automatically handles the sliding window (64 tokens per sample).
+- **Sequence Length:** Tokens are packed continuously. The client automatically handles the sliding window (2048 tokens per sample).
 
 ---
 
