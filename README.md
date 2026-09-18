@@ -82,7 +82,7 @@ For the automatic installer, see [`docs/easy_install.md`](./docs/easy_install.md
 
 ```bash
 python client.py \
-  --server http://your-coordinator:3000 \
+  --server http://api.crowdgpt.net:5006 \
   --mode deep \
   --batch-size 8 \
   --precision bf16
