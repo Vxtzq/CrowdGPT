@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <strong>Train AI together. Without any money or datacenters.</strong>
+  <strong>The best 0$ AI.</strong>
 </p>
 
 ---
