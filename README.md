@@ -79,27 +79,6 @@ For the automatic installer, see [`docs/easy_install.md`](./docs/easy_install.md
 
 ---
 
-## ⚙️ Configuration
-
-```bash
-python client.py \
-  --server http://api.crowdgpt.net:5006 \
-  --mode deep \
-  --batch-size 8 \
-  --precision bf16
-```
-
-| Option         | Values                                                |
-| -------------- | ----------------------------------------------------- |
-| `--mode`       | `quick` · `balanced` · `deep` · `ultra`               |
-| `--batch-size` | `1` → `512`                                           |
-| `--seq-len`    | `8` → `64`                                            |
-| `--precision`  | `fp32` · `bf16` · `fp16`                              |
-| `--backend`    | `auto` · `cuda` · `rocm` · `directml` · `mps` · `cpu` |
-| `--single`     | Run one cycle                                         |
-
----
-
 ## 🧠 Contribute
 
 Training data is curated through pull requests.
