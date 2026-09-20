@@ -26,10 +26,11 @@
 </p>
 
 ---
-# 🥳🥳🥳 CrowdGPT v0.3 released 🥳🥳🥳
+# 🥳🥳🥳 CrowdGPT v0.4 released 🥳🥳🥳
 ## Key changes
-- Added engrams to model
-- Model now has 1B parameters (including 350m cpu parameters)
+- GUI version
+- Dataset has now 280B tokens
+- Model already trained on 1.6B tokens
 
 ---
 
