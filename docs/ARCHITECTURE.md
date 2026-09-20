@@ -1,8 +1,11 @@
 # System architecture
 The CrowdGPT framework is Split into two parts:
+
 - The server
 - The client
+  
 **The server code is currently closed source for sécurité reasons**
+
 The server however exposes a simple api that allows any compatible client (having a GUI or not) to contribute
 
 ## Server architecture
