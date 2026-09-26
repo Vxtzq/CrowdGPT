@@ -13,6 +13,7 @@
   --bg: #0a0a0b; --bg-soft: #111113; --bg-softer: #16161a; --text: #f5f5f7;
   --text-dim: #c7c7cc; --text-muted: #8a8a92; --border: #1f1f23; --border-strong: #2a2a30;
   --accent: #22c55e; --accent-dim: #16a34a; --info: #60a5fa; --warn: #fbbf24;
+  --hf-yellow: #ffd21e; --hf-yellow-hover: #ffcc00; --hf-yellow-dim: #e6b800;
   --note-bg: rgba(34, 197, 94, 0.05); --note-border: rgba(34, 197, 94, 0.28);
   --serif: 'Fraunces', 'Times New Roman', serif;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
@@ -28,6 +29,7 @@
     --bg: #fafaf9; --bg-soft: #ffffff; --bg-softer: #f0f0ee; --text: #111113;
     --text-dim: #3a3a40; --text-muted: #6b6b73; --border: #e4e4e1; --border-strong: #d0d0cb;
     --accent: #16a34a; --accent-dim: #15803d; --info: #2563eb; --warn: #b45309;
+    --hf-yellow: #ffd21e; --hf-yellow-hover: #e6b800; --hf-yellow-dim: #cc9900;
     --note-bg: rgba(22, 163, 74, 0.05); --note-border: rgba(22, 163, 74, 0.3);
     --term-bg: #1a1a1e; --term-bar-bg: #0f0f12; --term-border: #2a2a2e; --term-text: #e4e4e7;
     --term-dim: #a1a1aa; --term-accent: #4ade80; --term-info: #60a5fa; --term-warn: #fbbf24; --term-error: #ef4444;
@@ -98,14 +100,15 @@ nav a.active { color: var(--text); }
 .hero h1 { font-size: clamp(50px, 6.5vw, 70px); font-weight: 600; line-height: 1.08; color: var(--text); margin-bottom: 29px; }
 .hero h1 .em { font-family: var(--sans); font-weight: 700; color: var(--accent); letter-spacing: -0.02em; }
 .hero-sub { font-size: 21px; color: var(--text-dim); margin-bottom: 38px; line-height: 1.6; }
-.hero-btns { display: flex; gap: 14px; flex-wrap: wrap; }
-.btn { padding: 14px 26px; font-size: 17px; font-weight: 500; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 11px; text-decoration: none; cursor: pointer; }
+.hero-btns { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+.btn { padding: 14px 26px; font-size: 17px; font-weight: 500; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 11px; text-decoration: none; cursor: pointer; border-radius: var(--radius); transition: all 0.15s ease; }
 .btn-primary { background: var(--text); color: var(--bg); }
-.btn-primary:hover { background: var(--text-dim); color: var(--bg); text-decoration: none; }
+.btn-primary:hover { background: var(--text-dim); color: var(--bg); text-decoration: none; transform: translateY(-1px); }
 .btn-ghost { background: transparent; color: var(--text); border: 1px solid var(--border-strong); }
 .btn-ghost:hover { border-color: var(--text-muted); text-decoration: none; }
-.btn-hf { background: #fbbf24; color: #000; border: 1px solid #fbbf24; }
-.btn-hf:hover { background: #f59e0b; border-color: #f59e0b; color: #000; text-decoration: none; }
+.btn-hf { background: var(--hf-yellow); color: #1a1a1e; border: 1px solid var(--hf-yellow); font-weight: 600; }
+.btn-hf:hover { background: var(--hf-yellow-hover); border-color: var(--hf-yellow-hover); color: #1a1a1e; text-decoration: none; transform: translateY(-1px); }
+.btn-hf svg { width: 20px; height: 20px; flex-shrink: 0; }
 .btn svg { width: 17px; height: 17px; }
 
 .hero-image-wrap { display: flex; align-items: center; justify-content: center; }
@@ -271,6 +274,8 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
   .mobile-menu-btn { display: block; }
   .header-inner { padding: 0 20px; gap: 16px; height: 72px; }
   .container, .footer-inner { padding: 0 20px; }
+  .hero-btns { flex-direction: column; align-items: stretch; gap: 10px; }
+  .hero-btns .btn { justify-content: center; width: 100%; }
   .stats-strip { grid-template-columns: repeat(2, 1fr); margin-top: 40px; }
   .stats-strip .stat-item { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 24px 20px; }
   .stats-strip .stat-item:nth-child(2n) { border-right: none; }
@@ -406,6 +411,13 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
           <p class="hero-sub">
             CrowdGPT is focusing on creating the world's first 0$, datacenterless and 100% open AI. Run the app on your computer, and the AI gets better.
           </p>
+          <div class="hero-btns">
+            <a class="btn btn-primary" data-view="install">Install now <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg></a>
+            <a class="btn btn-hf" href="https://huggingface.co/Vxtzq/Crowd-v1" target="_blank" rel="noopener">
+              <svg viewBox="0 0 375 380" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M192.468 135.312H182.532C169.084 135.312 158.136 146.26 158.136 159.708V182.532C158.136 195.98 169.084 206.928 182.532 206.928H192.468C205.916 206.928 216.864 195.98 216.864 182.532V159.708C216.864 146.26 205.916 135.312 192.468 135.312Z" fill="#1a1a1e"/><path d="M187.5 0C84.1635 0 0 84.1635 0 187.5C0 290.836 84.1635 375 187.5 375C290.836 375 375 290.836 375 187.5C375 84.1635 290.836 0 187.5 0ZM118.125 225C118.125 229.142 121.483 232.5 125.625 232.5H144.375V253.125C144.375 257.267 147.733 260.625 151.875 260.625H215.625C219.767 260.625 223.125 257.267 223.125 253.125V232.5H241.875C246.017 232.5 249.375 229.142 249.375 225V150C249.375 145.858 246.017 142.5 241.875 142.5H223.125V121.875C223.125 117.733 219.767 114.375 215.625 114.375H151.875C147.733 114.375 144.375 117.733 144.375 121.875V142.5H125.625C121.483 142.5 118.125 145.858 118.125 150V225Z" fill="#1a1a1e"/></svg>
+              View on HuggingFace
+            </a>
+          </div>
         </div>
         <div class="hero-image-wrap">
           <img src="test.png" class="fit-image" alt="CrowdGPT">
@@ -468,7 +480,6 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
             <p>Every contribution, even the smallest, makes the model better. Run a client, star the repo, or open an issue.</p>
             <div class="cta-btns">
               <a class="btn btn-primary" data-view="install">Installation guide <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg></a>
-              <a class="btn btn-hf" href="https://huggingface.co/Vxtzq/Crowd-v1" target="_blank"><svg viewBox="0 0 24 24" fill="currentColor" width="17" height="17"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1.5 15.5v-3.5c0-.28-.22-.5-.5-.5h-1c-.28 0-.5.22-.5.5v3.5c0 .28.22.5.5.5h1c.28 0 .5-.22.5-.5zm4 0v-3.5c0-.28-.22-.5-.5-.5h-1c-.28 0-.5.22-.5.5v3.5c0 .28.22.5.5.5h1c.28 0 .5-.22.5-.5zm-6-6.5c0-.28.22-.5.5-.5h6c.28 0 .5.22.5.5s-.22.5-.5.5h-6c-.28 0-.5-.22-.5-.5z"/></svg> View on HuggingFace</a>
               <a class="btn btn-ghost" href="https://github.com/Vxtzq/CrowdGPT" target="_blank"><svg viewBox="0 0 24 24" fill="currentColor" width="17" height="17"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.21 11.39.6.11.79-.26.79-.58v-2.23c-3.34.73-4.03-1.42-4.03-1.42-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49.99.11-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.3 1.23.96-.27 1.98-.4 3-.4s2.05.13 3.01.4c2.29-1.55 3.3-1.23 3.3-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.8 5.62-5.48 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.19.69.8.58C20.57 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg> Star on GitHub</a>
             </div>
           </div>
