@@ -569,13 +569,13 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
 
     <div class="content">
       <h2>1. Task Assignment</h2>
-      <p>When a client connects, the coordinator assigns it a specific data shard (a 10MB chunk of tokenized text from the <a href="https://huggingface.co/datasets/Vxtzq/CrowdGPT" target="_blank">public CrowdGPT dataset</a>) and the current global model weights. The client downloads the weights from HuggingFace and streams the data chunk locally via HTTP Range requests. The dataset is fully open and anyone can contribute to it.</p>
+      <p>When a device connects, the server assigns it a specific data shard (a 10MB chunk of tokenized text from the <a href="https://huggingface.co/datasets/Vxtzq/CrowdGPT" target="_blank">public CrowdGPT dataset</a>) and the current global model weights. The client downloads the weights from HuggingFace and streams the data chunk locally via HTTP Range requests. The dataset is fully open and anyone can contribute to it.</p>
       
       <h2>2. Local Training</h2>
-      <p>The client performs a set number of forward and backward passes on its local GPU. It calculates the gradient (the "delta") between its starting weights and the newly trained weights. <strong>No raw data ever leaves the client's machine.</strong></p>
+      <p>The app performs AI training on the local device. It calculates the path (the "delta") between the base model and the newly trained model. <strong>Nothing is ever accessed on your computer.</strong></p>
 
       <h2>3. Secure Submission</h2>
-      <p>The client compresses and submits only the weight delta to the coordinator. The coordinator validates the submission:</p>
+      <p>The app then compresses the update, and sends it back to server for validation:</p>
       <div class="cap-list">
         <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">Checks for NaN or Inf values in the delta.</span></div>
         <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text">Verifies the delta size matches the model architecture exactly.</span></div>
@@ -583,7 +583,7 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
       </div>
 
       <h2>4. Aggregation</h2>
-      <p>Valid deltas are averaged and applied to the global model using a decoupled learning rate and weight decay. The global step increments, and the updated weights are periodically pushed to HuggingFace for public auditing and as a bootstrap for new clients.</p>
+      <p>Valid updates are averaged and applied to the global AI model periodically. Model weights are automatically pushed to HuggingFace for public auditing and usage/testing.</p>
     </div>
 
     <div class="stats-grid" style="margin-top: 58px;">
