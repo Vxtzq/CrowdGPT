@@ -422,7 +422,7 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
         </div>
         <div class="stat-item">
           <div class="stat-val" id="home-stat-tokens">—</div>
-          <div class="stat-lbl">Tokens contributed</div>
+          <div class="stat-lbl">Tokens processed</div>
         </div>
         <div class="stat-item">
           <div class="stat-val" id="home-stat-loss">—</div>
@@ -458,15 +458,15 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
         <div class="product-side">
           <div class="note">
             <div class="note-title">A note on trust</div>
-            <p>The client is a single open-source Python file. It downloads public training data, trains locally and uploads only the weight delta. It cannot access your files or compromise your machine.</p>
-            <p>The coordinator is protected too. Every update is validated for size, NaN values and norm bounds before it touches the model, and repeat offenders are banned by subnet.</p>
+            <p>The client is a single open-source Python file which is human-readable. It downloads public training data online, trains locally and uploads only the model update. It cannot access your files or compromise your machine.</p>
+            <p>The server is protected too. Every update is validated for size, NaN values and norm bounds before it is cross-validated by peers, and repeat offenders are banned from the project.</p>
             <p><a href="https://github.com/Vxtzq/CrowdGPT" target="_blank">Read the source</a> before you run it.</p>
           </div>
           <div class="cta-card">
             <h3>Help the project grow.</h3>
             <p>Every contribution, even the smallest, makes the model better. Run a client, star the repo, or open an issue.</p>
             <div class="cta-btns">
-              <a class="btn btn-primary" data-view="install">Install the client <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg></a>
+              <a class="btn btn-primary" data-view="install">Installation guide <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg></a>
               <a class="btn btn-ghost" href="https://github.com/Vxtzq/CrowdGPT" target="_blank"><svg viewBox="0 0 24 24" fill="currentColor" width="17" height="17"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.21 11.39.6.11.79-.26.79-.58v-2.23c-3.34.73-4.03-1.42-4.03-1.42-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49.99.11-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.3 1.23.96-.27 1.98-.4 3-.4s2.05.13 3.01.4c2.29-1.55 3.3-1.23 3.3-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.8 5.62-5.48 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.19.69.8.58C20.57 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg> Star on GitHub</a>
             </div>
           </div>
@@ -482,7 +482,7 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; margin-top: 72px;
     <div class="page-head">
       <div class="crumb">home / install</div>
       <h1>Install the client</h1>
-      <p>Get up and running in under a minute. The client is a single Python script with minimal dependencies.</p>
+      <p>Install everything with one command. The app is a single Python script with minimal dependencies.</p>
     </div>
 
     <div class="note">
