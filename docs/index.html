@@ -33,6 +33,13 @@
   --radius: 6px;
   --radius-sm: 3px;
 
+  --pad-x: clamp(16px, 2.2vw, 34px);
+  --pad-y: clamp(28px, 5vw, 67px);
+
+  --header-h: clamp(72px, 5.2vw, 86px);
+  --header-gap: clamp(14px, 1.8vw, 38px);
+  --header-px: clamp(20px, 2.2vw, 34px);
+
   --term-bg: #0d0d0f;
   --term-bar-bg: #161618;
   --term-border: #2a2a2e;
@@ -42,9 +49,6 @@
   --term-info: #60a5fa;
   --term-warn: #fbbf24;
   --term-error: #ef4444;
-
-  --pad-x: clamp(16px, 4vw, 34px);
-  --pad-y: clamp(28px, 5vw, 67px);
 
   --hf-bg: rgba(255, 210, 30, 0.10);
   --hf-bg-hover: rgba(255, 210, 30, 0.16);
@@ -153,6 +157,11 @@ h1, h2, h3, p, li, span, button, a, code {
   word-break: break-word;
 }
 
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .container {
   width: 100%;
   max-width: 1440px;
@@ -179,39 +188,44 @@ header {
 .header-inner {
   max-width: 1440px;
   margin: 0 auto;
-  padding: 0 34px;
-  height: 86px;
+  padding: 0 var(--header-px);
+  height: var(--header-h);
   display: flex;
   align-items: center;
-  gap: 38px;
+  gap: var(--header-gap);
   width: 100%;
   box-sizing: border-box;
+  overflow: hidden;
 }
 
 .logo {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: clamp(10px, 0.9vw, 14px);
   cursor: pointer;
   user-select: none;
+  min-width: 0;
+  flex: 0 1 auto;
 }
 
 .logo-img {
-  height: 31px;
+  height: clamp(26px, 2vw, 31px);
   width: auto;
   display: block;
+  flex-shrink: 0;
 }
 
 .logo-fallback {
-  width: 34px;
-  height: 34px;
+  width: clamp(30px, 2.3vw, 34px);
+  height: clamp(30px, 2.3vw, 34px);
   border: 1px solid var(--border-strong);
   display: none;
   place-items: center;
   color: var(--text);
   font-family: var(--serif);
   font-style: italic;
-  font-size: 21px;
+  font-size: clamp(18px, 1.4vw, 21px);
+  flex-shrink: 0;
 }
 
 .logo-img-failed .logo-img {
@@ -223,7 +237,7 @@ header {
 }
 
 .logo-text {
-  font-size: 21px;
+  font-size: clamp(18px, 1.3vw, 21px);
   font-weight: 600;
   color: var(--text);
   white-space: nowrap;
@@ -231,24 +245,26 @@ header {
 
 .logo-ver {
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: clamp(12px, 0.9vw, 14px);
   color: var(--text-muted);
   padding: 2px 9px;
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   white-space: nowrap;
 }
 
 nav {
   display: flex;
-  gap: 7px;
+  gap: clamp(4px, 0.5vw, 7px);
   margin-left: auto;
+  min-width: 0;
+  flex: 0 1 auto;
 }
 
 nav a {
-  padding: 10px 17px;
-  border-radius: var(--radius-sm);
-  font-size: 17px;
+  padding: clamp(8px, 0.7vw, 10px) clamp(12px, 1vw, 17px);
+  border-radius: 0;
+  font-size: clamp(15px, 1.05vw, 17px);
   color: var(--text-dim);
   text-decoration: none;
   cursor: pointer;
@@ -263,20 +279,25 @@ nav a:hover {
 
 nav a.active {
   color: var(--text);
+  background: var(--bg-softer);
 }
 
 .gh-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  padding: 9px 16px;
+  min-height: clamp(36px, 2.5vw, 42px);
+  padding: 0 clamp(12px, 1vw, 16px);
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-dim);
-  font-size: 16px;
+  font-size: clamp(14px, 1vw, 16px);
   text-decoration: none;
-  margin-left: 12px;
+  margin-left: clamp(8px, 0.8vw, 12px);
   white-space: nowrap;
+  border-radius: 0;
+  flex-shrink: 0;
 }
 
 .gh-btn:hover {
@@ -286,20 +307,26 @@ nav a.active {
 }
 
 .gh-btn svg {
-  width: 18px;
-  height: 18px;
+  width: clamp(16px, 1.1vw, 18px);
+  height: clamp(16px, 1.1vw, 18px);
+  flex-shrink: 0;
 }
 
 .mobile-menu-btn {
   display: none;
   background: none;
   border: none;
+  min-width: 44px;
+  min-height: 44px;
   padding: 10px;
   cursor: pointer;
   margin-left: auto;
   color: var(--text);
-  border-radius: var(--radius-sm);
+  border-radius: 0;
   transition: background 0.15s;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .mobile-menu-btn:hover {
@@ -309,6 +336,45 @@ nav a.active {
 .mobile-menu-btn svg {
   width: 26px;
   height: 26px;
+}
+
+.header-compact nav,
+.header-compact .gh-btn {
+  display: none;
+}
+
+.header-compact .mobile-menu-btn {
+  display: inline-flex;
+}
+
+.header-measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: var(--header-h);
+  padding: 0 !important;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--header-gap);
+  width: max-content;
+  max-width: none;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: -1;
+  border: 0;
+  background: transparent;
+  color: transparent;
+  overflow: visible;
+}
+
+.header-measure nav,
+.header-measure .gh-btn {
+  display: flex !important;
+}
+
+.header-measure .mobile-menu-btn {
+  display: none !important;
 }
 
 .mobile-menu-overlay {
@@ -342,11 +408,16 @@ nav a.active {
 .mobile-menu-close {
   background: none;
   border: none;
+  min-width: 44px;
+  min-height: 44px;
   padding: 10px;
   cursor: pointer;
   color: var(--text);
-  border-radius: var(--radius-sm);
+  border-radius: 0;
   transition: background 0.15s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .mobile-menu-close:hover {
@@ -368,7 +439,7 @@ nav a.active {
 
 .mobile-menu-links a {
   padding: 18px 22px;
-  font-size: 20px;
+  font-size: clamp(18px, 1.4vw, 20px);
   font-weight: 500;
   color: var(--text-dim);
   border: 1px solid var(--border);
@@ -390,6 +461,7 @@ nav a.active {
   background: var(--text-muted);
   opacity: 0;
   transition: opacity 0.15s;
+  flex-shrink: 0;
 }
 
 .mobile-menu-links a:hover,
@@ -416,7 +488,7 @@ nav a.active {
   gap: 12px;
   text-decoration: none;
   font-weight: 500;
-  font-size: 17px;
+  font-size: clamp(15px, 1.1vw, 17px);
   transition: all 0.15s;
 }
 
@@ -430,6 +502,7 @@ nav a.active {
 .mobile-menu-gh svg {
   width: 20px;
   height: 20px;
+  flex-shrink: 0;
 }
 
 .view {
@@ -481,16 +554,17 @@ nav a.active {
   max-width: 62ch;
 }
 
+/* COMPLETELY REMOVED BACKGROUND, BORDER, AND PADDING TO ELIMINATE THE HIGHLIGHT BOX */
 .hero-btns {
-  display: flex;
-  gap: 12px;
+  display: inline-flex;
+  gap: clamp(10px, 0.9vw, 14px);
   flex-wrap: wrap;
   align-items: center;
   max-width: 100%;
 }
 
 .btn {
-  padding: 14px 22px;
+  padding: 14px 26px;
   font-size: 17px;
   font-weight: 500;
   border: none;
@@ -498,11 +572,12 @@ nav a.active {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 11px;
   text-decoration: none;
   cursor: pointer;
   max-width: 100%;
   line-height: 1.2;
+  border-radius: 0;
 }
 
 .btn-primary {
@@ -527,11 +602,11 @@ nav a.active {
   text-decoration: none;
 }
 
+/* CLEANED UP HUGGINGFACE BUTTON: NO INSET SHADOWS OR LINGERING HIGHLIGHTS */
 .btn-hf {
   background: var(--hf-bg);
   color: var(--hf-text);
   border: 1px solid var(--hf-border);
-  box-shadow: inset 0 0 0 1px rgba(255, 210, 30, 0.04);
 }
 
 .btn-hf:hover {
@@ -539,7 +614,6 @@ nav a.active {
   border-color: var(--hf-border-hover);
   color: var(--hf-border-hover);
   text-decoration: none;
-  box-shadow: inset 0 0 0 1px rgba(255, 210, 30, 0.08);
 }
 
 .btn svg {
@@ -567,7 +641,7 @@ nav a.active {
   max-width: min(100%, 550px);
   height: auto;
   object-fit: contain;
-  border-radius: clamp(16px, 3vw, 30px);
+  border-radius: 30px;
   display: block;
 }
 
@@ -576,12 +650,14 @@ nav a.active {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0;
   border: 1px solid var(--border);
+  border-radius: 0;
   margin-top: clamp(36px, 6vw, 67px);
   max-width: 100%;
+  overflow: hidden;
 }
 
 .stat-item {
-  padding: clamp(20px, 3vw, 31px) clamp(16px, 2.5vw, 29px);
+  padding: clamp(20px, 2.6vw, 31px) clamp(16px, 2.2vw, 29px);
   border-right: 1px solid var(--border);
   min-width: 0;
 }
@@ -607,7 +683,7 @@ nav a.active {
   background: var(--note-bg);
   border: 1px solid var(--note-border);
   border-radius: var(--radius);
-  padding: 22px 24px;
+  padding: clamp(18px, 2vw, 24px) clamp(18px, 2.2vw, 26px);
   margin-bottom: 29px;
 }
 
@@ -615,7 +691,7 @@ nav a.active {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 16px;
+  font-size: clamp(15px, 1.1vw, 16px);
   font-weight: 600;
   color: var(--text);
   margin-bottom: 10px;
@@ -631,7 +707,7 @@ nav a.active {
 }
 
 .note p {
-  font-size: 15px;
+  font-size: clamp(14px, 1.05vw, 15px);
   color: var(--text-dim);
   line-height: 1.6;
   margin-bottom: 8px;
@@ -648,7 +724,7 @@ nav a.active {
 }
 
 .note li {
-  font-size: 15px;
+  font-size: clamp(14px, 1.05vw, 15px);
   color: var(--text-dim);
   line-height: 1.6;
   padding: 3px 0 3px 18px;
@@ -712,7 +788,7 @@ nav a.active {
 .feature-list {
   display: flex;
   flex-direction: column;
-  gap: 31px;
+  gap: clamp(22px, 3vw, 31px);
 }
 
 .feature-item {
@@ -723,20 +799,20 @@ nav a.active {
 
 .feature-num {
   font-family: var(--mono);
-  font-size: 15px;
+  font-size: clamp(14px, 1vw, 15px);
   color: var(--text-muted);
   padding-top: 4px;
 }
 
 .feature-item h3 {
-  font-size: 20px;
+  font-size: clamp(18px, 1.4vw, 20px);
   font-weight: 600;
   color: var(--text);
   margin-bottom: 6px;
 }
 
 .feature-item p {
-  font-size: 17px;
+  font-size: clamp(15px, 1.2vw, 17px);
   color: var(--text-dim);
   line-height: 1.55;
 }
@@ -744,7 +820,7 @@ nav a.active {
 .cta-card {
   background: var(--bg-soft);
   border: 1px solid var(--border);
-  padding: clamp(24px, 4vw, 48px) clamp(18px, 3vw, 38px);
+  padding: clamp(24px, 3.2vw, 48px) clamp(18px, 2.6vw, 38px);
   border-radius: 8px;
   max-width: 100%;
 }
@@ -758,7 +834,7 @@ nav a.active {
 }
 
 .cta-card p {
-  font-size: 17px;
+  font-size: clamp(15px, 1.2vw, 17px);
   color: var(--text-dim);
   line-height: 1.6;
   margin-bottom: 29px;
@@ -790,7 +866,7 @@ nav a.active {
   display: flex;
   align-items: center;
   gap: 11px;
-  padding: 14px 19px;
+  padding: clamp(12px, 1.1vw, 14px) clamp(16px, 1.4vw, 19px);
   background: var(--term-bar-bg);
   border-bottom: 1px solid var(--term-border);
 }
@@ -814,7 +890,7 @@ nav a.active {
 
 .terminal-title {
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: clamp(12px, 0.9vw, 13px);
   color: var(--term-dim);
   margin-left: 8px;
   font-weight: 500;
@@ -825,17 +901,21 @@ nav a.active {
 
 .terminal-copy {
   margin-left: auto;
-  padding: 6px 14px;
+  min-height: 34px;
+  padding: 0 14px;
   border: 1px solid var(--term-border);
   background: rgba(255, 255, 255, 0.05);
   color: var(--term-dim);
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: clamp(12px, 0.9vw, 13px);
   font-weight: 500;
   cursor: pointer;
   border-radius: 4px;
   transition: all 0.15s;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .terminal-copy:hover {
@@ -851,9 +931,9 @@ nav a.active {
 }
 
 .terminal-body {
-  padding: 24px 26px;
+  padding: clamp(16px, 2vw, 24px) clamp(18px, 2.2vw, 26px);
   font-family: var(--mono);
-  font-size: 15px;
+  font-size: clamp(13px, 1vw, 15px);
   line-height: 1.9;
   overflow-x: auto;
   color: var(--term-text);
@@ -888,9 +968,10 @@ nav a.active {
 }
 
 .os-tab {
+  min-height: 38px;
   padding: 10px 20px;
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: clamp(13px, 0.95vw, 14px);
   font-weight: 500;
   color: var(--text-muted);
   background: transparent;
@@ -900,6 +981,7 @@ nav a.active {
   transition: all 0.15s;
   margin-bottom: -1px;
   white-space: nowrap;
+  border-radius: 0;
 }
 
 .os-tab:hover {
@@ -923,7 +1005,7 @@ nav a.active {
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: clamp(20px, 4vw, 38px);
+  padding: clamp(20px, 3vw, 38px);
   margin-bottom: 38px;
   max-width: 100%;
   box-sizing: border-box;
@@ -942,17 +1024,17 @@ nav a.active {
 
 .install-hero h3 .badge {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: clamp(11px, 0.85vw, 12px);
   font-weight: 500;
   color: var(--accent);
   background: rgba(34, 197, 94, 0.1);
   border: 1px solid var(--accent);
   padding: 3px 10px;
-  border-radius: 100px;
+  border-radius: 0;
 }
 
 .install-hero p {
-  font-size: 17px;
+  font-size: clamp(15px, 1.2vw, 17px);
   color: var(--text-dim);
   margin-bottom: 24px;
   line-height: 1.6;
@@ -970,7 +1052,7 @@ nav a.active {
 
 .page-head .crumb {
   font-family: var(--mono);
-  font-size: 15px;
+  font-size: clamp(13px, 1vw, 15px);
   color: var(--text-muted);
   margin-bottom: 14px;
 }
@@ -1028,20 +1110,20 @@ nav a.active {
   padding: 2px 8px;
   border: 1px solid var(--border);
   color: var(--warn);
-  font-size: 16px;
-  border-radius: 4px;
+  font-size: clamp(14px, 1.05vw, 16px);
+  border-radius: var(--radius-sm);
 }
 
 pre {
   background: var(--bg-softer);
   border: 1px solid var(--border);
-  padding: 19px 24px;
+  padding: clamp(16px, 1.8vw, 19px) clamp(18px, 2.1vw, 24px);
   overflow-x: auto;
   margin-bottom: 24px;
-  font-size: 16px;
+  font-size: clamp(14px, 1.1vw, 16px);
   line-height: 1.6;
   color: var(--text-dim);
-  border-radius: 6px;
+  border-radius: var(--radius);
   max-width: 100%;
   box-sizing: border-box;
   -webkit-overflow-scrolling: touch;
@@ -1052,12 +1134,12 @@ pre {
   border-left: 3px solid var(--info);
   padding: 17px 22px;
   margin-bottom: 29px;
-  font-size: 17px;
+  font-size: clamp(15px, 1.2vw, 17px);
   color: var(--text-dim);
   display: flex;
   gap: 13px;
   align-items: flex-start;
-  border-radius: 4px;
+  border-radius: var(--radius);
 }
 
 .info-icon {
@@ -1072,14 +1154,14 @@ pre {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0;
   border: 1px solid var(--border);
+  border-radius: var(--radius);
   margin-bottom: 38px;
-  border-radius: 6px;
   overflow: hidden;
   max-width: 100%;
 }
 
 .stat-cell {
-  padding: clamp(18px, 3vw, 29px) clamp(14px, 2.5vw, 26px);
+  padding: clamp(18px, 2.4vw, 29px) clamp(14px, 2vw, 26px);
   border-right: 1px solid var(--border);
   min-width: 0;
 }
@@ -1097,22 +1179,22 @@ pre {
 }
 
 .stat-cell .lbl {
-  font-size: 15px;
+  font-size: clamp(13px, 1.1vw, 15px);
   color: var(--text-muted);
   margin-bottom: 5px;
 }
 
 .stat-cell .sub {
-  font-size: 14px;
+  font-size: clamp(12px, 1vw, 14px);
   color: var(--text-muted);
   font-family: var(--mono);
 }
 
 .table-wrap {
   border: 1px solid var(--border);
+  border-radius: var(--radius);
   margin-bottom: 29px;
   overflow-x: auto;
-  border-radius: 6px;
   max-width: 100%;
   box-sizing: border-box;
   -webkit-overflow-scrolling: touch;
@@ -1121,7 +1203,7 @@ pre {
 table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 17px;
+  font-size: clamp(15px, 1.2vw, 17px);
   min-width: 680px;
 }
 
@@ -1132,8 +1214,8 @@ thead {
 
 th {
   text-align: left;
-  padding: 16px 19px;
-  font-size: 15px;
+  padding: clamp(12px, 1.1vw, 16px) clamp(14px, 1.2vw, 19px);
+  font-size: clamp(13px, 1.05vw, 15px);
   font-weight: 500;
   color: var(--text-muted);
   white-space: nowrap;
@@ -1144,7 +1226,7 @@ th.right {
 }
 
 td {
-  padding: 17px 19px;
+  padding: clamp(12px, 1.15vw, 17px) clamp(14px, 1.2vw, 19px);
   border-bottom: 1px solid var(--border);
   color: var(--text-dim);
 }
@@ -1158,14 +1240,14 @@ tbody tr:hover {
 }
 
 td code {
-  font-size: 15px;
+  font-size: clamp(13px, 1.05vw, 15px);
   padding: 2px 8px;
 }
 
 td.mono {
   font-family: var(--mono);
   text-align: right;
-  font-size: 16px;
+  font-size: clamp(14px, 1.1vw, 16px);
   color: var(--text);
   white-space: nowrap;
 }
@@ -1193,7 +1275,7 @@ td.mono {
 
 .trust-val {
   font-family: var(--mono);
-  font-size: 15px;
+  font-size: clamp(13px, 1.05vw, 15px);
   color: var(--text-muted);
   min-width: 43px;
   text-align: right;
@@ -1201,8 +1283,8 @@ td.mono {
 
 .cap-list {
   border: 1px solid var(--border);
+  border-radius: var(--radius);
   margin-bottom: 29px;
-  border-radius: 6px;
   overflow: hidden;
   max-width: 100%;
 }
@@ -1211,9 +1293,9 @@ td.mono {
   display: grid;
   grid-template-columns: 26px minmax(0, 1fr);
   gap: 19px;
-  padding: 17px 22px;
+  padding: clamp(14px, 1.3vw, 17px) clamp(18px, 1.6vw, 22px);
   border-bottom: 1px solid var(--border);
-  font-size: 17px;
+  font-size: clamp(15px, 1.2vw, 17px);
   line-height: 1.5;
 }
 
@@ -1236,8 +1318,8 @@ td.mono {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0;
   border: 1px solid var(--border);
+  border-radius: var(--radius);
   margin-bottom: 38px;
-  border-radius: 6px;
   overflow: hidden;
   max-width: 100%;
 }
@@ -1258,14 +1340,14 @@ td.mono {
 }
 
 .contact-card h3 {
-  font-size: 16px;
+  font-size: clamp(14px, 1.1vw, 16px);
   font-weight: 600;
   color: var(--text-muted);
   margin-bottom: 12px;
 }
 
 .contact-card p {
-  font-size: 17px;
+  font-size: clamp(15px, 1.2vw, 17px);
   color: var(--text-dim);
   margin-bottom: 14px;
   line-height: 1.5;
@@ -1273,7 +1355,7 @@ td.mono {
 
 .contact-card a.link {
   font-family: var(--mono);
-  font-size: 16px;
+  font-size: clamp(14px, 1.1vw, 16px);
   color: var(--accent);
   border-bottom: 1px solid var(--border);
   padding-bottom: 2px;
@@ -1324,13 +1406,13 @@ footer {
 .footer-inner {
   max-width: 1440px;
   margin: 0 auto;
-  padding: 0 34px;
+  padding: 0 var(--header-px);
   display: flex;
   justify-content: space-between;
   align-items: center;
   flex-wrap: wrap;
   gap: 19px;
-  font-size: 16px;
+  font-size: clamp(14px, 1.1vw, 16px);
   color: var(--text-muted);
   width: 100%;
   box-sizing: border-box;
@@ -1338,7 +1420,7 @@ footer {
 
 .footer-links {
   display: flex;
-  gap: 24px;
+  gap: clamp(16px, 1.4vw, 24px);
   flex-wrap: wrap;
 }
 
@@ -1354,7 +1436,7 @@ footer {
   padding: 48px 29px;
   text-align: center;
   color: var(--text-muted);
-  font-size: 16px;
+  font-size: clamp(14px, 1.1vw, 16px);
   font-family: var(--mono);
 }
 
@@ -1446,22 +1528,17 @@ footer {
     --pad-y: clamp(24px, 7vw, 40px);
   }
 
-  nav, .gh-btn {
+  nav,
+  .gh-btn {
     display: none;
   }
 
   .mobile-menu-btn {
-    display: block;
+    display: inline-flex;
   }
 
   .header-inner {
-    padding: 0 20px;
-    gap: 16px;
-    height: 72px;
-  }
-
-  .footer-inner {
-    padding: 0 20px;
+    gap: 14px;
   }
 
   .stats-strip {
@@ -1617,7 +1694,8 @@ footer {
 
   .header-inner,
   .footer-inner {
-    padding: 0 16px;
+    padding-left: 16px;
+    padding-right: 16px;
   }
 
   .stats-strip,
@@ -1697,7 +1775,7 @@ footer {
       <a data-view="contributors">leaderboard</a>
       <a data-view="contact">contact</a>
     </nav>
-    <a href="https://github.com/Vxtzq/CrowdGPT" target="_blank" class="gh-btn">
+    <a href="https://github.com/Vxtzq/CrowdGPT" target="_blank" class="gh-btn" rel="noopener noreferrer">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.21 11.39.6.11.79-.26.79-.58v-2.23c-3.34.73-4.03-1.42-4.03-1.42-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49.99.11-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.3 1.23.96-.27 1.98-.4 3-.4s2.05.13 3.01.4c2.29-1.55 3.3-1.23 3.3-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.8 5.62-5.48 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.19.69.8.58C20.57 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
       source
     </a>
@@ -1734,7 +1812,7 @@ footer {
     <a data-view="contributors">leaderboard</a>
     <a data-view="contact">contact</a>
   </div>
-  <a href="https://github.com/Vxtzq/CrowdGPT" target="_blank" class="mobile-menu-gh">
+  <a href="https://github.com/Vxtzq/CrowdGPT" target="_blank" class="mobile-menu-gh" rel="noopener noreferrer">
     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.21 11.39.6.11.79-.26.79-.58v-2.23c-3.34.73-4.03-1.42-4.03-1.42-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49.99.11-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.3 1.23.96-.27 1.98-.4 3-.4s2.05.13 3.01.4c2.29-1.55 3.3-1.23 3.3-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.8 5.62-5.48 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.19.69.8.58C20.57 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
     Source on GitHub
   </a>
@@ -1751,13 +1829,13 @@ footer {
             CrowdGPT is focusing on creating the world's first 0$, datacenterless and 100% open AI. Run the app on your computer, and the AI gets better.
           </p>
           <div class="hero-btns">
-            <a class="btn btn-hf" href="https://huggingface.co/Vxtzq/Crowd-v1" target="_blank" rel="noopener noreferrer">
-              <span class="hf-emoji" aria-hidden="true">🤗</span>
-              View on HuggingFace
-            </a>
             <a class="btn btn-primary" data-view="install">
               Install now
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </a>
+            <a class="btn btn-hf" href="https://huggingface.co/Vxtzq/Crowd-v1" target="_blank" rel="noopener noreferrer">
+              <span class="hf-emoji" aria-hidden="true">🤗</span>
+              View on HuggingFace
             </a>
           </div>
         </div>
@@ -1815,14 +1893,14 @@ footer {
             <div class="note-title">A note on trust</div>
             <p>The client is a single open-source Python file which is human-readable. It downloads public training data online, trains locally and uploads only the model update. It cannot access your files or compromise your machine.</p>
             <p>The server is protected too. Every update is validated for size, NaN values and norm bounds before it is cross-validated by peers, and repeat offenders are banned from the project.</p>
-            <p><a href="https://github.com/Vxtzq/CrowdGPT" target="_blank">Read the source</a> before you run it.</p>
+            <p><a href="https://github.com/Vxtzq/CrowdGPT" target="_blank" rel="noopener noreferrer">Read the source</a> before you run it.</p>
           </div>
           <div class="cta-card">
             <h3>Help the project grow.</h3>
             <p>Every contribution, even the smallest, makes the model better. Run a client, star the repo, or open an issue.</p>
             <div class="cta-btns">
               <a class="btn btn-primary" data-view="install">Installation guide <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg></a>
-              <a class="btn btn-ghost" href="https://github.com/Vxtzq/CrowdGPT" target="_blank"><svg viewBox="0 0 24 24" fill="currentColor" width="17" height="17"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.21 11.39.6.11.79-.26.79-.58v-2.23c-3.34.73-4.03-1.42-4.03-1.42-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49.99.11-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.3 1.23.96-.27 1.98-.4 3-.4s2.05.13 3.01.4c2.29-1.55 3.3-1.23 3.3-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.8 5.62-5.48 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.19.69.8.58C20.57 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg> Star on GitHub</a>
+              <a class="btn btn-ghost" href="https://github.com/Vxtzq/CrowdGPT" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" fill="currentColor" width="17" height="17"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.21 11.39.6.11.79-.26.79-.58v-2.23c-3.34.73-4.03-1.42-4.03-1.42-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49.99.11-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.3 1.23.96-.27 1.98-.4 3-.4s2.05.13 3.01.4c2.29-1.55 3.3-1.23 3.3-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.8 5.62-5.48 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.19.69.8.58C20.57 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg> Star on GitHub</a>
             </div>
           </div>
         </div>
@@ -1922,7 +2000,7 @@ footer {
 
     <div class="content">
       <h2>1. Task Assignment</h2>
-      <p>When a device connects, the server assigns it a specific data shard (a 10MB chunk of tokenized text from the <a href="https://huggingface.co/datasets/Vxtzq/CrowdGPT" target="_blank">public CrowdGPT dataset</a>) and the current global model weights. The client downloads the weights from HuggingFace and streams the data chunk locally via HTTP Range requests. The dataset is fully open and anyone can contribute to it.</p>
+      <p>When a device connects, the server assigns it a specific data shard (a 10MB chunk of tokenized text from the <a href="https://huggingface.co/datasets/Vxtzq/CrowdGPT" target="_blank" rel="noopener noreferrer">public CrowdGPT dataset</a>) and the current global model weights. The client downloads the weights from HuggingFace and streams the data chunk locally via HTTP Range requests. The dataset is fully open and anyone can contribute to it.</p>
       
       <h2>2. Local Training</h2>
       <p>The app performs AI training on the local device. It calculates the path (the "delta") between the base model and the newly trained model. <strong>Nothing is ever accessed on your computer.</strong></p>
@@ -2051,7 +2129,7 @@ footer {
       <div class="contact-card">
         <h3>GitHub Issues</h3>
         <p>The best place to report bugs, request features, or discuss technical details of the protocol.</p>
-        <a href="https://github.com/Vxtzq/CrowdGPT/issues" target="_blank" class="link">github.com/Vxtzq/CrowdGPT/issues</a>
+        <a href="https://github.com/Vxtzq/CrowdGPT/issues" target="_blank" class="link" rel="noopener noreferrer">github.com/Vxtzq/CrowdGPT/issues</a>
       </div>
       <div class="contact-card">
         <h3>Email</h3>
@@ -2061,12 +2139,12 @@ footer {
       <div class="contact-card">
         <h3>Hosting</h3>
         <p>The primary coordinator API is proudly hosted and maintained by Xevex.</p>
-        <a href="https://xevex.dev" target="_blank" class="link">xevex.dev</a>
+        <a href="https://xevex.dev" target="_blank" class="link" rel="noopener noreferrer">xevex.dev</a>
       </div>
       <div class="contact-card">
         <h3>Model Weights</h3>
         <p>All trained model checkpoints and configuration files are publicly available on HuggingFace.</p>
-        <a href="https://huggingface.co/Vxtzq/Crowd-v1" target="_blank" class="link">huggingface.co/Vxtzq/Crowd-v1</a>
+        <a href="https://huggingface.co/Vxtzq/Crowd-v1" target="_blank" class="link" rel="noopener noreferrer">huggingface.co/Vxtzq/Crowd-v1</a>
       </div>
     </div>
 
@@ -2097,10 +2175,10 @@ footer {
 
 <footer>
   <div class="footer-inner">
-    <div>CrowdGPT · MIT License · api.crowdgpt.net proudly hosted by <a href="https://xevex.dev" target="_blank" rel="noopener">xevex</a></div>
+    <div>CrowdGPT · MIT License · api.crowdgpt.net proudly hosted by <a href="https://xevex.dev" target="_blank" rel="noopener noreferrer">xevex</a></div>
     <div class="footer-links">
-      <a href="https://github.com/Vxtzq/CrowdGPT" target="_blank">GitHub</a>
-      <a href="https://github.com/Vxtzq/CrowdGPT/tree/main/docs" target="_blank">Docs</a>
+      <a href="https://github.com/Vxtzq/CrowdGPT" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <a href="https://github.com/Vxtzq/CrowdGPT/tree/main/docs" target="_blank" rel="noopener noreferrer">Docs</a>
       <a href="mailto:vxtzqmc@gmail.com">Contact</a>
     </div>
   </div>
@@ -2237,14 +2315,65 @@ function escapeHtml(s) {
 }
 
 function updateThemeAssets() {
-  const logoImgs = document.querySelectorAll('.logo-img');
+  const logoImgs = Array.from(document.querySelectorAll('.logo-img')).filter(img => !img.closest('.header-measure'));
   const favicon = document.getElementById('favicon');
   const isLight = window.matchMedia('(prefers-color-scheme: light)').matches;
   logoImgs.forEach(img => { img.src = isLight ? 'logo-black.svg' : 'logo-white.svg'; });
   if (favicon) favicon.href = isLight ? 'logo-black.svg' : 'logo-white.svg';
 }
 window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', updateThemeAssets);
+
+// ===== HEADER OVERFLOW -> HAMBURGER MODE =====
+function createHeaderMeasure() {
+  const header = document.querySelector('header');
+  const inner = header?.querySelector('.header-inner');
+  if (!header || !inner || document.querySelector('.header-measure')) return;
+
+  const measure = inner.cloneNode(true);
+  measure.classList.add('header-measure');
+  measure.setAttribute('aria-hidden', 'true');
+
+  measure.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+  measure.querySelectorAll('[data-view]').forEach(el => el.removeAttribute('data-view'));
+  measure.querySelectorAll('button').forEach(el => {
+    el.tabIndex = -1;
+    el.setAttribute('disabled', '');
+  });
+
+  header.appendChild(measure);
+}
+
+function updateHeaderMode() {
+  const header = document.querySelector('header');
+  const inner = header?.querySelector('.header-inner');
+  const measure = header?.querySelector('.header-measure');
+  if (!header || !inner || !measure) return;
+
+  const cs = getComputedStyle(inner);
+  const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+  const available = inner.clientWidth - padX;
+  const needed = measure.scrollWidth;
+
+  header.classList.toggle('header-compact', needed > available + 1);
+}
+
+createHeaderMeasure();
 updateThemeAssets();
+updateHeaderMode();
+
+if (window.ResizeObserver) {
+  const ro = new ResizeObserver(() => updateHeaderMode());
+  const headerInner = document.querySelector('.header-inner');
+  const headerMeasure = document.querySelector('.header-measure');
+  if (headerInner) ro.observe(headerInner);
+  if (headerMeasure) ro.observe(headerMeasure);
+}
+
+window.addEventListener('resize', updateHeaderMode);
+window.addEventListener('load', updateHeaderMode);
+if (document.fonts && document.fonts.ready) {
+  document.fonts.ready.then(updateHeaderMode);
+}
 
 // ===== VIEW ROUTER =====
 function showView(viewName) {
