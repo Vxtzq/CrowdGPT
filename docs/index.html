@@ -529,6 +529,7 @@ nav a.active {
 .hero-copy {
   text-align: left;
   min-width: 0;
+  container-type: inline-size;
 }
 
 .hero h1 {
@@ -554,13 +555,16 @@ nav a.active {
   max-width: 62ch;
 }
 
-/* COMPLETELY REMOVED BACKGROUND, BORDER, AND PADDING TO ELIMINATE THE HIGHLIGHT BOX */
 .hero-btns {
   display: inline-flex;
   gap: clamp(10px, 0.9vw, 14px);
   flex-wrap: wrap;
   align-items: center;
   max-width: 100%;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
 }
 
 .btn {
@@ -602,7 +606,6 @@ nav a.active {
   text-decoration: none;
 }
 
-/* CLEANED UP HUGGINGFACE BUTTON: NO INSET SHADOWS OR LINGERING HIGHLIGHTS */
 .btn-hf {
   background: var(--hf-bg);
   color: var(--hf-text);
@@ -1455,6 +1458,20 @@ footer {
   50% { opacity: 1; }
 }
 
+@container (max-width: 560px) {
+  .hero-btns {
+    display: flex;
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .hero-btns .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
 @media (max-width: 1080px) {
   html {
     font-size: 19px;
@@ -1581,12 +1598,14 @@ footer {
   }
 
   .hero-btns {
-    gap: 10px;
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .hero-btns .btn {
-    flex: 1 1 220px;
-    min-width: 0;
+    width: 100%;
+    justify-content: center;
   }
 
   .product-head h2 {
@@ -1722,13 +1741,14 @@ footer {
   }
 
   .hero-btns {
+    width: 100%;
     flex-direction: column;
     align-items: stretch;
   }
 
   .hero-btns .btn {
     width: 100%;
-    flex: 0 0 auto;
+    justify-content: center;
   }
 
   .terminal-body {
