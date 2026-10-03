@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client — Continuous Swarm Edition
-Fixes:
-1. Progress bar math (smoothly hits 100% at deadline)
-2. Streaming upload GUI (shows real-time MB uploaded)
-3. Safe Stop (skips upload if user clicks Stop)
-4. Robust Auto-Relaunch Loop
+CrowdGPT GUI Client — Continuous Swarm Edition v1.0
 """
 import os, sys, io, json, time, struct, math, gc, threading, base64, logging, tempfile, atexit
 from pathlib import Path
@@ -58,6 +53,13 @@ EXPECTED_ENGRAM_SIZE = ENG_NUM_BUCKETS * DIM
 EXPECTED_WEIGHT_BYTES = (EXPECTED_MODEL_SIZE + EXPECTED_ENGRAM_SIZE) * 2
 memory_config = {"ram_gb": 12, "is_auto_detected": False}
 train_device, train_backend = None, None
+last_logits = None
+
+def safe_float(v, default=0.0):
+    try:
+        if v is None or math.isnan(v) or math.isinf(v): return default
+        return float(v)
+    except: return default
 
 # ============ DUAL LOGOS ============
 LOGO_URI_LIGHT = ""
@@ -502,7 +504,7 @@ def _fwl(m, x, y, sl, ua, ad, ls=1.0):
     return lo*ls
 
 def run_single_round(srv, at, se, emit):
-    global train_device, train_backend
+    global train_device, train_backend, last_logits
     h = {"Authorization": f"Bearer {at}"} if at else {}
     emit('status', 'waiting')
     rs = wait_for_round(srv, h, se, emit)
@@ -536,7 +538,14 @@ def run_single_round(srv, at, se, emit):
                 model = SotaGPT(train_backend, train_device).to(train_device)
                 model.engram.table.to('cpu'); model.load_base_weights(iw)
                 model.engram.table.weight.data.copy_(torch.from_numpy(ie).view(model.engram.table.weight.shape))
-                model.train(); break
+                model.train()
+                
+                def _capture_logits(module, input, output):
+                    global last_logits
+                    last_logits = output[:, -1, :].detach().cpu()
+                
+                model.lm_head.register_forward_hook(_capture_logits)
+                break
             except RuntimeError as e:
                 if "out of memory" in str(e).lower():
                     if model: del model; model = None
@@ -588,15 +597,16 @@ def run_single_round(srv, at, se, emit):
                         sps_micro = elapsed / micro_step
                         rh = max(0.1, rs.get("max_round_hours", 2.0) - rs.get("round_elapsed_hours", 0))
                         remaining = max(60, (rh*3600) - elapsed - (UPLOAD_BUFFER_MIN*60))
-                        target_micro_steps = max(micro_step + 100, int(remaining / sps_micro))
+                        target_micro_steps = micro_step + int(remaining / sps_micro)
                     
                     elapsed_cal = time.time() - cs_
                     current_tps = tt / max(elapsed_cal, 1.0)
                     
                     emit('cal_stats', {
                         'step': micro_step, 'total': target_micro_steps,
-                        'loss': lval * as_, 'microbatch': micro_step,
-                        'tps': current_tps
+                        'loss': safe_float(lval * as_, 10.0), 
+                        'microbatch': micro_step,
+                        'tps': safe_float(current_tps)
                     })
                     lo.backward()
                     oe.step(); oe.zero_grad(set_to_none=True)
@@ -608,7 +618,6 @@ def run_single_round(srv, at, se, emit):
             gc.collect()
             cal_done += 1
 
-        # ============ 🚨 FIX 1: TIME-BASED TRAINING LOOP ============
         rh = max(0.1, rs.get("max_round_hours", 2.0) - rs.get("round_elapsed_hours", 0))
         remaining = max(60, (rh*3600) - (time.time() - cs_) - (UPLOAD_BUFFER_MIN*60))
         dl = time.time() + remaining
@@ -638,11 +647,28 @@ def run_single_round(srv, at, se, emit):
                     x, y = ds.get_batch(bs, seed=sd); x, y = x.to(train_device), y.to(train_device)
                     lo = _fwl(model, x, y, sl, ua, ad, ls)
                     lval = float(lo.item())*as_
-                    emit('preview_loss', lval)
                     lo.backward()
                     oe.step(); oe.zero_grad(set_to_none=True)
                     als += lval; tt += x.numel(); cc += 1
                     micro_step += 1
+                    
+                    if micro_step % 30 == 0 and last_logits is not None:
+                        try:
+                            with torch.no_grad():
+                                probs = torch.softmax(last_logits[0].float(), dim=-1)
+                                topk = torch.topk(probs, 5)
+                                target_tok = y[0, -1].item() if y.dim() > 1 else 0
+                                pred_data = {
+                                    'step': micro_step,
+                                    'predictions': [
+                                        {'token': int(topk.indices[i]), 'prob': safe_float(topk.values[i].item())}
+                                        for i in range(5)
+                                    ],
+                                    'target': int(target_tok),
+                                    'match': int(topk.indices[0]) == int(target_tok)
+                                }
+                                emit('model_preview', pred_data)
+                        except: pass
                     
                     rem_time = max(1, dl - time.time())
                     elapsed_total = time.time() - cs_
@@ -655,12 +681,13 @@ def run_single_round(srv, at, se, emit):
                             
                     if time.time() - last_stats_emit > 0.25 or time.time() >= dl:
                         last_stats_emit = time.time()
-                        lv = als/cc
+                        lv = als/cc if cc > 0 else 10.0
                         ctps = tt/max(time.time()-cs_, 1)
                         emit('stats', {
-                            'step': micro_step, 'target': target_micro_steps, 'loss': lv, 
-                            'tps': ctps, 'global_step': gs, 'round': cr, 
-                            'time_left': max(0, (dl-time.time())/60)
+                            'step': micro_step, 'target': target_micro_steps, 
+                            'loss': safe_float(lv, 10.0), 
+                            'tps': safe_float(ctps), 'global_step': gs, 'round': cr, 
+                            'time_left': safe_float(max(0, (dl-time.time())/60))
                         })
                     del lo, x, y
             except RuntimeError as e:
@@ -680,15 +707,13 @@ def run_single_round(srv, at, se, emit):
 
     if 'micro_step' not in locals() or micro_step <= 0: return
     
-    # ============ 🚨 FIX 2: SAFE STOP ============
     if se.is_set():
-        emit('log', "🛑 Stopped by user. Skipping upload to avoid sending partial deltas.")
+        emit('log', "Stopped by user. Skipping upload.")
         return
 
     fl = float(lval) if 'lval' in locals() else 10.0
-    emit('log', f"✅ Done: {micro_step} micro-steps, loss {fl:.4f}")
+    emit('log', f"Done: {micro_step} micro-steps, loss {fl:.4f}")
     
-    # ============ 🚨 FIX 3: STREAMING UPLOAD GUI ============
     emit('status', 'uploading')
     
     dbf = torch.from_numpy(model.get_base_weights()-iw).to(torch.bfloat16).view(torch.uint16).numpy()
@@ -729,11 +754,11 @@ def run_single_round(srv, at, se, emit):
             timeout=600
         )
         if r.status_code == 200:
-            emit('log', "✅ Submitted successfully!")
+            emit('log', "Submitted successfully!")
         else:
-            emit('log', f"❌ Submit failed: {r.text[:100]}")
+            emit('log', f"Submit failed: {r.text[:100]}")
     except Exception as e: 
-        emit('log', f"❌ Upload failed: {e}")
+        emit('log', f"Upload failed: {e}")
     finally:
         emit('overlay_hide')
         
@@ -879,6 +904,18 @@ body.dark .status-badge{background:rgba(34,197,94,.12);border-color:rgba(34,197,
 #loss-graph{display:block;width:100%;height:64px}
 .graph-empty{color:var(--text-muted);font-family:var(--mono);font-size:11px;text-align:center;padding:20px 0}
 
+.preview-container{font-family:var(--mono);font-size:12px;padding:8px 0;min-height:120px}
+.preview-empty{color:var(--text-muted);text-align:center;padding:24px 0;font-size:11px}
+.pred-row{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+.pred-token{width:72px;text-align:right;color:var(--text-dim);flex-shrink:0;font-size:11px}
+.pred-bar-bg{flex:1;height:18px;background:var(--bg-softer);border-radius:4px;overflow:hidden;border:1px solid var(--border)}
+.pred-bar{height:100%;border-radius:3px;transition:width .4s ease;background:linear-gradient(90deg,var(--accent-dim),var(--accent))}
+body.dark .pred-bar{background:linear-gradient(90deg,var(--accent-dim),var(--accent))}
+.pred-pct{width:50px;text-align:right;color:var(--text-muted);flex-shrink:0;font-size:11px}
+.pred-target{margin-top:10px;padding-top:8px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;font-size:11px}
+.pred-match{color:var(--accent);font-weight:600}
+.pred-mismatch{color:var(--err);font-weight:600}
+
 .status-strip{
   flex:0 0 auto;
   font-family:var(--mono);font-size:11px;color:var(--text-muted);
@@ -942,19 +979,19 @@ body.dark .overlay-fill{background:linear-gradient(90deg,#15803d,#22c55e 55%,#86
     <img src="__LOGO__" id="logo-img" data-light="__LOGO__" data-dark="__LOGO_DARK__" class="logo-img" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='grid';">
     <div class="logo-fallback">C</div>
     <span class="logo-text">CrowdGPT</span>
-    <span class="logo-ver">v0.5</span>
+    <span class="logo-ver">v1.0</span>
   </div>
   <div class="header-right">
     <span id="user-info"></span>
     <select class="backend-select" id="backend-select" disabled></select>
     <select class="lang-select" id="lang-select">
-      <option value="en">🇬🇧 English</option>
-      <option value="fr">🇫🇷 Français</option>
-      <option value="es">🇪🇸 Español</option>
-      <option value="de">🇩🇪 Deutsch</option>
-      <option value="tr">🇹🇷 Türkçe</option>
+      <option value="en">English</option>
+      <option value="fr">Francais</option>
+      <option value="es">Espanol</option>
+      <option value="de">Deutsch</option>
+      <option value="tr">Turkce</option>
     </select>
-    <button class="theme-toggle" id="theme-toggle" title="Toggle dark mode"><span class="icon-moon">🌙</span><span class="icon-sun">☀️</span></button>
+    <button class="theme-toggle" id="theme-toggle" title="Toggle dark mode"><span class="icon-moon">&#127769;</span><span class="icon-sun">&#9728;&#65039;</span></button>
   </div>
 </header>
 
@@ -1004,13 +1041,13 @@ body.dark .overlay-fill{background:linear-gradient(90deg,#15803d,#22c55e 55%,#86
       </div>
 
       <div class="stats-grid">
-        <div class="stat-card"><div class="stat-val accent" id="stat-loss">—</div><div class="stat-lbl" data-i18n="loss"></div></div>
-        <div class="stat-card"><div class="stat-val" id="stat-tps">—</div><div class="stat-lbl" data-i18n="tokens_sec"></div></div>
+        <div class="stat-card"><div class="stat-val accent" id="stat-loss">-</div><div class="stat-lbl" data-i18n="loss"></div></div>
+        <div class="stat-card"><div class="stat-val" id="stat-tps">-</div><div class="stat-lbl" data-i18n="tokens_sec"></div></div>
       </div>
 
       <div class="panel">
         <div class="panel-head">
-          <span><span data-i18n="round"></span> <span class="pv" id="stat-round">—</span> · <span data-i18n="step"></span> <span class="pv" id="stat-step-cur">0</span>/<span class="pv" id="stat-step-tot">0</span></span>
+          <span><span data-i18n="round"></span> <span class="pv" id="stat-round">-</span> . <span data-i18n="step"></span> <span class="pv" id="stat-step-cur">0</span>/<span class="pv" id="stat-step-tot">0</span></span>
           <span class="pv" id="progress-text">0%</span>
         </div>
         <div class="progress-track"><div class="progress-fill" id="progress-bar"></div></div>
@@ -1023,6 +1060,16 @@ body.dark .overlay-fill{background:linear-gradient(90deg,#15803d,#22c55e 55%,#86
         </div>
         <canvas id="loss-graph"></canvas>
         <div class="graph-empty" id="graph-empty" data-i18n="waiting_data"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <span data-i18n="model_thoughts"></span>
+          <span class="pv" id="preview-step">-</span>
+        </div>
+        <div id="model-preview" class="preview-container">
+          <div class="preview-empty" data-i18n="waiting_preview"></div>
+        </div>
       </div>
 
       <div class="status-strip">
@@ -1069,10 +1116,11 @@ const I18N={
    have_account:"Already registered?",login_link:"Log in",
    anon_preface:"Prefer to stay anonymous?",anon_link:"Skip and contribute anonymously",
    dash_title:"Training",loss:"Loss",tokens_sec:"Tokens/sec",round:"Round",step:"Step",
-   loss_history:"Loss history",waiting_data:"Waiting for training data…",time_left:"Left",
-   idle:"Idle",training:"Training…",waiting:"Waiting…",uploading:"Uploading…",
-   downloading:"Downloading…",preparing:"Preparing…",calibrating:"Calibrating…",
-   dl_weights:"Downloading weights…",wait_coord:"Waiting for coordinator…",
+   loss_history:"Loss history",waiting_data:"Waiting for training data...",time_left:"Left",
+   model_thoughts:"Model Predictions",waiting_preview:"Waiting for first prediction...",
+   idle:"Idle",training:"Training...",waiting:"Waiting...",uploading:"Uploading...",
+   downloading:"Downloading...",preparing:"Preparing...",calibrating:"Calibrating...",
+   dl_weights:"Downloading weights...",wait_coord:"Waiting for coordinator...",
    wait_coord_sub:"This can take a few minutes. The coordinator aggregates updates from all clients between rounds.",
    start:"Start training",stop:"Stop",
    backend_change_title:"Switch backend?",
@@ -1088,64 +1136,66 @@ const I18N={
    err_network:"Cannot reach the server."
  },
  fr:{
-   login_pre:"Connexion à ",login_sub:"Bon retour parmi nous.",
-   register_title_pre:"Rejoignez ",register_sub:"Créez votre compte et commencez à contribuer.",
+   login_pre:"Connexion a ",login_sub:"Bon retour parmi nous.",
+   register_title_pre:"Rejoignez ",register_sub:"Creez votre compte et commencez a contribuer.",
    server_url:"Adresse du serveur",username:"Nom d'utilisateur",password:"Mot de passe",email:"E-mail",
    ph_user:" ",
-   login_btn:"Se connecter",register_btn:"Créer le compte",
-   no_account:"Pas encore de compte ?",register_link:"Créer un compte",
-   have_account:"Déjà inscrit ?",login_link:"Se connecter",
-   anon_preface:"Vous préférez rester anonyme ?",anon_link:"Continuer anonymement",
-   dash_title:"Entraînement",loss:"Perte",tokens_sec:"Tokens/sec",round:"Manche",step:"Étape",
-   loss_history:"Historique de perte",waiting_data:"En attente de données…",time_left:"Reste",
-   idle:"Inactif",training:"Entraînement…",waiting:"Attente…",uploading:"Envoi…",
-   downloading:"Téléchargement…",preparing:"Préparation…",calibrating:"Calibration…",
-   dl_weights:"Téléchargement des poids…",wait_coord:"En attente du coordinateur…",
-   wait_coord_sub:"Cela peut prendre quelques minutes. Le coordinateur agrège les mises à jour de tous les clients entre les manches.",
-   start:"Démarrer l'entraînement",stop:"Arrêter",
+   login_btn:"Se connecter",register_btn:"Creer le compte",
+   no_account:"Pas encore de compte ?",register_link:"Creer un compte",
+   have_account:"Deja inscrit ?",login_link:"Se connecter",
+   anon_preface:"Vous preferez rester anonyme ?",anon_link:"Continuer anonymement",
+   dash_title:"Entrainement",loss:"Perte",tokens_sec:"Tokens/sec",round:"Manche",step:"Etape",
+   loss_history:"Historique de perte",waiting_data:"En attente de donnees...",time_left:"Reste",
+   model_thoughts:"Predictions du modele",waiting_preview:"En attente de la premiere prediction...",
+   idle:"Inactif",training:"Entrainement...",waiting:"Attente...",uploading:"Envoi...",
+   downloading:"Telechargement...",preparing:"Preparation...",calibrating:"Calibration...",
+   dl_weights:"Telechargement des poids...",wait_coord:"En attente du coordinateur...",
+   wait_coord_sub:"Cela peut prendre quelques minutes.",
+   start:"Demarrer l'entrainement",stop:"Arreter",
    backend_change_title:"Changer de backend ?",
-   backend_change_msg:"Changer de backend réinitialisera votre session d'entraînement actuelle. Votre contribution en cours sera perdue. Continuer ?",
-   cancel:"Annuler",confirm:"Changer & redémarrer",
+   backend_change_msg:"Changer de backend reinitialisera votre session.",
+   cancel:"Annuler",confirm:"Changer & redemarrer",
    err_invalid_credentials:"Nom d'utilisateur ou mot de passe invalide.",
-   err_username_taken:"Ce nom d'utilisateur est déjà pris.",
-   err_email_taken:"Un compte avec cet e-mail existe déjà.",
-   err_weak_password:"Le mot de passe doit contenir au moins 6 caractères.",
-   err_invalid_input:"Veuillez vérifier vos informations.",
-   err_login_failed:"Connexion impossible. Réessayez.",
-   err_register_failed:"Création du compte impossible. Réessayez.",
+   err_username_taken:"Ce nom d'utilisateur est deja pris.",
+   err_email_taken:"Un compte avec cet e-mail existe deja.",
+   err_weak_password:"Le mot de passe doit contenir au moins 6 caracteres.",
+   err_invalid_input:"Veuillez verifier vos informations.",
+   err_login_failed:"Connexion impossible. Reessayez.",
+   err_register_failed:"Creation du compte impossible. Reessayez.",
    err_network:"Serveur injoignable."
  },
  es:{
-   login_pre:"Inicia sesión en ",login_sub:"Bienvenido de vuelta al enjambre.",
-   register_title_pre:"Únete a ",register_sub:"Crea tu cuenta y empieza a contribuir.",
-   server_url:"Dirección del servidor",username:"Nombre de usuario",password:"Contraseña",email:"Correo",
+   login_pre:"Inicia sesion en ",login_sub:"Bienvenido de vuelta.",
+   register_title_pre:"Unete a ",register_sub:"Crea tu cuenta y empieza a contribuir.",
+   server_url:"Direccion del servidor",username:"Nombre de usuario",password:"Contrasena",email:"Correo",
    ph_user:" ",
-   login_btn:"Iniciar sesión",register_btn:"Crear cuenta",
-   no_account:"¿Aún no tienes cuenta?",register_link:"Crear una",
-   have_account:"¿Ya estás registrado?",login_link:"Iniciar sesión",
-   anon_preface:"¿Prefieres seguir anónimo?",anon_link:"Continuar anónimamente",
-   dash_title:"Entrenamiento",loss:"Pérdida",tokens_sec:"Tokens/seg",round:"Ronda",step:"Paso",
-   loss_history:"Historial de pérdida",waiting_data:"Esperando datos…",time_left:"Queda",
-   idle:"Inactivo",training:"Entrenando…",waiting:"Esperando…",uploading:"Subiendo…",
-   downloading:"Descargando…",preparing:"Preparando…",calibrating:"Calibrando…",
-   dl_weights:"Descargando pesos…",wait_coord:"Esperando al coordinador…",
-   wait_coord_sub:"Esto puede tardar unos minutos. El coordinador agrega las actualizaciones de todos los clientes entre rondas.",
+   login_btn:"Iniciar sesion",register_btn:"Crear cuenta",
+   no_account:"Aun no tienes cuenta?",register_link:"Crear una",
+   have_account:"Ya estas registrado?",login_link:"Iniciar sesion",
+   anon_preface:"Prefieres seguir anonimo?",anon_link:"Continuar anonimamente",
+   dash_title:"Entrenamiento",loss:"Perdida",tokens_sec:"Tokens/seg",round:"Ronda",step:"Paso",
+   loss_history:"Historial de perdida",waiting_data:"Esperando datos...",time_left:"Queda",
+   model_thoughts:"Predicciones del modelo",waiting_preview:"Esperando la primera prediccion...",
+   idle:"Inactivo",training:"Entrenando...",waiting:"Esperando...",uploading:"Subiendo...",
+   downloading:"Descargando...",preparing:"Preparando...",calibrating:"Calibrando...",
+   dl_weights:"Descargando pesos...",wait_coord:"Esperando al coordinador...",
+   wait_coord_sub:"Esto puede tardar unos minutos.",
    start:"Iniciar entrenamiento",stop:"Detener",
-   backend_change_title:"¿Cambiar de backend?",
-   backend_change_msg:"Cambiar de backend reiniciará tu sesión de entrenamiento actual. Tu contribución actual se descartará. ¿Continuar?",
+   backend_change_title:"Cambiar de backend?",
+   backend_change_msg:"Cambiar de backend reiniciara tu sesion.",
    cancel:"Cancelar",confirm:"Cambiar y reiniciar",
-   err_invalid_credentials:"Usuario o contraseña incorrectos.",
-   err_username_taken:"Este nombre de usuario ya está en uso.",
+   err_invalid_credentials:"Usuario o contrasena incorrectos.",
+   err_username_taken:"Este nombre de usuario ya esta en uso.",
    err_email_taken:"Ya existe una cuenta con este correo.",
-   err_weak_password:"La contraseña debe tener al menos 6 caracteres.",
-   err_invalid_input:"Revisa los datos e inténtalo de nuevo.",
-   err_login_failed:"No se pudo iniciar sesión. Inténtalo de nuevo.",
-   err_register_failed:"No se pudo crear la cuenta. Inténtalo de nuevo.",
+   err_weak_password:"La contrasena debe tener al menos 6 caracteres.",
+   err_invalid_input:"Revisa los datos e intentalo de nuevo.",
+   err_login_failed:"No se pudo iniciar sesion.",
+   err_register_failed:"No se pudo crear la cuenta.",
    err_network:"No se puede contactar el servidor."
  },
  de:{
-   login_pre:"Anmelden bei ",login_sub:"Willkommen zurück im Schwarm.",
-   register_title_pre:"Tritt ",register_sub:"Erstelle dein Konto und trage bei.",
+   login_pre:"Anmelden bei ",login_sub:"Willkommen zuruck.",
+   register_title_pre:"Tritt ",register_sub:"Erstelle dein Konto.",
    server_url:"Serveradresse",username:"Benutzername",password:"Passwort",email:"E-Mail",
    ph_user:" ",
    login_btn:"Anmelden",register_btn:"Konto erstellen",
@@ -1153,51 +1203,53 @@ const I18N={
    have_account:"Bereits registriert?",login_link:"Anmelden",
    anon_preface:"Lieber anonym bleiben?",anon_link:"Anonym weitermachen",
    dash_title:"Training",loss:"Verlust",tokens_sec:"Tokens/Sek",round:"Runde",step:"Schritt",
-   loss_history:"Verlustverlauf",waiting_data:"Warte auf Trainingsdaten…",time_left:"Rest",
-   idle:"Bereit",training:"Training…",waiting:"Warten…",uploading:"Upload…",
-   downloading:"Wird heruntergeladen…",preparing:"Vorbereitung…",calibrating:"Kalibrierung…",
-   dl_weights:"Gewichte werden heruntergeladen…",wait_coord:"Warte auf Koordinator…",
-   wait_coord_sub:"Das kann ein paar Minuten dauern. Der Koordinator aggregiert die Updates aller Clients zwischen den Runden.",
+   loss_history:"Verlustverlauf",waiting_data:"Warte auf Daten...",time_left:"Rest",
+   model_thoughts:"Modellvorhersagen",waiting_preview:"Warte auf erste Vorhersage...",
+   idle:"Bereit",training:"Training...",waiting:"Warten...",uploading:"Upload...",
+   downloading:"Wird heruntergeladen...",preparing:"Vorbereitung...",calibrating:"Kalibrierung...",
+   dl_weights:"Gewichte werden heruntergeladen...",wait_coord:"Warte auf Koordinator...",
+   wait_coord_sub:"Das kann ein paar Minuten dauern.",
    start:"Training starten",stop:"Stopp",
    backend_change_title:"Backend wechseln?",
-   backend_change_msg:"Das Wechseln des Backends setzt deine aktuelle Trainingssitzung zurück. Dein bisheriger Beitrag wird verworfen. Fortfahren?",
+   backend_change_msg:"Das Wechseln des Backends setzt deine Sitzung zuruck.",
    cancel:"Abbrechen",confirm:"Wechseln & neu starten",
-   err_invalid_credentials:"Benutzername oder Passwort ungültig.",
+   err_invalid_credentials:"Benutzername oder Passwort ungultig.",
    err_username_taken:"Dieser Benutzername ist bereits vergeben.",
    err_email_taken:"Ein Konto mit dieser E-Mail existiert bereits.",
    err_weak_password:"Das Passwort muss mindestens 6 Zeichen lang sein.",
-   err_invalid_input:"Bitte Eingabe prüfen und erneut versuchen.",
-   err_login_failed:"Anmeldung fehlgeschlagen. Bitte erneut versuchen.",
-   err_register_failed:"Konto konnte nicht erstellt werden. Bitte erneut versuchen.",
+   err_invalid_input:"Bitte Eingabe prufen.",
+   err_login_failed:"Anmeldung fehlgeschlagen.",
+   err_register_failed:"Konto konnte nicht erstellt werden.",
    err_network:"Server nicht erreichbar."
  },
  tr:{
-   login_pre:"Giriş yap: ",login_sub:"Sürüye tekrar hoş geldin.",
-   register_title_pre:"Katıl: ",register_sub:"Hesabını oluştur ve katkıda bulunmaya başla.",
-   server_url:"Sunucu adresi",username:"Kullanıcı adı",password:"Şifre",email:"E-posta",
+   login_pre:"Giris yap: ",login_sub:"Suruyla tekrar hos geldin.",
+   register_title_pre:"Katil: ",register_sub:"Hesabini olustur.",
+   server_url:"Sunucu adresi",username:"Kullanici adi",password:"Sifre",email:"E-posta",
    ph_user:" ",
-   login_btn:"Giriş yap",register_btn:"Hesap oluştur",
-   no_account:"Hesabın yok mu?",register_link:"Bir tane oluştur",
-   have_account:"Zaten kayıtlı mısın?",login_link:"Giriş yap",
-   anon_preface:"Anonim kalmayı mı tercih edersin?",anon_link:"Atla ve anonim olarak katkıda bulun",
-   dash_title:"Eğitim",loss:"Kayıp",tokens_sec:"Token/sn",round:"Tur",step:"Adım",
-   loss_history:"Kayıp geçmişi",waiting_data:"Eğitim verisi bekleniyor…",time_left:"Kalan",
-   idle:"Boşta",training:"Eğitiliyor…",waiting:"Bekleniyor…",uploading:"Yükleniyor…",
-   downloading:"İndiriliyor…",preparing:"Hazırlanıyor…",calibrating:"Kalibre ediliyor…",
-   dl_weights:"Ağırlıklar indiriliyor…",wait_coord:"Koordinatör bekleniyor…",
-   wait_coord_sub:"Bu birkaç dakika sürebilir. Koordinatör, turlar arasında tüm istemcilerden gelen güncellemeleri toplar.",
-   start:"Eğitimi başlat",stop:"Durdur",
-   backend_change_title:"Backend değiştir?",
-   backend_change_msg:"Backend değiştirmek mevcut eğitim oturumunu sıfırlayacak ve turu yeniden başlatacak. Şu ana kadarki katkınız silinecek. Devam edilsin mi?",
-   cancel:"İptal",confirm:"Değiştir & yeniden başlat",
-   err_invalid_credentials:"Geçersiz kullanıcı adı veya şifre.",
-   err_username_taken:"Bu kullanıcı adı zaten alınmış. Lütfen başka bir tane seçin.",
+   login_btn:"Giris yap",register_btn:"Hesap olustur",
+   no_account:"Hesabin yok mu?",register_link:"Bir tane olustur",
+   have_account:"Zaten kayitli misin?",login_link:"Giris yap",
+   anon_preface:"Anonim kalmayi mi tercih edersin?",anon_link:"Atla ve anonim olarak katki ver",
+   dash_title:"Egitim",loss:"Kayip",tokens_sec:"Token/sn",round:"Tur",step:"Adim",
+   loss_history:"Kayip gecmisi",waiting_data:"Veri bekleniyor...",time_left:"Kalan",
+   model_thoughts:"Model Tahminleri",waiting_preview:"Ilk tahmin bekleniyor...",
+   idle:"Bosta",training:"Egitiliyor...",waiting:"Bekleniyor...",uploading:"Yukleniyor...",
+   downloading:"Indiriliyor...",preparing:"Hazirlaniyor...",calibrating:"Kalibre ediliyor...",
+   dl_weights:"Agirliklar indiriliyor...",wait_coord:"Koordinator bekleniyor...",
+   wait_coord_sub:"Bu birkac dakika surebilir.",
+   start:"Egitimi baslat",stop:"Durdur",
+   backend_change_title:"Backend degistir?",
+   backend_change_msg:"Backend degistirmek mevcut oturumu sifirlayacak.",
+   cancel:"Iptal",confirm:"Degistir & yeniden baslat",
+   err_invalid_credentials:"Gecersiz kullanici adi veya sifre.",
+   err_username_taken:"Bu kullanici adi zaten alinmis.",
    err_email_taken:"Bu e-posta ile zaten bir hesap mevcut.",
-   err_weak_password:"Şifre en az 6 karakter olmalıdır.",
-   err_invalid_input:"Lütfen girdinizi kontrol edip tekrar deneyin.",
-   err_login_failed:"Giriş yapılamadı. Lütfen tekrar deneyin.",
-   err_register_failed:"Hesap oluşturulamadı. Lütfen tekrar deneyin.",
-   err_network:"Sunucuya ulaşılamıyor."
+   err_weak_password:"Sifre en az 6 karakter olmalidir.",
+   err_invalid_input:"Lutfen girdinizi kontrol edin.",
+   err_login_failed:"Giris yapilamadi.",
+   err_register_failed:"Hesap olusturulamadi.",
+   err_network:"Sunucuya ulasilamiyor."
  }
 };
 
@@ -1429,7 +1481,7 @@ window.handleEvent=function(ev,data){
   else if(ev==='cal_stats'){
     document.getElementById('stat-loss').textContent=data.loss.toFixed(4);
     if(data.tps !== undefined) document.getElementById('stat-tps').textContent=Math.round(data.tps);
-    document.getElementById('stat-round').textContent='—';
+    document.getElementById('stat-round').textContent='-';
     document.getElementById('stat-step-cur').textContent=data.step;
     document.getElementById('stat-step-tot').textContent=data.total;
     const pct=Math.min(100,(data.step/Math.max(1,data.total))*100);
@@ -1453,7 +1505,33 @@ window.handleEvent=function(ev,data){
     lossHistory.push(data.loss);
     if(lossHistory.length>MAXP*2)lossHistory.splice(0,lossHistory.length-MAXP*2);
     drawGraph();
-  }else if(ev==='preview_loss'){}
+  }
+  else if(ev==='model_preview'){
+    const container = document.getElementById('model-preview');
+    const stepEl = document.getElementById('preview-step');
+    stepEl.textContent = 'Step ' + data.step;
+    
+    let html = '';
+    data.predictions.forEach((p, i) => {
+        const pct = (p.prob * 100).toFixed(1);
+        const width = Math.max(2, p.prob * 100);
+        html += '<div class="pred-row">' +
+            '<span class="pred-token">#' + p.token + '</span>' +
+            '<div class="pred-bar-bg"><div class="pred-bar" style="width:' + width + '%"></div></div>' +
+            '<span class="pred-pct">' + pct + '%</span>' +
+            '</div>';
+    });
+    
+    const matchClass = data.match ? 'pred-match' : 'pred-mismatch';
+    const matchText = data.match ? 'Top-1 Match!' : 'Mismatch';
+    html += '<div class="pred-target">' +
+        '<span>Target: <strong>#' + data.target + '</strong></span>' +
+        '<span class="' + matchClass + '">' + matchText + '</span>' +
+        '</div>';
+    
+    container.innerHTML = html;
+  }
+  else if(ev==='preview_loss'){}
   else if(ev==='status'){
     statusKey=data;
     document.getElementById('status-indicator').textContent=t(statusKey);
@@ -1464,7 +1542,6 @@ window.handleEvent=function(ev,data){
 window.addEventListener('resize',()=>requestAnimationFrame(drawGraph));
 if(window.ResizeObserver){new ResizeObserver(()=>requestAnimationFrame(drawGraph)).observe(document.getElementById('loss-graph'))}
 
-/* ===== DARK MODE + LOGO SWAP (fully guarded) ===== */
 function updateLogo(){
   try {
     var img = document.getElementById('logo-img');
@@ -1508,10 +1585,6 @@ class Api:
 
     def emit(self, ev, data):
         if not self.window: return
-        if ev=='preview_loss':
-            n=time.time()
-            if n-self._lp<0.4: return
-            self._lp=n
         try: self.window.evaluate_js(f"window.handleEvent({json.dumps(ev)},{json.dumps(data)});")
         except: pass
 
@@ -1558,7 +1631,6 @@ class Api:
         
     def stop(self): self.stop_event.set()
     
-    # ============ 🚨 ROBUST AUTO-RELAUNCH LOOP ============
     def _rs(self):
         global train_device, train_backend
         try:
@@ -1589,13 +1661,13 @@ class Api:
                 break
                 
             self.emit('status', 'waiting')
-            self.emit('log', "✅ Round complete. Auto-relaunching next round in 10s...")
+            self.emit('log', "Round complete. Auto-relaunching next round in 10s...")
             for _ in range(10):
                 if self.stop_event.is_set(): break
                 time.sleep(1)
                 
         self.emit('status','idle')
-        self.emit('log', "👋 Training stopped by user.")
+        self.emit('log', "Training stopped by user.")
 
 
 def startup():
