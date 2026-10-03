@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client — dual-logo support (light + dark mode SVGs).
+CrowdGPT GUI Client — Continuous Swarm Edition
+Fixes:
+1. Progress bar math (smoothly hits 100% at deadline)
+2. Streaming upload GUI (shows real-time MB uploaded)
+3. Safe Stop (skips upload if user clicks Stop)
+4. Robust Auto-Relaunch Loop
 """
 import os, sys, io, json, time, struct, math, gc, threading, base64, logging, tempfile, atexit
 from pathlib import Path
@@ -67,7 +72,6 @@ if _lp_light.exists():
 if _lp_dark.exists():
     try: LOGO_URI_DARK = "data:image/svg+xml;base64," + base64.b64encode(_lp_dark.read_bytes()).decode()
     except: pass
-# Fallback: if no dark SVG exists, reuse the light one
 if not LOGO_URI_DARK:
     LOGO_URI_DARK = LOGO_URI_LIGHT
 
@@ -603,17 +607,29 @@ def run_single_round(srv, at, se, emit):
             torch.nn.utils.clip_grad_norm_(bp, 1.0); ob.step(); ob.zero_grad(set_to_none=True)
             gc.collect()
             cal_done += 1
+
+        # ============ 🚨 FIX 1: TIME-BASED TRAINING LOOP ============
         rh = max(0.1, rs.get("max_round_hours", 2.0) - rs.get("round_elapsed_hours", 0))
         remaining = max(60, (rh*3600) - (time.time() - cs_) - (UPLOAD_BUFFER_MIN*60))
         dl = time.time() + remaining
+        
+        if micro_step > 0:
+            sps_micro = (time.time() - cs_) / micro_step
+            target_micro_steps = micro_step + int(remaining / sps_micro)
+        else:
+            target_micro_steps = 1000
+            
         emit('status', 'training')
         emit('log', f"Target: ~{target_micro_steps} micro-steps")
+        
         last_stats_emit = 0.0
-        while micro_step < target_micro_steps:
+        
+        while time.time() < dl:
             if hb.should_stop() or se.is_set(): break
-            if time.time() >= dl: break
+            
             ob.zero_grad(set_to_none=True)
             als = 0.0; cc = 0
+            
             try:
                 for mi in range(as_):
                     if hb.should_stop() or se.is_set() or time.time() >= dl: break
@@ -627,17 +643,22 @@ def run_single_round(srv, at, se, emit):
                     oe.step(); oe.zero_grad(set_to_none=True)
                     als += lval; tt += x.numel(); cc += 1
                     micro_step += 1
-                    if time.time() - last_stats_emit > 0.25 or micro_step >= target_micro_steps:
+                    
+                    rem_time = max(1, dl - time.time())
+                    elapsed_total = time.time() - cs_
+                    if micro_step > 5:
+                        sps_micro = elapsed_total / micro_step
+                        future_steps = int(rem_time / sps_micro)
+                        current_target = micro_step + future_steps
+                        if current_target > target_micro_steps:
+                            target_micro_steps = current_target
+                            
+                    if time.time() - last_stats_emit > 0.25 or time.time() >= dl:
                         last_stats_emit = time.time()
                         lv = als/cc
                         ctps = tt/max(time.time()-cs_, 1)
-                        elapsed_total = time.time() - cs_
-                        if micro_step > 50 and elapsed_total > 30:
-                            sps_micro = elapsed_total / micro_step
-                            rem_time = max(0, dl - time.time())
-                            target_micro_steps = max(micro_step + 50, int(rem_time / sps_micro))
                         emit('stats', {
-                            'step': micro_step, 'target': target_micro_steps, 'loss': lval, 
+                            'step': micro_step, 'target': target_micro_steps, 'loss': lv, 
                             'tps': ctps, 'global_step': gs, 'round': cr, 
                             'time_left': max(0, (dl-time.time())/60)
                         })
@@ -645,8 +666,10 @@ def run_single_round(srv, at, se, emit):
             except RuntimeError as e:
                 if "out of memory" not in str(e).lower(): raise
                 ha(); continue
+                
             if cc == 0: break
             torch.nn.utils.clip_grad_norm_(bp, 1.0); ob.step(); ob.zero_grad(set_to_none=True)
+
     finally:
         hb.stop()
         if 'ds' in locals() and ds: del ds
@@ -654,22 +677,66 @@ def run_single_round(srv, at, se, emit):
         if train_backend in ("CUDA", "ROCM"):
             try: torch.cuda.empty_cache()
             except: pass
+
     if 'micro_step' not in locals() or micro_step <= 0: return
+    
+    # ============ 🚨 FIX 2: SAFE STOP ============
+    if se.is_set():
+        emit('log', "🛑 Stopped by user. Skipping upload to avoid sending partial deltas.")
+        return
+
     fl = float(lval) if 'lval' in locals() else 10.0
-    emit('log', f"Done: {micro_step} micro-steps, loss {fl:.4f}")
+    emit('log', f"✅ Done: {micro_step} micro-steps, loss {fl:.4f}")
+    
+    # ============ 🚨 FIX 3: STREAMING UPLOAD GUI ============
     emit('status', 'uploading')
+    
     dbf = torch.from_numpy(model.get_base_weights()-iw).to(torch.bfloat16).view(torch.uint16).numpy()
     ed = model.engram.table.weight.data.cpu()-iew
     rn = ed.abs().sum(dim=1); k = max(1, int(len(rn)*0.10))
     tv, ti = torch.topk(rn, k); ai = ti[tv > 1e-8]
     si = ai.cpu().numpy().astype(np.uint32) if len(ai) else np.array([], dtype=np.uint32)
     sv = ed[ai].to(torch.bfloat16).view(torch.uint16).numpy() if len(ai) else np.array([], dtype=np.uint16)
+    
     pl = json.dumps({"taskId": tid, "loss": fl, "localSteps": micro_step, "tokensProcessed": tt, "loraRank": 0, "isDelta": True, "weightFormat": "bf16", "hasEngram": True, "engramSparseCount": len(si)}).encode()
     bi = struct.pack('<I', len(pl)) + pl + np.ascontiguousarray(dbf).tobytes() + np.ascontiguousarray(si).tobytes() + np.ascontiguousarray(sv).tobytes()
+    
+    compressed_data = gzip.compress(bi, compresslevel=2)
+    upload_size_mb = len(compressed_data) / (1024 * 1024)
+    
+    def stream_with_progress(data, emit_cb, total_size):
+        chunk_size = 128 * 1024
+        uploaded = 0
+        last_emit = 0.0
+        for i in range(0, len(data), chunk_size):
+            chunk = data[i:i+chunk_size]
+            uploaded += len(chunk)
+            now = time.time()
+            if now - last_emit > 0.25:
+                emit_cb('overlay_progress', {'done': uploaded, 'total': total_size})
+                last_emit = now
+            yield chunk
+        emit_cb('overlay_progress', {'done': total_size, 'total': total_size})
+
+    emit('overlay_show', {'title_key': 'uploading', 'indeterminate': False})
+    emit('log', f"Uploading {upload_size_mb:.1f} MB delta to server...")
+    
     try:
-        r = requests.post(f"{srv}/fl/submit", headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **h}, data=gzip.compress(bi, compresslevel=2), timeout=600)
-        emit('log', "Submitted!" if r.status_code == 200 else f"Submit failed: {r.text[:100]}")
-    except Exception as e: emit('log', f"Upload failed: {e}")
+        r = requests.post(
+            f"{srv}/fl/submit", 
+            headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **h}, 
+            data=stream_with_progress(compressed_data, emit, len(compressed_data)),
+            timeout=600
+        )
+        if r.status_code == 200:
+            emit('log', "✅ Submitted successfully!")
+        else:
+            emit('log', f"❌ Submit failed: {r.text[:100]}")
+    except Exception as e: 
+        emit('log', f"❌ Upload failed: {e}")
+    finally:
+        emit('overlay_hide')
+        
     del model; gc.collect()
 
 
@@ -875,7 +942,7 @@ body.dark .overlay-fill{background:linear-gradient(90deg,#15803d,#22c55e 55%,#86
     <img src="__LOGO__" id="logo-img" data-light="__LOGO__" data-dark="__LOGO_DARK__" class="logo-img" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='grid';">
     <div class="logo-fallback">C</div>
     <span class="logo-text">CrowdGPT</span>
-    <span class="logo-ver">v0.4</span>
+    <span class="logo-ver">v0.5</span>
   </div>
   <div class="header-right">
     <span id="user-info"></span>
@@ -1491,6 +1558,7 @@ class Api:
         
     def stop(self): self.stop_event.set()
     
+    # ============ 🚨 ROBUST AUTO-RELAUNCH LOOP ============
     def _rs(self):
         global train_device, train_backend
         try:
@@ -1501,14 +1569,33 @@ class Api:
             self.emit('log',f"VRAM: {memory_config['ram_gb']:.1f} GB")
         except Exception as e:
             self.emit('log',f"Error: {e}"); self.emit('status','idle'); return
+            
+        round_count = 0
         while not self.stop_event.is_set():
-            try: run_single_round(self.server_url, self.auth_token, self.stop_event, self.emit)
-            except Exception as e: self.emit('log',f"Failed: {e}"); time.sleep(5)
-            if self.stop_event.is_set(): break
+            round_count += 1
+            self.emit('log', f"{'='*40}")
+            self.emit('log', f"Starting Round Cycle #{round_count}")
+            self.emit('log', f"{'='*40}")
+            
+            try: 
+                run_single_round(self.server_url, self.auth_token, self.stop_event, self.emit)
+            except KeyboardInterrupt:
+                self.stop_event.set()
+                break
+            except Exception as e: 
+                self.emit('log',f"Round failed: {e}")
+                
+            if self.stop_event.is_set(): 
+                break
+                
+            self.emit('status', 'waiting')
+            self.emit('log', "✅ Round complete. Auto-relaunching next round in 10s...")
             for _ in range(10):
                 if self.stop_event.is_set(): break
                 time.sleep(1)
+                
         self.emit('status','idle')
+        self.emit('log', "👋 Training stopped by user.")
 
 
 def startup():
