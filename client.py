@@ -1,109 +1,147 @@
 #!/usr/bin/env python3
 """
-CrowdGPT Client - Continuous FL Node (Auto-Relaunch & Graceful Stop Edition)
-Grad accum that cannot crash: checkpointed head+CE removes the stored softmaxes,
-and OOM automatically halves the accumulation window (down to vanilla if needed).
+CrowdGPT GUI Client — dual-logo support (light + dark mode SVGs).
 """
-
-import os
-os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
-
-import sys, io, gzip, json, time, struct, logging, hashlib, math, gc, threading, argparse, subprocess, signal
+import os, sys, io, json, time, struct, math, gc, threading, base64, logging, tempfile, atexit
 from pathlib import Path
-
+import webview
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import requests
 from torch.utils.checkpoint import checkpoint
+import http.client
+from requests.exceptions import ChunkedEncodingError
+import gzip
 
-from rich.console import Console
-from rich.table import Table
-from rich.live import Live
+logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
+os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
-console = Console()
-
-# ============ GRACEFUL STOP MECHANISM ============
-USER_STOP_EVENT = threading.Event()
-
-def signal_handler(sig, frame):
-    log.info("\n🛑 Stop signal received. Gracefully shutting down...")
-    USER_STOP_EVENT.set()
-
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
 
 # ============ CONFIG ============
 CHECKPOINT_DIR = Path("checkpoints")
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-
 DATASET_REPO_ID = "Vxtzq/CrowdGPT"
-MODEL_REPO_ID = "Vxtzq/Crowd-v1"
 
 MODEL_CONFIG = {
     "vocabSize": 151669, "dim": 1536, "nLayers": 24, "nHeads": 16, "nKvHeads": 4,
     "headDim": 96, "maxSeqLen": 2048, "mlpHidden": 2560, "weightTying": True,
-    "architecture": "SotaGPT"
 }
-
-VOCAB_SIZE = MODEL_CONFIG["vocabSize"]
-DIM = MODEL_CONFIG["dim"]
-N_LAYERS = MODEL_CONFIG["nLayers"]
-N_HEADS = MODEL_CONFIG["nHeads"]
-N_KV_HEADS = MODEL_CONFIG["nKvHeads"]
-HEAD_DIM = MODEL_CONFIG["headDim"]
-MAX_SEQ_LEN = MODEL_CONFIG["maxSeqLen"]
-MLP_HIDDEN = MODEL_CONFIG["mlpHidden"]
+VOCAB_SIZE = MODEL_CONFIG["vocabSize"]; DIM = MODEL_CONFIG["dim"]
+N_LAYERS = MODEL_CONFIG["nLayers"]; N_HEADS = MODEL_CONFIG["nHeads"]
+N_KV_HEADS = MODEL_CONFIG["nKvHeads"]; HEAD_DIM = MODEL_CONFIG["headDim"]
+MAX_SEQ_LEN = MODEL_CONFIG["maxSeqLen"]; MLP_HIDDEN = MODEL_CONFIG["mlpHidden"]
 ENG_NUM_BUCKETS = 227865
-
-LOSS_CHUNK = 256
-UPLOAD_BUFFER_MIN = 25        
-TPS_DEGRADATION = 0.85        
-DATASET_PAUSE_PER_ADVANCE = 8 
-CALIBRATION_STEPS = 15        
+LOSS_CHUNK = 256; UPLOAD_BUFFER_MIN = 25; TPS_DEGRADATION = 0.85
+ALLOWED_BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128]
 
 def _calc_model_size():
     size = VOCAB_SIZE * DIM
     for _ in range(N_LAYERS):
-        size += DIM * 2 + DIM * (N_HEADS * HEAD_DIM) + DIM * (N_KV_HEADS * HEAD_DIM) * 2 + DIM * DIM + DIM * 2
-        size += DIM * MLP_HIDDEN * 2 + MLP_HIDDEN * DIM
-    size += DIM * 2
+        size += DIM*2 + DIM*(N_HEADS*HEAD_DIM) + DIM*(N_KV_HEADS*HEAD_DIM)*2 + DIM*DIM + DIM*2
+        size += DIM*MLP_HIDDEN*2 + MLP_HIDDEN*DIM
+    size += DIM*2
     return size
 
 EXPECTED_MODEL_SIZE = _calc_model_size()
-ALLOWED_BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128]
-
-memory_config = {"ram_gb": 12, "safety_margin_gb": 1.0, "is_auto_detected": False}
+EXPECTED_ENGRAM_SIZE = ENG_NUM_BUCKETS * DIM
+EXPECTED_WEIGHT_BYTES = (EXPECTED_MODEL_SIZE + EXPECTED_ENGRAM_SIZE) * 2
+memory_config = {"ram_gb": 12, "is_auto_detected": False}
 train_device, train_backend = None, None
 
+# ============ DUAL LOGOS ============
+LOGO_URI_LIGHT = ""
+LOGO_URI_DARK = ""
+_lp_light = Path(__file__).parent / "docs/logo-black.svg"
+_lp_app = Path(__file__).parent / "docs/logo-app.svg"
+_lp_dark = Path(__file__).parent / "docs/logo-white.svg"
+
+if _lp_light.exists():
+    try: LOGO_URI_LIGHT = "data:image/svg+xml;base64," + base64.b64encode(_lp_light.read_bytes()).decode()
+    except: pass
+if _lp_dark.exists():
+    try: LOGO_URI_DARK = "data:image/svg+xml;base64," + base64.b64encode(_lp_dark.read_bytes()).decode()
+    except: pass
+# Fallback: if no dark SVG exists, reuse the light one
+if not LOGO_URI_DARK:
+    LOGO_URI_DARK = LOGO_URI_LIGHT
+
+# ============ APP ICON ============
+ICON_PATH = None
+_cleanup_icon = []
+if _lp_light.exists():
+    try:
+        import cairosvg
+        png_bytes = cairosvg.svg2png(url=str(_lp_app), output_width=256, output_height=256)
+        tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+        tmp.write(png_bytes)
+        tmp.close()
+        ICON_PATH = os.path.abspath(tmp.name)
+        _cleanup_icon.append(ICON_PATH)
+        def _clean():
+            for p in _cleanup_icon:
+                try: os.unlink(p)
+                except: pass
+        atexit.register(_clean)
+    except ImportError:
+        ICON_PATH = os.path.abspath(str(_lp_app))
+    except Exception:
+        ICON_PATH = os.path.abspath(str(_lp_app))
+
 # ============ HARDWARE ============
+def get_available_backends():
+    backends = {}
+    backends['cuda'] = torch.cuda.is_available() and not (hasattr(torch.version, 'hip') and torch.version.hip)
+    backends['rocm'] = hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available()
+    backends['mps'] = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+    try:
+        import intel_extension_for_pytorch
+        backends['xpu'] = hasattr(torch, 'xpu') and torch.xpu.is_available()
+    except ImportError:
+        backends['xpu'] = False
+    try:
+        import torch_directml
+        backends['directml'] = torch_directml.is_available()
+    except ImportError:
+        backends['directml'] = False
+    backends['cpu'] = True
+    return backends
+
+def get_best_default_backend():
+    avail = get_available_backends()
+    for bk in ['cuda', 'rocm', 'mps', 'xpu', 'directml', 'cpu']:
+        if avail.get(bk): return bk
+    return 'cpu'
+
 def detect_training_backend(force=None):
     if force and force != "auto":
-        name = force.lower()
-        if name == "cpu": return torch.device('cpu'), "CPU"
-        if name == "cuda" and torch.cuda.is_available(): return torch.device('cuda'), "CUDA"
-        if name == "rocm" and hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available():
-            return torch.device('cuda'), "ROCM"
-        if name == "mps" and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-            return torch.device('mps'), "MPS"
-        if name == "directml":
+        n = force.lower()
+        if n == "cpu": return torch.device('cpu'), "CPU"
+        if n == "cuda" and torch.cuda.is_available(): return torch.device('cuda'), "CUDA"
+        if n == "rocm" and hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available(): return torch.device('cuda'), "ROCM"
+        if n == "mps" and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available(): return torch.device('mps'), "MPS"
+        if n == "xpu":
+            try:
+                import intel_extension_for_pytorch
+                if hasattr(torch, 'xpu') and torch.xpu.is_available(): return torch.device('xpu'), "XPU"
+            except ImportError: pass
+        if n == "directml":
             try:
                 import torch_directml
                 if torch_directml.is_available(): return torch_directml.device(0), "DIRECTML"
             except ImportError: pass
-        raise Exception(f"Backend '{force}' not available")
-
-    if torch.cuda.is_available() and not (hasattr(torch.version, 'hip') and torch.version.hip):
-        return torch.device('cuda'), "CUDA"
-    if hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available():
-        return torch.device('cuda'), "ROCM"
-    if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-        return torch.device('mps'), "MPS"
+    if torch.cuda.is_available() and not (hasattr(torch.version, 'hip') and torch.version.hip): return torch.device('cuda'), "CUDA"
+    if hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available(): return torch.device('cuda'), "ROCM"
+    if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available(): return torch.device('mps'), "MPS"
+    try:
+        import intel_extension_for_pytorch
+        if hasattr(torch, 'xpu') and torch.xpu.is_available(): return torch.device('xpu'), "XPU"
+    except ImportError: pass
     try:
         import torch_directml
         if torch_directml.is_available(): return torch_directml.device(0), "DIRECTML"
@@ -114,102 +152,79 @@ def auto_detect_vram_budget():
     global train_backend
     if train_backend in ("CUDA", "ROCM") and torch.cuda.is_available():
         try:
-            free_b, total_b = torch.cuda.mem_get_info(0)
-            usable = max(1.0, min(free_b / 1024**3, total_b / 1024**3 - 2.0) - 1.0)
-            memory_config.update({"ram_gb": round(usable, 2), "is_auto_detected": True})
-            return
-        except Exception: pass
+            fb, tb = torch.cuda.mem_get_info(0)
+            memory_config.update({"ram_gb": round(max(1.0, min(fb/1024**3, tb/1024**3 - 2.0) - 1.0), 2), "is_auto_detected": True}); return
+        except: pass
+    if train_backend == "MPS":
+        try:
+            import subprocess
+            out = subprocess.check_output(["sysctl", "-n", "hw.memsize"]).decode().strip()
+            total_gb = int(out) / 1024**3
+            memory_config.update({"ram_gb": round(max(1.0, total_gb * 0.75 - 2.0), 2), "is_auto_detected": True}); return
+        except: pass
     try:
         import psutil
-        avail = psutil.virtual_memory().available / 1024**3
-        memory_config.update({"ram_gb": round(max(1.0, avail - 2.0), 2), "is_auto_detected": True})
-    except ImportError: pass
+        memory_config.update({"ram_gb": round(max(1.0, psutil.virtual_memory().available/1024**3 - 2.0), 2), "is_auto_detected": True})
+    except: pass
 
 def has_bitsandbytes():
-    try:
-        import bitsandbytes
-        return True
-    except ImportError:
-        return False
+    try: import bitsandbytes; return True
+    except: return False
 
-def estimate_vram_bytes(batch_size, seq_len, use_8bit):
-    model_bytes = EXPECTED_MODEL_SIZE * 2  
-    optim_bytes = EXPECTED_MODEL_SIZE * (4 if use_8bit else 12)
-    grad_bytes = EXPECTED_MODEL_SIZE * 4  
-    act_per_block = batch_size * seq_len * DIM * 2
-    attn_act = batch_size * N_HEADS * 64 * seq_len * 4
-    act_bytes = N_LAYERS * (act_per_block + attn_act)
-    logits_bytes = batch_size * LOSS_CHUNK * VOCAB_SIZE * 4
-    engram_bytes = batch_size * seq_len * DIM * 2
-    safety = int(0.8 * 1024**3)
-    return int(model_bytes + optim_bytes + grad_bytes + act_bytes + logits_bytes + engram_bytes + safety)
+def estimate_vram_bytes(bs, sl, u8):
+    mb = EXPECTED_MODEL_SIZE*2; ob = EXPECTED_MODEL_SIZE*(4 if u8 else 12); gb = EXPECTED_MODEL_SIZE*4
+    ab = N_LAYERS*(bs*sl*DIM*2 + bs*N_HEADS*64*sl*4)
+    lb = bs*LOSS_CHUNK*VOCAB_SIZE*4; eb = bs*sl*DIM*2
+    return int(mb+ob+gb+ab+lb+eb+0.8*1024**3)
 
-def recommend_batch_size(seq_len=2048):
-    use_8bit = has_bitsandbytes()
-    budget = int(memory_config["ram_gb"] * 1024**3)
-    best_bs = 1
+def recommend_batch_size(sl=2048):
+    u8 = has_bitsandbytes(); budget = int(memory_config["ram_gb"]*1024**3); best = 1
     for bs in ALLOWED_BATCH_SIZES:
-        est = estimate_vram_bytes(bs, seq_len, use_8bit)
-        if est <= budget:
-            best_bs = bs
-        else:
-            break
-    log.info(f"VRAM budget: {memory_config['ram_gb']:.1f}GB | 8-bit optim: {use_8bit} | Recommended BS: {best_bs}")
-    return best_bs
+        if estimate_vram_bytes(bs, sl, u8) <= budget: best = bs
+        else: break
+    return best
 
 # ============ MODEL ============
 def precompute_freqs(dim, sl, dev):
-    inv = 1.0 / (10000.0 ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
+    inv = 1.0/(10000.0**(torch.arange(0, dim, 2, dtype=torch.float32)/dim))
     f = torch.einsum("i,j->ij", torch.arange(sl, dtype=torch.float32), inv)
     e = torch.cat((f, f), -1)
     return e.cos()[None, None, :, :].to(dev), e.sin()[None, None, :, :].to(dev)
 
-def rotate_half(x):
-    return torch.cat((-x[..., x.shape[-1]//2:], x[..., :x.shape[-1]//2]), -1)
+def rotate_half(x): return torch.cat((-x[..., x.shape[-1]//2:], x[..., :x.shape[-1]//2]), -1)
 
 class GroupedQueryAttention(nn.Module):
     def __init__(self):
         super().__init__()
-        self.nh, self.nkv, self.nrep = N_HEADS, N_KV_HEADS, N_HEADS // N_KV_HEADS
-        self.wq = nn.Linear(DIM, N_HEADS * HEAD_DIM, bias=False)
-        self.wk = nn.Linear(DIM, N_KV_HEADS * HEAD_DIM, bias=False)
-        self.wv = nn.Linear(DIM, N_KV_HEADS * HEAD_DIM, bias=False)
+        self.nh, self.nkv, self.nrep = N_HEADS, N_KV_HEADS, N_HEADS//N_KV_HEADS
+        self.wq = nn.Linear(DIM, N_HEADS*HEAD_DIM, bias=False)
+        self.wk = nn.Linear(DIM, N_KV_HEADS*HEAD_DIM, bias=False)
+        self.wv = nn.Linear(DIM, N_KV_HEADS*HEAD_DIM, bias=False)
         self.wo = nn.Linear(DIM, DIM, bias=False)
-
     def forward(self, x, cos, sin, use_chunked=True):
         B, T, C = x.size()
         q = self.wq(x).view(B, T, self.nh, HEAD_DIM).transpose(1, 2)
         k = self.wk(x).view(B, T, self.nkv, HEAD_DIM).transpose(1, 2)
         v = self.wv(x).view(B, T, self.nkv, HEAD_DIM).transpose(1, 2)
         ct, st = cos[:, :, :T, :], sin[:, :, :T, :]
-        q = q * ct + rotate_half(q) * st
-        k = k * ct + rotate_half(k) * st
+        q = q*ct + rotate_half(q)*st; k = k*ct + rotate_half(k)*st
         k = k.unsqueeze(2).expand(B, self.nkv, self.nrep, T, HEAD_DIM).reshape(B, self.nh, T, HEAD_DIM)
         v = v.unsqueeze(2).expand(B, self.nkv, self.nrep, T, HEAD_DIM).reshape(B, self.nh, T, HEAD_DIM)
         if use_chunked: return self._chunked(q, k, v, B, T, C)
-        a = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(HEAD_DIM))
-        m = torch.tril(torch.ones(T, T, device=x.device)).view(1, 1, T, T)
-        a = a.masked_fill(m == 0, float('-inf'))
+        a = (q @ k.transpose(-2, -1))*(1.0/math.sqrt(HEAD_DIM))
+        a = a.masked_fill(torch.tril(torch.ones(T, T, device=x.device)).view(1, 1, T, T) == 0, float('-inf'))
         a = F.softmax(a, dim=-1, dtype=torch.float32).to(q.dtype)
         return self.wo((a @ v).transpose(1, 2).contiguous().view(B, T, C))
-
     def _chunked(self, q, k, v, B, T, C, cs=64):
         chunks = []
         for i in range(0, T, cs):
-            e = min(i + cs, T)
-            q_chunk = q[:, :, i:e, :]
-            k_chunk = k[:, :, :e, :]
-            v_chunk = v[:, :, :e, :]
-            aw = (q_chunk @ k_chunk.transpose(-2, -1)) * (1.0 / math.sqrt(HEAD_DIM))
-            row_idx = torch.arange(i, e, device=q.device).unsqueeze(1)
-            col_idx = torch.arange(e, device=q.device).unsqueeze(0)
-            mask = (col_idx <= row_idx).unsqueeze(0).unsqueeze(0)
-            aw = aw.masked_fill(~mask, float('-inf'))
-            attn = F.softmax(aw, dim=-1, dtype=torch.float32).to(q.dtype)
-            chunks.append(attn @ v_chunk)
-        out = torch.cat(chunks, dim=2)
-        out = out.transpose(1, 2).contiguous().view(B, T, C)
-        return self.wo(out)
+            e = min(i+cs, T)
+            aw = (q[:, :, i:e, :] @ k[:, :, :e, :].transpose(-2, -1))*(1.0/math.sqrt(HEAD_DIM))
+            ri = torch.arange(i, e, device=q.device).unsqueeze(1)
+            ci = torch.arange(e, device=q.device).unsqueeze(0)
+            aw = aw.masked_fill(~(ci <= ri).unsqueeze(0).unsqueeze(0), float('-inf'))
+            chunks.append(F.softmax(aw, dim=-1, dtype=torch.float32).to(q.dtype) @ v[:, :, :e, :])
+        return self.wo(torch.cat(chunks, dim=2).transpose(1, 2).contiguous().view(B, T, C))
 
 class SwiGLU(nn.Module):
     def __init__(self):
@@ -217,704 +232,1351 @@ class SwiGLU(nn.Module):
         self.w1 = nn.Linear(DIM, MLP_HIDDEN, bias=False)
         self.w2 = nn.Linear(DIM, MLP_HIDDEN, bias=False)
         self.w3 = nn.Linear(MLP_HIDDEN, DIM, bias=False)
-    def forward(self, x): return self.w3(F.silu(self.w1(x)) * self.w2(x))
+    def forward(self, x): return self.w3(F.silu(self.w1(x))*self.w2(x))
 
 class Block(nn.Module):
     def __init__(self):
         super().__init__()
-        self.ln_1 = nn.LayerNorm(DIM)
-        self.attn = GroupedQueryAttention()
-        self.ln_2 = nn.LayerNorm(DIM)
-        self.mlp = SwiGLU()
+        self.ln_1, self.attn, self.ln_2, self.mlp = nn.LayerNorm(DIM), GroupedQueryAttention(), nn.LayerNorm(DIM), SwiGLU()
     def forward(self, x, cos, sin, use_chunked=True):
         x = x + self.attn(self.ln_1(x), cos, sin, use_chunked)
         return x + self.mlp(self.ln_2(x))
 
 class EngramMemory(nn.Module):
-    def __init__(self, backend_name, device):
+    def __init__(self, bn, device):
         super().__init__()
         self.device = device
         self.table = nn.Embedding(ENG_NUM_BUCKETS, DIM, sparse=True).to('cpu')
         nn.init.normal_(self.table.weight, mean=0.0, std=0.02)
         self.use_async = device.type in ('cuda',) and torch.cuda.is_available()
-        self.transfer_stream = torch.cuda.Stream(device=device) if self.use_async else None
-
+        self.ts = torch.cuda.Stream(device=device) if self.use_async else None
     def forward(self, idx):
-        prev_x = torch.cat([torch.zeros_like(idx[:, :1]), idx[:, :-1]], dim=1)
-        hash_idx = (prev_x * 1000003 + idx) % ENG_NUM_BUCKETS
-        unique_indices, inverse_map = torch.unique(hash_idx.flatten(), return_inverse=True)
-        unique_cpu = unique_indices.cpu()
-        cached_rows = self.table(unique_cpu)
+        px = torch.cat([torch.zeros_like(idx[:, :1]), idx[:, :-1]], dim=1)
+        hi = (px*1000003 + idx) % ENG_NUM_BUCKETS
+        uq, inv = torch.unique(hi.flatten(), return_inverse=True)
+        cr = self.table(uq.cpu())
         if self.use_async:
-            with torch.cuda.stream(self.transfer_stream):
-                cached_rows_gpu = cached_rows.to(self.device, non_blocking=True)
-            torch.cuda.current_stream(self.device).wait_stream(self.transfer_stream)
-        else:
-            cached_rows_gpu = cached_rows.to(self.device)
-        B, T = idx.shape
-        return cached_rows_gpu[inverse_map].view(B, T, DIM)
+            with torch.cuda.stream(self.ts): cg = cr.to(self.device, non_blocking=True)
+            torch.cuda.current_stream(self.device).wait_stream(self.ts)
+        else: cg = cr.to(self.device)
+        return cg[inv].view(idx.shape[0], idx.shape[1], DIM)
 
 class SotaGPT(nn.Module):
-    def __init__(self, backend_name, device):
+    def __init__(self, bn, device):
         super().__init__()
         self.wte = nn.Embedding(VOCAB_SIZE, DIM)
-        self.engram = EngramMemory(backend_name, device)
+        self.engram = EngramMemory(bn, device)
         self.blocks = nn.ModuleList([Block() for _ in range(N_LAYERS)])
         self.ln_f = nn.LayerNorm(DIM)
         self.lm_head = nn.Linear(DIM, VOCAB_SIZE, bias=False)
         if MODEL_CONFIG["weightTying"]: self.wte.weight = self.lm_head.weight
         cm, sm = precompute_freqs(HEAD_DIM, MAX_SEQ_LEN, device)
-        self.register_buffer("freqs_cos", cm)
-        self.register_buffer("freqs_sin", sm)
-
+        self.register_buffer("freqs_cos", cm); self.register_buffer("freqs_sin", sm)
     def get_base_weights(self):
         return np.concatenate([p.detach().float().flatten().cpu().numpy() for n, p in self.named_parameters() if not n.startswith('engram.')])
-
     def load_base_weights(self, fw):
         ft = torch.from_numpy(fw) if not isinstance(fw, torch.Tensor) else fw
         o = 0
         for n, p in self.named_parameters():
             if not n.startswith('engram.'):
-                s = p.numel()
-                p.data.copy_(ft[o:o+s].view(p.shape).to(p.device))
-                o += s
-
-# ============ DATASET ============
-import http.client
-from requests.exceptions import ChunkedEncodingError
+                s = p.numel(); p.data.copy_(ft[o:o+s].view(p.shape).to(p.device)); o += s
 
 def _fetch_with_retry(url, headers=None, timeout=60, retries=5):
-    for attempt in range(retries):
-        if USER_STOP_EVENT.is_set(): raise KeyboardInterrupt("User stopped")
+    for a in range(retries):
         try:
-            r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
-            r.raise_for_status()
-            return r
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, ChunkedEncodingError, http.client.IncompleteRead) as e:
-            if attempt < retries - 1:
-                wait = 2 ** (attempt + 1)
-                log.warning(f"Network drop (attempt {attempt+1}/{retries}), retrying in {wait}s")
-                for _ in range(wait):
-                    if USER_STOP_EVENT.is_set(): raise KeyboardInterrupt("User stopped")
-                    time.sleep(1)
+            r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True); r.raise_for_status(); return r
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, ChunkedEncodingError, http.client.IncompleteRead):
+            if a < retries-1: time.sleep(2**(a+1))
             else: raise
 
 class StreamingShardDataset:
     STEPS_PER_SUBCHUNK = 500
-    def __init__(self, repo_id, chunk_idx, sub_size=10*1024*1024, tps=65, slot=0, auth_token=None):
-        self.repo_id, self.ci, self.sub_size, self.tps, self.auth_token = repo_id, chunk_idx, sub_size, tps, auth_token
-        self._name_fmt = "chunk_{:04d}.bin"
-        self.chunk_size = self._discover_chunk_size(chunk_idx)
-        self.off = (slot * sub_size) % self.chunk_size
+    def __init__(self, repo_id, ci, ss=10*1024*1024, tps=65, slot=0, at=None):
+        self.repo_id, self.ci, self.sub_size, self.tps, self.auth_token = repo_id, ci, ss, tps, at
+        self._fmt = "chunk_{:04d}.bin"
+        self.chunk_size = self._discover(ci)
+        self.off = (slot*ss) % self.chunk_size
         self.data, self.n, self.steps_used = None, 0, 0
-        self._pf_thread, self._pf_result, self._lock = None, None, threading.Lock()
-        self._load_subchunk(self.off)
-        self._start_prefetch(self.off + self.sub_size)
-
-    def _chunk_url(self):
-        return f"https://huggingface.co/datasets/{self.repo_id}/resolve/main/chunks/" + self._name_fmt.format(self.ci)
-
-    def _discover_chunk_size(self, idx):
+        self._pft, self._pfr, self._lock = None, None, threading.Lock()
+        self._load(self.off); self._prefetch(self.off+ss)
+    def _url(self): return f"https://huggingface.co/datasets/{self.repo_id}/resolve/main/chunks/" + self._fmt.format(self.ci)
+    def _discover(self, idx):
         for fmt in ("chunk_{:04d}.bin", "chunk_{:d}.bin"):
             url = f"https://huggingface.co/datasets/{self.repo_id}/resolve/main/chunks/" + fmt.format(idx)
             for _ in range(2):
-                if USER_STOP_EVENT.is_set(): raise KeyboardInterrupt("User stopped")
                 try:
                     r = requests.head(url, allow_redirects=True, timeout=30)
                     if r.status_code == 200:
-                        size = int(r.headers.get('content-length', 0))
-                        if size > 0:
-                            self._name_fmt = fmt
-                            return size
-                except Exception: time.sleep(1)
-        raise RuntimeError(f"Could not find chunk {idx}")
-
-    def _fetch_slice(self, off):
-        end = min(off + self.sub_size, self.chunk_size) - 1
-        return _fetch_with_retry(self._chunk_url(), headers={'Range': f'bytes={off}-{end}'}, timeout=120).content
-
-    def _set_data(self, raw):
-        tk = np.frombuffer(raw, dtype=np.uint32)
-        self.data, self.n, self.steps_used = tk, len(tk) // self.tps, 0
-
-    def _load_subchunk(self, off):
-        self._set_data(self._fetch_slice(off))
-        self.off = off
-
-    def _start_prefetch(self, off):
+                        sz = int(r.headers.get('content-length', 0))
+                        if sz > 0: self._fmt = fmt; return sz
+                except: time.sleep(1)
+        raise RuntimeError(f"No chunk {idx}")
+    def _slice(self, off):
+        end = min(off+self.sub_size, self.chunk_size)-1
+        return _fetch_with_retry(self._url(), headers={'Range': f'bytes={off}-{end}'}, timeout=120).content
+    def _set(self, raw):
+        tk = np.frombuffer(raw, dtype=np.uint32); self.data, self.n, self.steps_used = tk, len(tk)//self.tps, 0
+    def _load(self, off): self._set(self._slice(off)); self.off = off
+    def _prefetch(self, off):
         if off >= self.chunk_size: return
-        with self._lock: self._pf_result = None
-        def worker():
+        with self._lock: self._pfr = None
+        def w():
             try:
-                raw = self._fetch_slice(off)
-                with self._lock: self._pf_result = (off, raw)
-            except Exception:
-                with self._lock: self._pf_result = None
-        self._pf_thread = threading.Thread(target=worker, daemon=True)
-        self._pf_thread.start()
-
-    def needs_new_subchunk(self):
-        return self.n == 0 or self.steps_used >= self.STEPS_PER_SUBCHUNK
-
-    def advance(self, server_url=None, fmt="bf16"):
-        next_off = self.off + self.sub_size
-        if next_off < self.chunk_size:
-            if self._pf_thread: self._pf_thread.join(timeout=120); self._pf_thread = None
-            with self._lock: res = self._pf_result; self._pf_result = None
-            if res and res[0] == next_off:
-                self.off = next_off; self._set_data(res[1])
-            else: self._load_subchunk(next_off)
-            self._start_prefetch(next_off + self.sub_size)
-            return True
-        self.request_new_chunk(server_url, fmt)
-        self.chunk_size = self._discover_chunk_size(self.ci)
-        self.off = 0
-        self._load_subchunk(0)
-        self._start_prefetch(self.sub_size)
-        return True
-
-    def request_new_chunk(self, server_url, fmt="bf16"):
-        if not server_url: return False
+                r = self._slice(off)
+                with self._lock: self._pfr = (off, r)
+            except: pass
+        self._pft = threading.Thread(target=w, daemon=True); self._pft.start()
+    def needs_new_subchunk(self): return self.n == 0 or self.steps_used >= self.STEPS_PER_SUBCHUNK
+    def advance(self, srv=None, fmt="bf16"):
+        no = self.off+self.sub_size
+        if no < self.chunk_size:
+            if self._pft: self._pft.join(timeout=120); self._pft = None
+            with self._lock: r = self._pfr; self._pfr = None
+            if r and r[0] == no: self.off = no; self._set(r[1])
+            else: self._load(no)
+            self._prefetch(no+self.sub_size); return True
+        self._req(srv, fmt)
+        self.chunk_size = self._discover(self.ci); self.off = 0
+        self._load(0); self._prefetch(self.sub_size); return True
+    def _req(self, srv, fmt="bf16"):
+        if not srv: return False
         try:
-            headers = {"Authorization": f"Bearer {self.auth_token}"} if self.auth_token else {}
-            r = requests.get(f"{server_url}/fl/task?format={fmt}&skip_weights=true", headers=headers, timeout=30)
+            h = {"Authorization": f"Bearer {self.auth_token}"} if self.auth_token else {}
+            r = requests.get(f"{srv}/fl/task?format={fmt}&skip_weights=true", headers=h, timeout=30)
             if r.status_code == 200:
-                raw = r.content
-                ml = struct.unpack('<I', raw[:4])[0]
-                new_idx = json.loads(raw[4:4+ml].decode()).get("datasetConfig", {}).get("chunkIdx", self.ci)
-                if new_idx != self.ci: self.ci = new_idx
-                return True
-        except Exception: pass
+                raw = r.content; ml = struct.unpack('<I', raw[:4])[0]
+                ni = json.loads(raw[4:4+ml].decode()).get("datasetConfig", {}).get("chunkIdx", self.ci)
+                if ni != self.ci: self.ci = ni; return True
+        except: pass
         return False
-
     def get_batch(self, bs, seed=None):
         if self.data is None or self.n == 0: self.advance()
         self.steps_used += 1
         rng = np.random.RandomState(seed)
-        starts = rng.randint(0, self.n, size=bs) * self.tps
-        inp = np.stack([self.data[s:s+self.tps-1] for s in starts])
-        tgt = np.stack([self.data[s+1:s+self.tps] for s in starts])
+        s = rng.randint(0, self.n, size=bs)*self.tps
+        inp = np.stack([self.data[x:x+self.tps-1] for x in s])
+        tgt = np.stack([self.data[x+1:x+self.tps] for x in s])
         return torch.tensor(inp, dtype=torch.long), torch.tensor(tgt, dtype=torch.long)
 
-# ============ WEIGHTS ============
 def decompress_weights(raw, fmt="bf16"):
     if fmt == "fp16": return np.frombuffer(raw, dtype=np.uint16).view(np.float16).astype(np.float32)
     return torch.from_numpy(np.frombuffer(raw, dtype=np.uint16).copy()).view(torch.bfloat16).to(torch.float32).numpy()
 
-# ============ AUTH ============
-def authenticate(server_url, username, password):
-    if not username or not password: return None
+def do_login(srv, u, p):
     try:
-        r = requests.post(f"{server_url}/auth/login", json={"username": username, "password": password}, timeout=30)
-        if r.status_code == 200: return r.json().get("token")
-        log.warning(f"Login failed ({r.status_code}): {r.text[:200]}")
-    except Exception as e:
-        log.error(f"Login request error: {e}")
-        return None
+        r = requests.post(f"{srv}/auth/login", json={"username": u, "password": p}, timeout=30)
+        if r.status_code == 200: return r.json().get("token"), None
+        try: msg = r.json().get("detail", "")
+        except: msg = r.text
+        if "invalid" in msg.lower() or "credentials" in msg.lower(): return None, "invalid_credentials"
+        return None, "login_failed"
+    except requests.exceptions.ConnectionError: return None, "network"
+    except: return None, "network"
+
+def do_register(srv, u, email, p):
     try:
-        r = requests.post(f"{server_url}/auth/register", json={"username": username, "password": password, "email": f"{username}@crowdgpt.local"}, timeout=30)
-        if r.status_code == 200: return r.json().get("token")
-        log.warning(f"Register failed ({r.status_code}): {r.text[:200]}")
-    except Exception as e:
-        log.error(f"Register request error: {e}")
-    return None
+        r = requests.post(f"{srv}/auth/register", json={"username": u, "password": p, "email": email}, timeout=30)
+        if r.status_code == 200: return r.json().get("token"), None
+        try: msg = r.json().get("detail", "")
+        except: msg = r.text
+        msg_l = msg.lower()
+        if "username" in msg_l and "taken" in msg_l: return None, "username_taken"
+        if "email" in msg_l and "registered" in msg_l: return None, "email_taken"
+        if "password" in msg_l: return None, "weak_password"
+        if "invalid" in msg_l: return None, "invalid_input"
+        return None, "register_failed"
+    except requests.exceptions.ConnectionError: return None, "network"
+    except: return None, "network"
 
-# ============ DASHBOARD ============
-def create_dashboard(step, target_steps, loss, tps, lr, global_step, backend_name, batch_size, seq_len, current_round, time_remaining_min, accum_steps=1, tokens_per_opt_step=None):
-    table = Table(title=f"Round {current_round} Training", expand=True, border_style="dim")
-    table.add_column("Metric", style="bold"); table.add_column("Value", justify="right")
-    table.add_row("Progress", f"{step}/{target_steps} ({step/max(1,target_steps)*100:.1f}%)")
-    table.add_row("Loss", f"{loss:.4f}" if loss > 0 else "—")
-    table.add_row("Tokens/s", f"{tps:.0f}" if tps else "—")
-    table.add_row("LR", f"{lr:.2e}" if lr else "—")
-    table.add_row("Global Step", str(global_step))
-    table.add_row("Round", str(current_round))
-    table.add_row("Time Left", f"{time_remaining_min:.0f} min")
-    table.add_row("Backend", backend_name)
-    table.add_row("Batch / SeqLen", f"{batch_size} / {seq_len}")
-    if accum_steps > 1:
-        table.add_row("Grad Accum", f"{accum_steps}x (~{tokens_per_opt_step:,} tok/opt-step)")
-    return table
-
-# ============ HEARTBEAT ============
 class HeartbeatManager:
-    def __init__(self, server_url, headers, current_round):
-        self.server_url, self.headers, self.current_round = server_url, headers, current_round
-        self.stop_training = threading.Event()
-        self.shutdown = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-
-    def start(self): self._thread.start()
+    def __init__(self, srv, h, cr, se, emit):
+        self.srv, self.h, self.cr = srv, h, cr
+        self.stop_training = threading.Event(); self.shutdown = threading.Event()
+        self.se, self.emit = se, emit
+        self._t = threading.Thread(target=self._r, daemon=True)
+    def start(self): self._t.start()
     def stop(self): self.shutdown.set()
     def should_stop(self): return self.stop_training.is_set()
-
-    def _run(self):
-        while not self.shutdown.is_set():
+    def _r(self):
+        while not self.shutdown.is_set() and not self.se.is_set():
             try:
-                requests.get(f"{self.server_url}/fl/heartbeat", headers=self.headers, timeout=10)
-                r = requests.get(f"{self.server_url}/fl/round_status", headers=self.headers, timeout=10)
+                requests.get(f"{self.srv}/fl/heartbeat", headers=self.h, timeout=10)
+                r = requests.get(f"{self.srv}/fl/round_status", headers=self.h, timeout=10)
                 if r.status_code == 200:
-                    status = r.json()
-                    if status.get("current_round", self.current_round) != self.current_round:
-                        log.warning("Server moved to next round. Stopping!")
-                        self.stop_training.set()
-                    remaining_min = (status.get("max_round_hours", 2) - status.get("round_elapsed_hours", 0)) * 60
-                    if remaining_min <= 3:
-                        log.warning(f"ULTIMATUM: {remaining_min:.0f} min left! Submitting NOW.")
-                        self.stop_training.set()
-            except Exception: pass
+                    st = r.json()
+                    if st.get("current_round", self.cr) != self.cr:
+                        self.emit('log', "Next round. Stopping."); self.stop_training.set()
+                    rm = (st.get("max_round_hours", 2) - st.get("round_elapsed_hours", 0))*60
+                    if rm <= 3:
+                        self.emit('log', f"ULTIMATUM: {rm:.0f} min left!"); self.stop_training.set()
+            except: pass
             self.shutdown.wait(timeout=15)
 
-# ============ MAIN TRAINING ============
-def wait_for_round(server_url, headers):
-    while not USER_STOP_EVENT.is_set():
+def wait_for_round(srv, h, se, emit):
+    overlay_on = False
+    def show_wait():
+        nonlocal overlay_on
+        if not overlay_on:
+            emit('overlay_show', {'title_key': 'wait_coord', 'subtitle_key': 'wait_coord_sub', 'indeterminate': True}); overlay_on = True
+    def hide():
+        nonlocal overlay_on
+        if overlay_on:
+            emit('overlay_hide', {}); overlay_on = False
+    while not se.is_set():
         try:
-            r = requests.get(f"{server_url}/fl/round_status", headers=headers, timeout=30)
+            r = requests.get(f"{srv}/fl/round_status", headers=h, timeout=30)
             if r.status_code == 200:
-                status = r.json()
-                if status.get("is_aggregating"):
-                    log.info("⏳ Server is aggregating and uploading to HF. Waiting 30s...")
+                st = r.json()
+                if st.get("is_aggregating"):
+                    emit('status', 'waiting'); show_wait()
                     for _ in range(30):
-                        if USER_STOP_EVENT.is_set(): return None
+                        if se.is_set(): hide(); return None
                         time.sleep(1)
                     continue
-                if not status.get("in_cooldown", False):
-                    return status
-                log.info("Server in cooldown. Waiting 30s...")
+                if not st.get("in_cooldown", False):
+                    hide(); return st
+                emit('status', 'waiting'); show_wait()
                 for _ in range(30):
-                    if USER_STOP_EVENT.is_set(): return None
+                    if se.is_set(): hide(); return None
                     time.sleep(1)
-            else: 
-                for _ in range(10):
-                    if USER_STOP_EVENT.is_set(): return None
-                    time.sleep(1)
-        except Exception: 
-            for _ in range(10):
-                if USER_STOP_EVENT.is_set(): return None
-                time.sleep(1)
-    return None
+            else: time.sleep(10)
+        except: time.sleep(10)
+    hide(); return None
 
-def fetch_task_and_weights(server_url, headers, precision, hb=None):
-    while not USER_STOP_EVENT.is_set():
-        if hb and hb.should_stop():
-            return None, None
+def fetch_task(srv, h, prec, se, emit):
+    while not se.is_set():
         try:
-            r = requests.get(f"{server_url}/fl/task?format={precision}", headers=headers, timeout=(15, 3600))
+            emit('status', 'downloading')
+            emit('overlay_show', {'title_key': 'dl_weights', 'indeterminate': False})
+            r = requests.get(f"{srv}/fl/task?format={prec}", headers=h, timeout=(15, 3600), stream=True)
             if r.headers.get("X-Status") == "wait":
-                log.info("⏳ Server says wait (aggregating or cooldown)")
+                r.close(); emit('overlay_hide', {})
                 for _ in range(10):
-                    if USER_STOP_EVENT.is_set(): return None, None
+                    if se.is_set(): return None, None
                     time.sleep(1)
                 continue
-            raw = r.content
+            cl_total = int(r.headers.get('content-length', 0) or 0)
+            total = cl_total if cl_total > 0 else EXPECTED_WEIGHT_BYTES
+            chunks = []; done = 0; last = 0.0
+            for chunk in r.iter_content(chunk_size=512*1024):
+                if not chunk: continue
+                chunks.append(chunk); done += len(chunk)
+                now = time.time()
+                if now - last > 0.25:
+                    emit('overlay_progress', {'done': done, 'total': total}); last = now
+            r.close()
+            emit('overlay_progress', {'done': done, 'total': total})
+            emit('overlay_hide', {})
+            emit('status', 'preparing')
+            raw = b"".join(chunks); del chunks
             ml = struct.unpack('<I', raw[:4])[0]
-            metadata = json.loads(raw[4:4+ml].decode())
-            weights_bytes = raw[4+ml:]
-            return metadata, weights_bytes
+            return json.loads(raw[4:4+ml].decode()), raw[4+ml:]
         except Exception as e:
-            if hb and hb.should_stop(): return None, None
-            log.error(f"Task fetch failed: {e}")
-            for _ in range(15):
-                if USER_STOP_EVENT.is_set(): return None, None
-                time.sleep(1)
+            emit('overlay_hide', {})
+            if se.is_set(): return None, None
+            emit('log', f"Task fetch failed: {e}"); time.sleep(15)
 
-def _chunk_ce(model, x_slice, y_slice):
-    logits = model.lm_head(x_slice)
-    return F.cross_entropy(logits.reshape(-1, VOCAB_SIZE), y_slice.reshape(-1))
+def _chunk_ce(m, xs, ys): return F.cross_entropy(m.lm_head(xs).reshape(-1, VOCAB_SIZE), ys.reshape(-1))
 
-def _forward_and_loss(model, x, y, seq_len, use_autocast, autocast_dtype, loss_scale=1.0):
+def _fwl(m, x, y, sl, ua, ad, ls=1.0):
     def fwd():
-        x_emb = model.wte(x)
-        if use_autocast:
-            with torch.autocast(device_type='cuda', enabled=False): eng_out = model.engram(x)
-        else: eng_out = model.engram(x)
-        x_emb = x_emb + eng_out.to(x_emb.dtype)
-        for b in model.blocks:
-            x_emb = checkpoint(b, x_emb, model.freqs_cos, model.freqs_sin, True, use_reentrant=False)
-        return model.ln_f(x_emb)
-
-    n_chunks = max(1, math.ceil(seq_len / LOSS_CHUNK))
-    if use_autocast:
-        with torch.autocast(device_type='cuda', dtype=autocast_dtype):
-            x_emb = fwd()
-            loss = sum(checkpoint(_chunk_ce, model, x_emb[:, i:i+LOSS_CHUNK, :], y[:, i:i+LOSS_CHUNK],
-                                  use_reentrant=False) for i in range(0, seq_len, LOSS_CHUNK)) / n_chunks
+        xe = m.wte(x)
+        if ua:
+            with torch.autocast(device_type='cuda', enabled=False): eo = m.engram(x)
+        else: eo = m.engram(x)
+        xe = xe + eo.to(xe.dtype)
+        for b in m.blocks: xe = checkpoint(b, xe, m.freqs_cos, m.freqs_sin, True, use_reentrant=False)
+        return m.ln_f(xe)
+    nc = max(1, math.ceil(sl/LOSS_CHUNK))
+    if ua:
+        with torch.autocast(device_type='cuda', dtype=ad):
+            xe = fwd()
+            lo = sum(checkpoint(_chunk_ce, m, xe[:, i:i+LOSS_CHUNK, :], y[:, i:i+LOSS_CHUNK], use_reentrant=False) for i in range(0, sl, LOSS_CHUNK))/nc
     else:
-        x_emb = fwd()
-        loss = sum(checkpoint(_chunk_ce, model, x_emb[:, i:i+LOSS_CHUNK, :], y[:, i:i+LOSS_CHUNK],
-                              use_reentrant=False) for i in range(0, seq_len, LOSS_CHUNK)) / n_chunks
-    return loss * loss_scale
+        xe = fwd()
+        lo = sum(checkpoint(_chunk_ce, m, xe[:, i:i+LOSS_CHUNK, :], y[:, i:i+LOSS_CHUNK], use_reentrant=False) for i in range(0, sl, LOSS_CHUNK))/nc
+    return lo*ls
 
-def run_single_round(args, auth_token=None):
+def run_single_round(srv, at, se, emit):
     global train_device, train_backend
-    headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
-
-    if USER_STOP_EVENT.is_set(): return False
-
-    log.info("Checking round status...")
-    round_status = wait_for_round(args.server, headers)
-    if not round_status or USER_STOP_EVENT.is_set(): return False
-    current_round = round_status["current_round"]
-
-    hb = HeartbeatManager(args.server, headers, current_round)
-    hb.start()
-
+    h = {"Authorization": f"Bearer {at}"} if at else {}
+    emit('status', 'waiting')
+    rs = wait_for_round(srv, h, se, emit)
+    if not rs: return
+    cr = rs["current_round"]
+    hb = HeartbeatManager(srv, h, cr, se, emit); hb.start()
     try:
-        log.info("Downloading fresh weights...")
-        metadata, weights_bytes = fetch_task_and_weights(args.server, headers, args.precision, hb=hb)
-        if metadata is None:
-            log.warning("⚠️ Round ended during task fetch. Restarting cycle.")
-            return False
-
-        task_id = metadata['taskId']
-        global_step = metadata['globalStep']
-        weight_format = metadata.get('weightFormat', 'bf16')
-        seq_len = args.seq_len if args.seq_len > 0 else 2048
-
-        if hb.should_stop() or USER_STOP_EVENT.is_set():
-            log.warning("⚠️ Round ended during weight download. Restarting cycle.")
-            return False
-
-        try:
-            rs = requests.get(f"{args.server}/fl/round_status", headers=headers, timeout=15)
-            if rs.status_code == 200:
-                fresh = rs.json()
-                remaining_hours = max(0.05, fresh.get("max_round_hours", 2.0) - fresh.get("round_elapsed_hours", 0))
-                log.info(f"Round timer re-synced: {remaining_hours*60:.0f} min remaining")
-        except Exception:
-            remaining_hours = max(0.1, round_status.get("max_round_hours", 2.0) - round_status.get("round_elapsed_hours", 0))
-
-        bytes_per_param = 2 if weight_format in ("bf16", "fp16") else 4
-        base_bytes_len = EXPECTED_MODEL_SIZE * bytes_per_param
-        initial_weights = decompress_weights(weights_bytes[:base_bytes_len], weight_format)
-        initial_engram_weights = decompress_weights(weights_bytes[base_bytes_len:], weight_format)
-        del weights_bytes; gc.collect()
-
-        ds_cfg = metadata.get("datasetConfig", {})
-        shard_cfg = metadata.get("shardConfig", {})
-        dataset_shard = StreamingShardDataset(
-            ds_cfg.get("repoId", DATASET_REPO_ID), ds_cfg.get("chunkIdx", 0),
-            ds_cfg.get("subChunkSize", 10*1024*1024), ds_cfg.get("tokensPerSample", seq_len+1),
-            shard_cfg.get("slot", 0), auth_token)
-
-        batch_size = args.batch_size if args.batch_size > 0 else recommend_batch_size(seq_len)
-
-        while batch_size >= 1:
+        emit('log', "Downloading weights...")
+        md, wb = fetch_task(srv, h, "bf16", se, emit)
+        if md is None: return
+        
+        emit('status', 'preparing')
+        emit('log', "Preparing model...")
+        
+        tid, gs = md['taskId'], md['globalStep']
+        sl = 2048
+        bbl = EXPECTED_MODEL_SIZE*2
+        iw = decompress_weights(wb[:bbl], "bf16"); ie = decompress_weights(wb[bbl:], "bf16")
+        del wb; gc.collect()
+        dc = md.get("datasetConfig", {}); sc = md.get("shardConfig", {})
+        ds = StreamingShardDataset(dc.get("repoId", DATASET_REPO_ID), dc.get("chunkIdx", 0),
+            dc.get("subChunkSize", 10*1024*1024), dc.get("tokensPerSample", sl+1), sc.get("slot", 0), at)
+        bs = recommend_batch_size(sl)
+        model = None
+        while bs >= 1:
             try:
                 if train_backend in ("CUDA", "ROCM"):
                     try: torch.cuda.empty_cache()
                     except: pass
                 gc.collect()
-                log.info(f"Initializing model with BS={batch_size}...")
                 model = SotaGPT(train_backend, train_device).to(train_device)
-                model.engram.table.to('cpu')
-                model.load_base_weights(initial_weights)
-                ft_eng = torch.from_numpy(initial_engram_weights)
-                model.engram.table.weight.data.copy_(ft_eng.view(model.engram.table.weight.shape))
-                model.train()
-                break
+                model.engram.table.to('cpu'); model.load_base_weights(iw)
+                model.engram.table.weight.data.copy_(torch.from_numpy(ie).view(model.engram.table.weight.shape))
+                model.train(); break
             except RuntimeError as e:
                 if "out of memory" in str(e).lower():
-                    log.warning(f"CUDA OOM at BS={batch_size}. Halving batch size...")
-                    if 'model' in locals(): del model
+                    if model: del model; model = None
                     if train_backend in ("CUDA", "ROCM"):
                         try: torch.cuda.empty_cache()
                         except: pass
-                    gc.collect()
-                    batch_size = max(1, batch_size // 2)
-                else:
-                    raise
-
-        micro_batch_tokens = batch_size * seq_len
-        accum_steps = max(1, round(args.tokens_per_step / micro_batch_tokens))
-        loss_scale = 1.0 / accum_steps
-
-        def halve_accum():
-            nonlocal accum_steps, loss_scale
-            accum_steps = max(1, accum_steps // 2)
-            loss_scale = 1.0 / accum_steps
-            optimizer_base.zero_grad(set_to_none=True)
-            gc.collect()
+                    gc.collect(); bs = max(1, bs//2)
+                else: raise
+        mbt = bs*sl; as_ = max(1, round(131072/mbt)); ls = 1.0/as_
+        def ha():
+            nonlocal as_, ls
+            as_ = max(1, as_//2); ls = 1.0/as_
+            ob.zero_grad(set_to_none=True); gc.collect()
             if train_backend in ("CUDA", "ROCM"):
                 try: torch.cuda.empty_cache()
                 except: pass
-            log.warning(f"⚠️ OOM in accumulation window -> accum now {accum_steps}x "
-                        f"({accum_steps * micro_batch_tokens:,} tok/opt-step)"
-                        + (" [vanilla mode]" if accum_steps == 1 else ""))
-
-        base_params = [p for n, p in model.named_parameters() if not n.startswith('engram.')]
-        engram_params = list(model.engram.parameters())
-
+            emit('log', f"OOM -> accum now {as_}x")
+        bp = [p for n, p in model.named_parameters() if not n.startswith('engram.')]
+        ep = list(model.engram.parameters())
         try:
             import bitsandbytes as bnb
-            optimizer_base = bnb.optim.AdamW8bit(base_params, lr=args.lr, betas=(0.9, 0.95), weight_decay=0.01)
-        except ImportError:
-            optimizer_base = torch.optim.AdamW(base_params, lr=args.lr, betas=(0.9, 0.95), weight_decay=0.01)
-        try:
-            optimizer_engram = torch.optim.SparseAdam(engram_params, lr=args.lr)
-        except Exception:
-            optimizer_engram = torch.optim.AdamW(engram_params, lr=args.lr, weight_decay=0.01)
-
-        initial_engram_weights = model.engram.table.weight.data.cpu().clone()
-        use_autocast = args.precision == "bf16" and train_backend in ("CUDA", "ROCM") and torch.cuda.is_bf16_supported()
-        autocast_dtype = torch.bfloat16 if use_autocast else None
-
-        log.info(f"Grad accumulation: {accum_steps}x micro-batches = {accum_steps * micro_batch_tokens:,} tok/opt-step")
-
-        log.info(f"Calibrating TPS ({CALIBRATION_STEPS} opt-steps, BS={batch_size}, accum={accum_steps})...")
-        total_tok = 0
-        cal_start = time.time()
-        ci = 0
-        while ci < CALIBRATION_STEPS:
-            if hb.should_stop() or USER_STOP_EVENT.is_set():
-                log.warning("⚠️ Stopped during calibration.")
-                return False
-            optimizer_base.zero_grad(set_to_none=True)
+            ob = bnb.optim.AdamW8bit(bp, lr=1e-4, betas=(0.9, 0.95), weight_decay=0.01)
+        except: ob = torch.optim.AdamW(bp, lr=1e-4, betas=(0.9, 0.95), weight_decay=0.01)
+        try: oe = torch.optim.SparseAdam(ep, lr=1e-4)
+        except: oe = torch.optim.AdamW(ep, lr=1e-4, weight_decay=0.01)
+        iew = model.engram.table.weight.data.cpu().clone()
+        ua = train_backend in ("CUDA", "ROCM") and torch.cuda.is_bf16_supported()
+        ad = torch.bfloat16 if ua else None
+        emit('log', "Calibrating speed...")
+        tt = 0; cs_ = time.time()
+        micro_step = 0
+        cal_global_steps = 3
+        target_micro_steps = 100
+        emit('status', 'calibrating')
+        cal_done = 0
+        while cal_done < cal_global_steps:
+            if hb.should_stop() or se.is_set(): return
+            ob.zero_grad(set_to_none=True)
             try:
-                accum_loss_sum = 0.0
-                for mi in range(accum_steps):
-                    if dataset_shard.needs_new_subchunk(): dataset_shard.advance(args.server, args.precision)
-                    seed = (hash("cal") % 10000) + ci * 1000 + mi
-                    x, y = dataset_shard.get_batch(batch_size, seed=seed)
-                    x, y = x.to(train_device), y.to(train_device)
-                    loss = _forward_and_loss(model, x, y, seq_len, use_autocast, autocast_dtype, loss_scale)
-                    loss.backward()
-                    optimizer_engram.step()
-                    optimizer_engram.zero_grad(set_to_none=True)
-                    accum_loss_sum += float(loss.item()) * accum_steps
-                    total_tok += x.numel()
-                    del loss, x, y
+                for mi in range(as_):
+                    if ds.needs_new_subchunk(): ds.advance(srv, "bf16")
+                    sd = (hash("cal") % 10000) + cal_done*1000 + mi
+                    x, y = ds.get_batch(bs, seed=sd); x, y = x.to(train_device), y.to(train_device)
+                    lo = _fwl(model, x, y, sl, ua, ad, ls)
+                    lval = float(lo.item())
+                    micro_step += 1
+                    if cal_done >= 1 and mi == 0:
+                        elapsed = time.time() - cs_
+                        sps_micro = elapsed / micro_step
+                        rh = max(0.1, rs.get("max_round_hours", 2.0) - rs.get("round_elapsed_hours", 0))
+                        remaining = max(60, (rh*3600) - elapsed - (UPLOAD_BUFFER_MIN*60))
+                        target_micro_steps = max(micro_step + 100, int(remaining / sps_micro))
+                    
+                    elapsed_cal = time.time() - cs_
+                    current_tps = tt / max(elapsed_cal, 1.0)
+                    
+                    emit('cal_stats', {
+                        'step': micro_step, 'total': target_micro_steps,
+                        'loss': lval * as_, 'microbatch': micro_step,
+                        'tps': current_tps
+                    })
+                    lo.backward()
+                    oe.step(); oe.zero_grad(set_to_none=True)
+                    tt += x.numel(); del lo, x, y
             except RuntimeError as e:
                 if "out of memory" not in str(e).lower(): raise
-                halve_accum()
-                continue
-            torch.nn.utils.clip_grad_norm_(base_params, 1.0)
-            optimizer_base.step()
-            optimizer_base.zero_grad(set_to_none=True)
+                ha(); continue
+            torch.nn.utils.clip_grad_norm_(bp, 1.0); ob.step(); ob.zero_grad(set_to_none=True)
             gc.collect()
-            ci += 1
-
-        cal_elapsed = time.time() - cal_start
-        measured_tps = total_tok / cal_elapsed
-        seconds_per_step = cal_elapsed / CALIBRATION_STEPS
-        effective_sps = seconds_per_step / TPS_DEGRADATION
-        log.info(f"TPS: {measured_tps:.0f} | {seconds_per_step:.3f}s/opt-step (effective: {effective_sps:.3f}s)")
-
-        dataset_advances_remaining = int((remaining_hours * 3600) / effective_sps / StreamingShardDataset.STEPS_PER_SUBCHUNK)
-        dataset_pause_total = dataset_advances_remaining * DATASET_PAUSE_PER_ADVANCE
-        training_budget_sec = max(60, (remaining_hours * 3600) - cal_elapsed - (UPLOAD_BUFFER_MIN * 60) - dataset_pause_total)
-
-        target_steps = max(50, min(int(training_budget_sec / effective_sps), 500_000))
-        estimated_train_min = (target_steps * effective_sps) / 60
-        log.info(f"Budget: {training_budget_sec/60:.0f} min | Target: {target_steps} opt-steps "
-                  f"(~{estimated_train_min:.0f} min, ~{target_steps * accum_steps * micro_batch_tokens:,} tokens)")
-
-        step = CALIBRATION_STEPS
-        train_start = time.time()
-        deadline = train_start + training_budget_sec
-        loss_history = []
-
-        with Live(create_dashboard(step, target_steps + CALIBRATION_STEPS, 0, measured_tps, args.lr, global_step,
-                                   train_backend, batch_size, seq_len, current_round, estimated_train_min,
-                                   accum_steps, accum_steps * micro_batch_tokens),
-                  console=console, refresh_per_second=2, screen=False) as live:
-
-            while step < target_steps + CALIBRATION_STEPS:
-                if hb.should_stop() or USER_STOP_EVENT.is_set():
-                    log.warning("Stopped by heartbeat/ultimatum/user.")
-                    break
-                if time.time() >= deadline:
-                    log.info("Time budget reached. Stopping training.")
-                    break
-
-                optimizer_base.zero_grad(set_to_none=True)
-                try:
-                    accum_loss_sum = 0.0
-                    completed = 0
-                    for mi in range(accum_steps):
-                        if hb.should_stop() or USER_STOP_EVENT.is_set() or time.time() >= deadline: break
-                        if dataset_shard.needs_new_subchunk(): dataset_shard.advance(args.server, args.precision)
-                        seed = (hash("t") % 10000) + step * 1000 + mi
-                        x, y = dataset_shard.get_batch(batch_size, seed=seed)
-                        x, y = x.to(train_device), y.to(train_device)
-                        loss = _forward_and_loss(model, x, y, seq_len, use_autocast, autocast_dtype, loss_scale)
-                        loss.backward()
-                        optimizer_engram.step()
-                        optimizer_engram.zero_grad(set_to_none=True)
-                        accum_loss_sum += float(loss.item()) * accum_steps
-                        total_tok += x.numel()
-                        completed += 1
-                        del loss, x, y
-                except RuntimeError as e:
-                    if "out of memory" not in str(e).lower(): raise
-                    halve_accum()
-                    continue
-
-                if completed == 0:
-                    optimizer_base.zero_grad(set_to_none=True)
-                    break
-
-                torch.nn.utils.clip_grad_norm_(base_params, 1.0)
-                optimizer_base.step()
-                optimizer_base.zero_grad(set_to_none=True)
-
-                lv = accum_loss_sum / completed
-                if math.isnan(lv) or lv <= 0: lv = 10.0
-                loss_history.append(lv)
-                step += 1
-
-                elapsed = time.time() - train_start
-                cur_tps = total_tok / max(elapsed + cal_elapsed, 1)
-                time_left = max(0, (deadline - time.time()) / 60)
-                live.update(create_dashboard(step, target_steps + CALIBRATION_STEPS, lv, cur_tps,
-                                             optimizer_base.param_groups[0]['lr'], global_step,
-                                             train_backend, batch_size, seq_len, current_round, time_left,
-                                             accum_steps, accum_steps * micro_batch_tokens))
-
+            cal_done += 1
+        rh = max(0.1, rs.get("max_round_hours", 2.0) - rs.get("round_elapsed_hours", 0))
+        remaining = max(60, (rh*3600) - (time.time() - cs_) - (UPLOAD_BUFFER_MIN*60))
+        dl = time.time() + remaining
+        emit('status', 'training')
+        emit('log', f"Target: ~{target_micro_steps} micro-steps")
+        last_stats_emit = 0.0
+        while micro_step < target_micro_steps:
+            if hb.should_stop() or se.is_set(): break
+            if time.time() >= dl: break
+            ob.zero_grad(set_to_none=True)
+            als = 0.0; cc = 0
+            try:
+                for mi in range(as_):
+                    if hb.should_stop() or se.is_set() or time.time() >= dl: break
+                    if ds.needs_new_subchunk(): ds.advance(srv, "bf16")
+                    sd = (hash("t") % 10000) + micro_step*1000 + mi
+                    x, y = ds.get_batch(bs, seed=sd); x, y = x.to(train_device), y.to(train_device)
+                    lo = _fwl(model, x, y, sl, ua, ad, ls)
+                    lval = float(lo.item())*as_
+                    emit('preview_loss', lval)
+                    lo.backward()
+                    oe.step(); oe.zero_grad(set_to_none=True)
+                    als += lval; tt += x.numel(); cc += 1
+                    micro_step += 1
+                    if time.time() - last_stats_emit > 0.25 or micro_step >= target_micro_steps:
+                        last_stats_emit = time.time()
+                        lv = als/cc
+                        ctps = tt/max(time.time()-cs_, 1)
+                        elapsed_total = time.time() - cs_
+                        if micro_step > 50 and elapsed_total > 30:
+                            sps_micro = elapsed_total / micro_step
+                            rem_time = max(0, dl - time.time())
+                            target_micro_steps = max(micro_step + 50, int(rem_time / sps_micro))
+                        emit('stats', {
+                            'step': micro_step, 'target': target_micro_steps, 'loss': lval, 
+                            'tps': ctps, 'global_step': gs, 'round': cr, 
+                            'time_left': max(0, (dl-time.time())/60)
+                        })
+                    del lo, x, y
+            except RuntimeError as e:
+                if "out of memory" not in str(e).lower(): raise
+                ha(); continue
+            if cc == 0: break
+            torch.nn.utils.clip_grad_norm_(bp, 1.0); ob.step(); ob.zero_grad(set_to_none=True)
     finally:
         hb.stop()
-        if 'dataset_shard' in locals() and dataset_shard is not None:
-            del dataset_shard
+        if 'ds' in locals() and ds: del ds
         gc.collect()
         if train_backend in ("CUDA", "ROCM"):
             try: torch.cuda.empty_cache()
             except: pass
-
-    actual_training_steps = step - CALIBRATION_STEPS
-    if actual_training_steps <= 0 or not loss_history:
-        log.warning("⚠️ Round ended before actual training started. Skipping upload.")
-        return False
-
-    if USER_STOP_EVENT.is_set():
-        log.info("🛑 User stopped training. Skipping upload.")
-        return False
-
-    final_loss = float(loss_history[-1]) if loss_history else 10.0
-    log.info(f"Done: {actual_training_steps} opt-steps, loss {final_loss:.4f}")
-
-    delta_base_bf16 = torch.from_numpy(model.get_base_weights() - initial_weights).to(torch.bfloat16).view(torch.uint16).numpy()
-    engram_delta = model.engram.table.weight.data.cpu() - initial_engram_weights
-
-    row_norms = engram_delta.abs().sum(dim=1)
-    k = max(1, int(len(row_norms) * 0.10))
-    topk_values, topk_indices = torch.topk(row_norms, k)
-    active_mask = topk_values > 1e-8
-    active_indices = topk_indices[active_mask]
-    sparse_indices = active_indices.cpu().numpy().astype(np.uint32) if len(active_indices) > 0 else np.array([], dtype=np.uint32)
-    sparse_values = engram_delta[active_indices].to(torch.bfloat16).view(torch.uint16).numpy() if len(active_indices) > 0 else np.array([], dtype=np.uint16)
-
-    payload = json.dumps({
-        "taskId": task_id, "loss": final_loss, "localSteps": step,
-        "tokensProcessed": total_tok, "loraRank": 0, "isDelta": True,
-        "weightFormat": "bf16", "hasEngram": True, "engramSparseCount": len(sparse_indices)
-    }).encode()
-
-    binary = struct.pack('<I', len(payload)) + payload
-    binary += np.ascontiguousarray(delta_base_bf16).tobytes()
-    binary += np.ascontiguousarray(sparse_indices).tobytes()
-    binary += np.ascontiguousarray(sparse_values).tobytes()
-
-    log.info(f"Uploading (Base: {len(delta_base_bf16)/1024/1024:.1f}MB, Engram: {len(sparse_indices)} rows)...")
-
-    from requests.adapters import HTTPAdapter
-    from urllib3.util.retry import Retry
-    session = requests.Session()
-    retries = Retry(total=5, backoff_factor=10, status_forcelist=[429, 500, 502, 503, 504], allowed_methods=["POST"])
-    session.mount('http://', HTTPAdapter(max_retries=retries))
-    session.mount('https://', HTTPAdapter(max_retries=retries))
-
+    if 'micro_step' not in locals() or micro_step <= 0: return
+    fl = float(lval) if 'lval' in locals() else 10.0
+    emit('log', f"Done: {micro_step} micro-steps, loss {fl:.4f}")
+    emit('status', 'uploading')
+    dbf = torch.from_numpy(model.get_base_weights()-iw).to(torch.bfloat16).view(torch.uint16).numpy()
+    ed = model.engram.table.weight.data.cpu()-iew
+    rn = ed.abs().sum(dim=1); k = max(1, int(len(rn)*0.10))
+    tv, ti = torch.topk(rn, k); ai = ti[tv > 1e-8]
+    si = ai.cpu().numpy().astype(np.uint32) if len(ai) else np.array([], dtype=np.uint32)
+    sv = ed[ai].to(torch.bfloat16).view(torch.uint16).numpy() if len(ai) else np.array([], dtype=np.uint16)
+    pl = json.dumps({"taskId": tid, "loss": fl, "localSteps": micro_step, "tokensProcessed": tt, "loraRank": 0, "isDelta": True, "weightFormat": "bf16", "hasEngram": True, "engramSparseCount": len(si)}).encode()
+    bi = struct.pack('<I', len(pl)) + pl + np.ascontiguousarray(dbf).tobytes() + np.ascontiguousarray(si).tobytes() + np.ascontiguousarray(sv).tobytes()
     try:
-        r = session.post(f"{args.server}/fl/submit",
-                         headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **headers},
-                         data=gzip.compress(binary, compresslevel=2), timeout=600)
-        if r.status_code == 200: 
-            log.info("✅ Submitted successfully!")
-            return True
-        else: 
-            log.error(f"Submit failed: {r.text[:300]}")
-            return False
-    except Exception as e:
-        log.error(f"Upload failed: {e}")
-        return False
-    finally:
-        if 'model' in locals(): del model
-        if 'initial_weights' in locals(): del initial_weights
-        if 'delta_base_bf16' in locals(): del delta_base_bf16
-        if 'binary' in locals(): del binary
-        gc.collect()
+        r = requests.post(f"{srv}/fl/submit", headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **h}, data=gzip.compress(bi, compresslevel=2), timeout=600)
+        emit('log', "Submitted!" if r.status_code == 200 else f"Submit failed: {r.text[:100]}")
+    except Exception as e: emit('log', f"Upload failed: {e}")
+    del model; gc.collect()
 
-def run_swarm_node(args):
-    global train_device, train_backend
-    log.info("=" * 60)
-    log.info("CrowdGPT Continuous FL Node (Auto-Relaunch Edition)")
-    log.info("Press Ctrl+C (or send SIGTERM) to stop gracefully.")
-    log.info("=" * 60)
 
-    username = args.username or os.environ.get("CROWDGPT_USERNAME")
-    password = args.password or os.environ.get("CROWDGPT_PASSWORD")
-    auth_token = None
-    if username and password:
-        auth_token = authenticate(args.server, username, password)
-        if auth_token: log.info(f"Authenticated as {username}")
-        else: log.warning("Auth failed, running anonymously.")
-    else: log.info("Running anonymously.")
+HTML = """<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#fafaf9; --bg-soft:#ffffff; --bg-softer:#f0f0ee;
+  --text:#111113; --text-dim:#3a3a40; --text-muted:#6b6b73;
+  --border:#e4e4e1; --border-strong:#d0d0cb;
+  --accent:#16a34a; --accent-dim:#15803d;
+  --err:#dc2626; --err-soft:rgba(220,38,38,.06); --err-border:rgba(220,38,38,.28);
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  --mono:'JetBrains Mono',ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --r:6px;
+}
+body.dark{
+  --bg:#1a1a1e; --bg-soft:#242428; --bg-softer:#2e2e33;
+  --text:#e8e8ec; --text-dim:#b8b8be; --text-muted:#888890;
+  --border:#3a3a40; --border-strong:#505058;
+  --accent:#22c55e; --accent-dim:#4ade80;
+  --err:#f87171; --err-soft:rgba(248,113,113,.08); --err-border:rgba(248,113,113,.35);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;width:100%}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);display:flex;flex-direction:column;overflow:hidden;font-size:14px;line-height:1.5}
+.mono{font-family:var(--mono)}
 
-    try:
-        train_device, train_backend = detect_training_backend(args.backend)
-        log.info(f"Backend: {train_backend} ({train_device})")
-    except Exception as e:
-        log.error(f"Backend error: {e}"); sys.exit(1)
+header{flex:0 0 auto;height:54px;border-bottom:1px solid var(--border);background:var(--bg);display:flex;align-items:center;justify-content:space-between;padding:0 clamp(12px,2vw,20px);gap:10px}
+.logo{display:flex;align-items:center;gap:9px;min-width:0}
+.logo-img{height:22px;width:auto}
+.logo-fallback{width:24px;height:24px;border:1px solid var(--border-strong);display:none;place-items:center;font-size:13px;font-weight:600}
+.logo-text{font-size:15px;font-weight:600;white-space:nowrap}
+.logo-ver{font-family:var(--mono);font-size:10px;color:var(--text-muted);border:1px solid var(--border);padding:1px 5px;border-radius:3px}
+.header-right{display:flex;align-items:center;gap:8px}
+#user-info{font-family:var(--mono);font-size:11px;color:var(--text-muted);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-    auto_detect_vram_budget()
-    log.info(f"VRAM Budget: {memory_config['ram_gb']:.1f} GB")
+.theme-toggle{
+  width:30px;height:30px;flex:0 0 auto;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--bg-soft);color:var(--text);
+  border:1px solid var(--border);border-radius:4px;
+  cursor:pointer;outline:none;font-size:14px;line-height:1;padding:0;
+}
+.theme-toggle:hover{border-color:var(--border-strong)}
+.theme-toggle .icon-sun{display:none}
+.theme-toggle .icon-moon{display:inline}
+body.dark .theme-toggle .icon-sun{display:inline}
+body.dark .theme-toggle .icon-moon{display:none}
 
-    round_count = 0
-    while not USER_STOP_EVENT.is_set():
-        round_count += 1
-        log.info(f"{'='*50}")
-        log.info(f"Round cycle #{round_count}")
-        log.info(f"{'='*50}")
-        
-        upload_occurred = False
-        try:
-            upload_occurred = run_single_round(args, auth_token)
-        except KeyboardInterrupt: 
-            USER_STOP_EVENT.set()
-            break
-        except Exception as e:
-            log.error(f"Round failed: {e}")
-            if not USER_STOP_EVENT.is_set():
-                log.info("Restarting cycle in 15 seconds...")
-                for _ in range(15):
-                    if USER_STOP_EVENT.is_set(): break
-                    time.sleep(1)
-            continue
-            
-        if USER_STOP_EVENT.is_set():
-            break
-            
-        if upload_occurred:
-            log.info("✅ Upload successful! Auto-relaunching next round in 10s...")
+body:not(.dashboard-active) #backend-select { display: none; }
+
+.backend-select, .lang-select{
+  font-family:var(--sans);font-size:12px;
+  background:var(--bg-soft);color:var(--text);
+  border:1px solid var(--border);
+  padding:5px 22px 5px 8px;border-radius:4px;
+  cursor:pointer;outline:none;appearance:none;-webkit-appearance:none;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'><path d='M0 0l4 5 4-5z' fill='%236b6b73'/></svg>");
+  background-repeat:no-repeat;background-position:right 7px center;background-size:8px;
+}
+body.dark .backend-select, body.dark .lang-select{
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'><path d='M0 0l4 5 4-5z' fill='%23888890'/></svg>");
+}
+.backend-select:hover, .lang-select:hover{border-color:var(--border-strong)}
+.backend-select:focus, .lang-select:focus{border-color:var(--accent)}
+.backend-select:disabled{opacity:.5;cursor:not-allowed}
+.backend-select option:disabled{color:var(--text-muted);opacity:.5}
+
+main{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:clamp(10px,2vw,18px) clamp(12px,2vw,20px)}
+.view{display:none;height:100%;min-height:0}
+.view.active{display:flex;flex-direction:column}
+
+#view-login.active{flex:1 1 auto;align-items:center;justify-content:center;padding:10px 0;min-height:0}
+.login-box{
+  width: min(380px, 100%); max-height: 100%; overflow-y: auto;
+  background: var(--bg-soft); border: 1px solid var(--border);
+  padding: clamp(14px, 2.5vw, 24px); border-radius: 8px;
+  display: flex; flex-direction: column;
+  scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent;
+}
+.login-box::-webkit-scrollbar { width: 4px; }
+.login-box::-webkit-scrollbar-track { background: transparent; }
+.login-box::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 2px; }
+
+.auth-screen{display:none;flex-direction:column;gap:0}
+.auth-screen.active{display:flex}
+
+.login-box h2{font-size:clamp(17px,3vw,21px);font-weight:600;text-align:center;margin-bottom:3px}
+.login-box h2 .em{color:var(--accent);font-weight:700}
+.login-sub{font-size:12px;color:var(--text-dim);text-align:center;margin-bottom:14px}
+.fg{margin-bottom:9px}
+.fg label{display:block;font-size:9px;color:var(--text-muted);margin-bottom:3px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.07em}
+input{width:100%;font-family:inherit;font-size:12.5px;background:var(--bg-softer);color:var(--text);border:1px solid var(--border);padding:8px 10px;border-radius:4px;outline:none;transition:border-color .15s}
+input:focus{border-color:var(--accent)}
+input.err{border-color:var(--err)}
+
+button{font-family:inherit;font-size:12.5px;font-weight:500;cursor:pointer;border-radius:4px;transition:all .15s}
+.btn-primary{background:var(--text);color:var(--bg);border:1px solid var(--text);padding:9px 14px}
+.btn-primary:hover:not(:disabled){opacity:.85}
+.btn-danger{background:transparent;color:var(--err);border:1px solid var(--err);padding:9px 14px}
+.btn-danger:hover:not(:disabled){background:var(--err);color:#fff}
+button:disabled{opacity:.4;cursor:not-allowed}
+.auth-btn{width:100%;margin-top:2px}
+
+.error-box{
+  display:none;margin-top:8px;padding:8px 10px 8px 12px;
+  background:var(--err-soft);border:1px solid var(--err-border);border-left:3px solid var(--err);
+  border-radius:4px;font-size:12px;color:var(--err);line-height:1.4;
+}
+.error-box.show{display:block}
+
+.auth-switch{margin-top:12px;font-size:12px;color:var(--text-muted);text-align:center}
+.auth-switch a{color:var(--accent-dim);font-weight:500;cursor:pointer;text-decoration:none;border-bottom:1px solid transparent;transition:border-color .15s}
+.auth-switch a:hover{border-bottom-color:var(--accent-dim)}
+
+.anon-hint{margin-top:10px;padding-top:10px;border-top:1px solid var(--border);font-size:11px;color:var(--text-muted);text-align:center;line-height:1.4}
+.anon-hint a{color:var(--text-dim);cursor:pointer;text-decoration:none;border-bottom:1px dotted var(--border-strong)}
+.anon-hint a:hover{color:var(--text);border-bottom-color:var(--text)}
+
+.dash{display:flex;flex-direction:column;gap:10px;flex:1 1 auto;min-height:0}
+.dash-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex:0 0 auto}
+.dash-title{font-size:17px;font-weight:600}
+.status-badge{font-family:var(--mono);font-size:10px;padding:3px 10px;border-radius:100px;background:rgba(22,163,74,.08);color:var(--accent-dim);border:1px solid rgba(22,163,74,.35);white-space:nowrap}
+body.dark .status-badge{background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.4)}
+
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;flex:0 0 auto}
+.stat-card{background:var(--bg-soft);border:1px solid var(--border);padding:12px 14px;border-radius:var(--r);min-width:0}
+.stat-val{font-family:var(--mono);font-size:clamp(17px,2.4vw,22px);font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stat-val.accent{color:var(--accent-dim)}
+.stat-lbl{font-size:11px;color:var(--text-muted);margin-top:2px}
+
+.panel{background:var(--bg-soft);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;flex:0 0 auto}
+.panel-head{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:8px;font-family:var(--mono);font-size:11px;color:var(--text-muted);flex-wrap:wrap}
+.panel-head .pv{color:var(--text)}
+.progress-track{height:6px;background:var(--bg-softer);border:1px solid var(--border);border-radius:3px;overflow:hidden}
+.progress-fill{height:100%;width:0%;background:var(--accent);transition:width .4s ease}
+
+#loss-graph{display:block;width:100%;height:64px}
+.graph-empty{color:var(--text-muted);font-family:var(--mono);font-size:11px;text-align:center;padding:20px 0}
+
+.status-strip{
+  flex:0 0 auto;
+  font-family:var(--mono);font-size:11px;color:var(--text-muted);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  padding: 4px 0;
+}
+.ss-event{display:block;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.controls{flex:0 0 auto;display:flex;gap:8px;justify-content:flex-end;align-items:center;flex-wrap:wrap}
+
+.overlay{position:fixed;inset:0;background:rgba(250,250,249,.86);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;z-index:50;opacity:0;pointer-events:none;transition:opacity .25s}
+body.dark .overlay{background:rgba(26,26,30,.86)}
+.overlay.show{opacity:1;pointer-events:auto}
+.overlay-card{width:min(420px,88vw);background:var(--bg-soft);border:1px solid var(--border);border-radius:8px;padding:22px 24px;box-shadow:0 8px 28px rgba(17,17,19,.08)}
+body.dark .overlay-card{box-shadow:0 8px 28px rgba(0,0,0,.35)}
+.overlay-title{font-size:15px;font-weight:600;margin-bottom:4px}
+.overlay-subtitle{font-size:12.5px;color:var(--text-muted);margin-bottom:14px;line-height:1.5;display:none}
+.overlay-subtitle.show{display:block}
+.overlay-bar{height:10px;background:var(--bg-softer);border:1px solid var(--border);border-radius:5px;overflow:hidden;position:relative}
+.overlay-bar.hidden{display:none}
+.overlay-fill{height:100%;width:0%;background:linear-gradient(90deg,#15803d,#16a34a 55%,#4ade80);position:relative;overflow:hidden;transition:width .25s ease}
+body.dark .overlay-fill{background:linear-gradient(90deg,#15803d,#22c55e 55%,#86efac)}
+.overlay-fill::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent);animation:shimmer 1.6s linear infinite}
+@keyframes shimmer{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
+.overlay-bar.indet .overlay-fill{width:35%;transition:none;animation:indet 1.15s ease-in-out infinite}
+@keyframes indet{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
+.overlay-sub{margin-top:10px;font-family:var(--mono);font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;gap:8px}
+
+.overlay-card .overlay-msg{font-size:13px;color:var(--text-dim);line-height:1.5;margin-bottom:16px}
+.overlay-card .overlay-actions{display:flex;gap:8px;justify-content:flex-end}
+.overlay-card .overlay-actions button{min-width:90px;justify-content:center}
+
+@media (max-width:520px){
+  header{height:auto;flex-wrap:wrap;padding:8px 12px}
+  #user-info{display:none}
+  .controls button{flex:1}
+}
+
+@media (max-height: 560px){
+  main { padding: 8px 12px; }
+  .login-box { padding: 12px; }
+  .login-box h2 { font-size: 16px; margin-bottom: 2px; }
+  .login-sub { font-size: 11px; margin-bottom: 10px; }
+  .fg { margin-bottom: 7px; }
+  .fg label { margin-bottom: 2px; font-size: 8px; }
+  input { padding: 7px 9px; font-size: 12px; }
+  .auth-btn { padding: 8px 12px; margin-top: 1px; font-size: 12px; }
+  .auth-switch { margin-top: 8px; font-size: 11px; }
+  .anon-hint { margin-top: 8px; padding-top: 8px; font-size: 10px; }
+  .error-box { font-size: 11px; padding: 6px 8px 6px 10px; }
+  #loss-graph{height:48px}
+  .stat-card{padding:8px 10px}
+  .stat-val{font-size:15px}
+  .panel{padding:8px 10px}
+  .graph-empty{padding:12px 0}
+}
+</style></head>
+<body>
+<header>
+  <div class="logo">
+    <img src="__LOGO__" id="logo-img" data-light="__LOGO__" data-dark="__LOGO_DARK__" class="logo-img" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='grid';">
+    <div class="logo-fallback">C</div>
+    <span class="logo-text">CrowdGPT</span>
+    <span class="logo-ver">v0.4</span>
+  </div>
+  <div class="header-right">
+    <span id="user-info"></span>
+    <select class="backend-select" id="backend-select" disabled></select>
+    <select class="lang-select" id="lang-select">
+      <option value="en">🇬🇧 English</option>
+      <option value="fr">🇫🇷 Français</option>
+      <option value="es">🇪🇸 Español</option>
+      <option value="de">🇩🇪 Deutsch</option>
+      <option value="tr">🇹🇷 Türkçe</option>
+    </select>
+    <button class="theme-toggle" id="theme-toggle" title="Toggle dark mode"><span class="icon-moon">🌙</span><span class="icon-sun">☀️</span></button>
+  </div>
+</header>
+
+<main>
+  <div id="view-login" class="view active">
+    <div class="login-box">
+      <div class="auth-screen active" id="screen-login">
+        <h2><span data-i18n="login_pre"></span><span class="em">CrowdGPT</span></h2>
+        <p class="login-sub" data-i18n="login_sub"></p>
+        <div class="fg"><label data-i18n="server_url"></label><input type="text" id="login-server" value="http://api.crowdgpt.net:5006"></div>
+        <div class="fg"><label data-i18n="username"></label><input type="text" id="login-user" data-i18n-ph="ph_user" autocomplete="username"></div>
+        <div class="fg"><label data-i18n="password"></label><input type="password" id="login-pass" autocomplete="current-password"></div>
+        <div class="error-box" id="login-error"></div>
+        <button id="btn-login" class="btn-primary auth-btn" data-i18n="login_btn"></button>
+        <div class="auth-switch">
+          <span data-i18n="no_account"></span>
+          <a id="go-to-register" data-i18n="register_link"></a>
+        </div>
+        <div class="anon-hint">
+          <span data-i18n="anon_preface"></span>
+          <a id="btn-anon" data-i18n="anon_link"></a>
+        </div>
+      </div>
+
+      <div class="auth-screen" id="screen-register">
+        <h2><span data-i18n="register_title_pre"></span><span class="em">CrowdGPT</span></h2>
+        <p class="login-sub" data-i18n="register_sub"></p>
+        <div class="fg"><label data-i18n="server_url"></label><input type="text" id="reg-server" value="http://api.crowdgpt.net:5006"></div>
+        <div class="fg"><label data-i18n="username"></label><input type="text" id="reg-user" data-i18n-ph="ph_user" autocomplete="username"></div>
+        <div class="fg"><label data-i18n="email"></label><input type="email" id="reg-email" autocomplete="email"></div>
+        <div class="fg"><label data-i18n="password"></label><input type="password" id="reg-pass" autocomplete="new-password"></div>
+        <div class="error-box" id="reg-error"></div>
+        <button id="btn-register" class="btn-primary auth-btn" data-i18n="register_btn"></button>
+        <div class="auth-switch">
+          <span data-i18n="have_account"></span>
+          <a id="go-to-login" data-i18n="login_link"></a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="view-dashboard" class="view">
+    <div class="dash">
+      <div class="dash-head">
+        <span class="dash-title" data-i18n="dash_title"></span>
+        <span class="status-badge" id="status-indicator"></span>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card"><div class="stat-val accent" id="stat-loss">—</div><div class="stat-lbl" data-i18n="loss"></div></div>
+        <div class="stat-card"><div class="stat-val" id="stat-tps">—</div><div class="stat-lbl" data-i18n="tokens_sec"></div></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <span><span data-i18n="round"></span> <span class="pv" id="stat-round">—</span> · <span data-i18n="step"></span> <span class="pv" id="stat-step-cur">0</span>/<span class="pv" id="stat-step-tot">0</span></span>
+          <span class="pv" id="progress-text">0%</span>
+        </div>
+        <div class="progress-track"><div class="progress-fill" id="progress-bar"></div></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <span data-i18n="loss_history"></span>
+          <span class="pv" id="graph-last"></span>
+        </div>
+        <canvas id="loss-graph"></canvas>
+        <div class="graph-empty" id="graph-empty" data-i18n="waiting_data"></div>
+      </div>
+
+      <div class="status-strip">
+        <span class="ss-event" id="status-event"></span>
+      </div>
+
+      <div class="controls">
+        <button id="btn-start" class="btn-primary api-btn" data-i18n="start"></button>
+        <button id="btn-stop" class="btn-danger api-btn" data-i18n="stop" disabled></button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div class="overlay" id="overlay">
+  <div class="overlay-card">
+    <div class="overlay-title" id="overlay-title"></div>
+    <div class="overlay-subtitle" id="overlay-subtitle"></div>
+    <div class="overlay-bar" id="overlay-bar"><div class="overlay-fill" id="overlay-fill"></div></div>
+    <div class="overlay-sub"><span id="overlay-pct"></span><span id="overlay-mb"></span></div>
+  </div>
+</div>
+
+<div class="overlay" id="backend-overlay">
+  <div class="overlay-card">
+    <div class="overlay-title" data-i18n="backend_change_title"></div>
+    <div class="overlay-msg" data-i18n="backend_change_msg"></div>
+    <div class="overlay-actions">
+      <button id="btn-backend-cancel" class="btn-danger" data-i18n="cancel"></button>
+      <button id="btn-backend-confirm" class="btn-primary" data-i18n="confirm"></button>
+    </div>
+  </div>
+</div>
+
+<script>
+const I18N={
+ en:{
+   login_pre:"Sign in to ",login_sub:"Welcome back to the swarm.",
+   register_title_pre:"Join ",register_sub:"Create your account and start contributing.",
+   server_url:"Server address",username:"Username",password:"Password",email:"Email",
+   ph_user:" ",
+   login_btn:"Log in",register_btn:"Create account",
+   no_account:"No account yet?",register_link:"Create one",
+   have_account:"Already registered?",login_link:"Log in",
+   anon_preface:"Prefer to stay anonymous?",anon_link:"Skip and contribute anonymously",
+   dash_title:"Training",loss:"Loss",tokens_sec:"Tokens/sec",round:"Round",step:"Step",
+   loss_history:"Loss history",waiting_data:"Waiting for training data…",time_left:"Left",
+   idle:"Idle",training:"Training…",waiting:"Waiting…",uploading:"Uploading…",
+   downloading:"Downloading…",preparing:"Preparing…",calibrating:"Calibrating…",
+   dl_weights:"Downloading weights…",wait_coord:"Waiting for coordinator…",
+   wait_coord_sub:"This can take a few minutes. The coordinator aggregates updates from all clients between rounds.",
+   start:"Start training",stop:"Stop",
+   backend_change_title:"Switch backend?",
+   backend_change_msg:"Switching backend will reset your current training session and restart the round. Your contribution so far will be discarded. Continue?",
+   cancel:"Cancel",confirm:"Switch & restart",
+   err_invalid_credentials:"Invalid username or password.",
+   err_username_taken:"This username is already taken. Please choose another.",
+   err_email_taken:"An account with this email already exists.",
+   err_weak_password:"Password must be at least 6 characters.",
+   err_invalid_input:"Please check your input and try again.",
+   err_login_failed:"Could not log in. Please try again.",
+   err_register_failed:"Could not create account. Please try again.",
+   err_network:"Cannot reach the server."
+ },
+ fr:{
+   login_pre:"Connexion à ",login_sub:"Bon retour parmi nous.",
+   register_title_pre:"Rejoignez ",register_sub:"Créez votre compte et commencez à contribuer.",
+   server_url:"Adresse du serveur",username:"Nom d'utilisateur",password:"Mot de passe",email:"E-mail",
+   ph_user:" ",
+   login_btn:"Se connecter",register_btn:"Créer le compte",
+   no_account:"Pas encore de compte ?",register_link:"Créer un compte",
+   have_account:"Déjà inscrit ?",login_link:"Se connecter",
+   anon_preface:"Vous préférez rester anonyme ?",anon_link:"Continuer anonymement",
+   dash_title:"Entraînement",loss:"Perte",tokens_sec:"Tokens/sec",round:"Manche",step:"Étape",
+   loss_history:"Historique de perte",waiting_data:"En attente de données…",time_left:"Reste",
+   idle:"Inactif",training:"Entraînement…",waiting:"Attente…",uploading:"Envoi…",
+   downloading:"Téléchargement…",preparing:"Préparation…",calibrating:"Calibration…",
+   dl_weights:"Téléchargement des poids…",wait_coord:"En attente du coordinateur…",
+   wait_coord_sub:"Cela peut prendre quelques minutes. Le coordinateur agrège les mises à jour de tous les clients entre les manches.",
+   start:"Démarrer l'entraînement",stop:"Arrêter",
+   backend_change_title:"Changer de backend ?",
+   backend_change_msg:"Changer de backend réinitialisera votre session d'entraînement actuelle. Votre contribution en cours sera perdue. Continuer ?",
+   cancel:"Annuler",confirm:"Changer & redémarrer",
+   err_invalid_credentials:"Nom d'utilisateur ou mot de passe invalide.",
+   err_username_taken:"Ce nom d'utilisateur est déjà pris.",
+   err_email_taken:"Un compte avec cet e-mail existe déjà.",
+   err_weak_password:"Le mot de passe doit contenir au moins 6 caractères.",
+   err_invalid_input:"Veuillez vérifier vos informations.",
+   err_login_failed:"Connexion impossible. Réessayez.",
+   err_register_failed:"Création du compte impossible. Réessayez.",
+   err_network:"Serveur injoignable."
+ },
+ es:{
+   login_pre:"Inicia sesión en ",login_sub:"Bienvenido de vuelta al enjambre.",
+   register_title_pre:"Únete a ",register_sub:"Crea tu cuenta y empieza a contribuir.",
+   server_url:"Dirección del servidor",username:"Nombre de usuario",password:"Contraseña",email:"Correo",
+   ph_user:" ",
+   login_btn:"Iniciar sesión",register_btn:"Crear cuenta",
+   no_account:"¿Aún no tienes cuenta?",register_link:"Crear una",
+   have_account:"¿Ya estás registrado?",login_link:"Iniciar sesión",
+   anon_preface:"¿Prefieres seguir anónimo?",anon_link:"Continuar anónimamente",
+   dash_title:"Entrenamiento",loss:"Pérdida",tokens_sec:"Tokens/seg",round:"Ronda",step:"Paso",
+   loss_history:"Historial de pérdida",waiting_data:"Esperando datos…",time_left:"Queda",
+   idle:"Inactivo",training:"Entrenando…",waiting:"Esperando…",uploading:"Subiendo…",
+   downloading:"Descargando…",preparing:"Preparando…",calibrating:"Calibrando…",
+   dl_weights:"Descargando pesos…",wait_coord:"Esperando al coordinador…",
+   wait_coord_sub:"Esto puede tardar unos minutos. El coordinador agrega las actualizaciones de todos los clientes entre rondas.",
+   start:"Iniciar entrenamiento",stop:"Detener",
+   backend_change_title:"¿Cambiar de backend?",
+   backend_change_msg:"Cambiar de backend reiniciará tu sesión de entrenamiento actual. Tu contribución actual se descartará. ¿Continuar?",
+   cancel:"Cancelar",confirm:"Cambiar y reiniciar",
+   err_invalid_credentials:"Usuario o contraseña incorrectos.",
+   err_username_taken:"Este nombre de usuario ya está en uso.",
+   err_email_taken:"Ya existe una cuenta con este correo.",
+   err_weak_password:"La contraseña debe tener al menos 6 caracteres.",
+   err_invalid_input:"Revisa los datos e inténtalo de nuevo.",
+   err_login_failed:"No se pudo iniciar sesión. Inténtalo de nuevo.",
+   err_register_failed:"No se pudo crear la cuenta. Inténtalo de nuevo.",
+   err_network:"No se puede contactar el servidor."
+ },
+ de:{
+   login_pre:"Anmelden bei ",login_sub:"Willkommen zurück im Schwarm.",
+   register_title_pre:"Tritt ",register_sub:"Erstelle dein Konto und trage bei.",
+   server_url:"Serveradresse",username:"Benutzername",password:"Passwort",email:"E-Mail",
+   ph_user:" ",
+   login_btn:"Anmelden",register_btn:"Konto erstellen",
+   no_account:"Noch kein Konto?",register_link:"Jetzt erstellen",
+   have_account:"Bereits registriert?",login_link:"Anmelden",
+   anon_preface:"Lieber anonym bleiben?",anon_link:"Anonym weitermachen",
+   dash_title:"Training",loss:"Verlust",tokens_sec:"Tokens/Sek",round:"Runde",step:"Schritt",
+   loss_history:"Verlustverlauf",waiting_data:"Warte auf Trainingsdaten…",time_left:"Rest",
+   idle:"Bereit",training:"Training…",waiting:"Warten…",uploading:"Upload…",
+   downloading:"Wird heruntergeladen…",preparing:"Vorbereitung…",calibrating:"Kalibrierung…",
+   dl_weights:"Gewichte werden heruntergeladen…",wait_coord:"Warte auf Koordinator…",
+   wait_coord_sub:"Das kann ein paar Minuten dauern. Der Koordinator aggregiert die Updates aller Clients zwischen den Runden.",
+   start:"Training starten",stop:"Stopp",
+   backend_change_title:"Backend wechseln?",
+   backend_change_msg:"Das Wechseln des Backends setzt deine aktuelle Trainingssitzung zurück. Dein bisheriger Beitrag wird verworfen. Fortfahren?",
+   cancel:"Abbrechen",confirm:"Wechseln & neu starten",
+   err_invalid_credentials:"Benutzername oder Passwort ungültig.",
+   err_username_taken:"Dieser Benutzername ist bereits vergeben.",
+   err_email_taken:"Ein Konto mit dieser E-Mail existiert bereits.",
+   err_weak_password:"Das Passwort muss mindestens 6 Zeichen lang sein.",
+   err_invalid_input:"Bitte Eingabe prüfen und erneut versuchen.",
+   err_login_failed:"Anmeldung fehlgeschlagen. Bitte erneut versuchen.",
+   err_register_failed:"Konto konnte nicht erstellt werden. Bitte erneut versuchen.",
+   err_network:"Server nicht erreichbar."
+ },
+ tr:{
+   login_pre:"Giriş yap: ",login_sub:"Sürüye tekrar hoş geldin.",
+   register_title_pre:"Katıl: ",register_sub:"Hesabını oluştur ve katkıda bulunmaya başla.",
+   server_url:"Sunucu adresi",username:"Kullanıcı adı",password:"Şifre",email:"E-posta",
+   ph_user:" ",
+   login_btn:"Giriş yap",register_btn:"Hesap oluştur",
+   no_account:"Hesabın yok mu?",register_link:"Bir tane oluştur",
+   have_account:"Zaten kayıtlı mısın?",login_link:"Giriş yap",
+   anon_preface:"Anonim kalmayı mı tercih edersin?",anon_link:"Atla ve anonim olarak katkıda bulun",
+   dash_title:"Eğitim",loss:"Kayıp",tokens_sec:"Token/sn",round:"Tur",step:"Adım",
+   loss_history:"Kayıp geçmişi",waiting_data:"Eğitim verisi bekleniyor…",time_left:"Kalan",
+   idle:"Boşta",training:"Eğitiliyor…",waiting:"Bekleniyor…",uploading:"Yükleniyor…",
+   downloading:"İndiriliyor…",preparing:"Hazırlanıyor…",calibrating:"Kalibre ediliyor…",
+   dl_weights:"Ağırlıklar indiriliyor…",wait_coord:"Koordinatör bekleniyor…",
+   wait_coord_sub:"Bu birkaç dakika sürebilir. Koordinatör, turlar arasında tüm istemcilerden gelen güncellemeleri toplar.",
+   start:"Eğitimi başlat",stop:"Durdur",
+   backend_change_title:"Backend değiştir?",
+   backend_change_msg:"Backend değiştirmek mevcut eğitim oturumunu sıfırlayacak ve turu yeniden başlatacak. Şu ana kadarki katkınız silinecek. Devam edilsin mi?",
+   cancel:"İptal",confirm:"Değiştir & yeniden başlat",
+   err_invalid_credentials:"Geçersiz kullanıcı adı veya şifre.",
+   err_username_taken:"Bu kullanıcı adı zaten alınmış. Lütfen başka bir tane seçin.",
+   err_email_taken:"Bu e-posta ile zaten bir hesap mevcut.",
+   err_weak_password:"Şifre en az 6 karakter olmalıdır.",
+   err_invalid_input:"Lütfen girdinizi kontrol edip tekrar deneyin.",
+   err_login_failed:"Giriş yapılamadı. Lütfen tekrar deneyin.",
+   err_register_failed:"Hesap oluşturulamadı. Lütfen tekrar deneyin.",
+   err_network:"Sunucuya ulaşılamıyor."
+ }
+};
+
+let lang='en',statusKey='idle';
+let pendingBackend=null;
+const lossHistory=[];const MAXP=80;
+function t(k){return (I18N[lang]&&I18N[lang][k])||I18N.en[k]||k}
+function applyT(){
+  document.querySelectorAll('[data-i18n]').forEach(e=>e.textContent=t(e.getAttribute('data-i18n')));
+  document.querySelectorAll('[data-i18n-ph]').forEach(e=>e.placeholder=t(e.getAttribute('data-i18n-ph')));
+  document.getElementById('status-indicator').textContent=t(statusKey);
+}
+document.getElementById('lang-select').addEventListener('change',e=>{lang=e.target.value;applyT()});
+
+function showAuthScreen(name){
+  document.querySelectorAll('.auth-screen').forEach(s=>s.classList.remove('active'));
+  document.getElementById('screen-'+name).classList.add('active');
+  const loginSrv = document.getElementById('login-server');
+  const regSrv = document.getElementById('reg-server');
+  if(name==='register' && loginSrv.value) regSrv.value = loginSrv.value;
+  if(name==='login' && regSrv.value) loginSrv.value = regSrv.value;
+  document.getElementById('login-error').classList.remove('show');
+  document.getElementById('reg-error').classList.remove('show');
+}
+document.getElementById('go-to-register').addEventListener('click',e=>{e.preventDefault();showAuthScreen('register')});
+document.getElementById('go-to-login').addEventListener('click',e=>{e.preventDefault();showAuthScreen('login')});
+
+function callApi(n,...a){if(window.pywebview&&window.pywebview.api&&window.pywebview.api[n]){window.pywebview.api[n](...a);return true}return false}
+window.addEventListener('pywebviewready',()=>{
+  document.body.classList.add('ready');
+  callApi('get_backends');
+});
+
+document.getElementById('btn-login').addEventListener('click',()=>{
+  const srv=document.getElementById('login-server').value.trim();
+  const u=document.getElementById('login-user').value.trim();
+  const p=document.getElementById('login-pass').value;
+  if(!u||!p){ showLoginError('err_invalid_credentials'); return; }
+  document.getElementById('login-error').classList.remove('show');
+  document.getElementById('btn-login').disabled=true;
+  callApi('login',srv,u,p);
+});
+
+document.getElementById('btn-register').addEventListener('click',()=>{
+  const srv=document.getElementById('reg-server').value.trim();
+  const u=document.getElementById('reg-user').value.trim();
+  const email=document.getElementById('reg-email').value.trim();
+  const p=document.getElementById('reg-pass').value;
+  if(!u||!email||!p){ showRegError('err_invalid_input'); return; }
+  document.getElementById('reg-error').classList.remove('show');
+  document.getElementById('btn-register').disabled=true;
+  callApi('register',srv,u,email,p);
+});
+
+document.getElementById('btn-anon').addEventListener('click',e=>{
+  e.preventDefault();
+  callApi('login_anon');
+});
+
+document.getElementById('btn-start').addEventListener('click',()=>{if(callApi('start')){document.getElementById('btn-start').disabled=true;document.getElementById('btn-stop').disabled=false}});
+document.getElementById('btn-stop').addEventListener('click',()=>{callApi('stop');document.getElementById('btn-start').disabled=false;document.getElementById('btn-stop').disabled=true});
+
+document.getElementById('backend-select').addEventListener('change',e=>{
+  const newBackend = e.target.value;
+  if(newBackend === window._currentBackend){ return; }
+  if(statusKey === 'idle'){
+    callApi('set_backend', newBackend);
+  } else {
+    pendingBackend = newBackend;
+    document.getElementById('backend-overlay').classList.add('show');
+  }
+});
+
+document.getElementById('btn-backend-cancel').addEventListener('click',()=>{
+  document.getElementById('backend-overlay').classList.remove('show');
+  const sel = document.getElementById('backend-select');
+  sel.value = window._currentBackend || sel.value;
+  pendingBackend = null;
+});
+
+document.getElementById('btn-backend-confirm').addEventListener('click',()=>{
+  document.getElementById('backend-overlay').classList.remove('show');
+  if(pendingBackend){
+    callApi('set_backend', pendingBackend);
+    pendingBackend = null;
+  }
+});
+
+function showLoginError(code){
+  const el=document.getElementById('login-error');
+  el.textContent=t(code);
+  el.classList.add('show');
+  document.getElementById('btn-login').disabled=false;
+}
+function showRegError(code){
+  const el=document.getElementById('reg-error');
+  el.textContent=t(code);
+  el.classList.add('show');
+  document.getElementById('btn-register').disabled=false;
+}
+
+function mb(b){return (b/1048576).toFixed(1)}
+function overlayShow(data){
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('overlay-title').textContent=t(data.title_key);
+  
+  const sub = document.getElementById('overlay-subtitle');
+  if(data.subtitle_key){
+    sub.textContent = t(data.subtitle_key);
+    sub.classList.add('show');
+  } else {
+    sub.classList.remove('show');
+  }
+  
+  const bar = document.getElementById('overlay-bar');
+  const subBox = document.querySelector('#overlay .overlay-sub');
+  if(data.hide_bar){
+    bar.classList.add('hidden');
+    subBox.style.display = 'none';
+  } else {
+    bar.classList.remove('hidden');
+    subBox.style.display = 'flex';
+    bar.classList.toggle('indet',!!data.indeterminate);
+    document.getElementById('overlay-fill').style.width=data.indeterminate?'':'0%';
+    document.getElementById('overlay-pct').textContent='';
+    document.getElementById('overlay-mb').textContent='';
+  }
+}
+function overlayHide(){document.getElementById('overlay').classList.remove('show')}
+
+function drawGraph(){
+  const c=document.getElementById('loss-graph');if(!c)return;
+  const ctx=c.getContext('2d');
+  const rect=c.getBoundingClientRect();
+  if(rect.width<10||rect.height<10)return;
+  const dpr=window.devicePixelRatio||1;
+  c.width=rect.width*dpr;c.height=rect.height*dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  const W=rect.width,H=rect.height;
+  ctx.clearRect(0,0,W,H);
+  const empty=document.getElementById('graph-empty');
+  if(lossHistory.length<2){empty.style.display='block';c.style.display='none';return}
+  empty.style.display='none';c.style.display='block';
+  const data=lossHistory.slice(-MAXP);
+  const mn=Math.min(...data),mx=Math.max(...data),range=(mx-mn)||1;
+  const pad=5,pH=H-pad*2,pW=W-pad*2,st=pW/(data.length-1);
+  const isDark=document.body.classList.contains('dark');
+  const gridColor=isDark?'rgba(255,255,255,.06)':'rgba(17,17,19,.07)';
+  const lineColor=isDark?'#22c55e':'#16a34a';
+  ctx.strokeStyle=gridColor;ctx.lineWidth=1;
+  for(let g=1;g<4;g++){const y=pad+pH*g/4;ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(pad+pW,y);ctx.stroke()}
+  const pt=i=>[pad+i*st,pad+pH-(data[i]-mn)/range*pH];
+  ctx.beginPath();
+  data.forEach((v,i)=>{const[x,y]=pt(i);i?ctx.lineTo(x,y):ctx.moveTo(x,y)});
+  ctx.lineTo(pad+pW,pad+pH);ctx.lineTo(pad,pad+pH);ctx.closePath();
+  const gr=ctx.createLinearGradient(0,0,0,H);
+  gr.addColorStop(0,isDark?'rgba(34,197,94,.20)':'rgba(22,163,74,.16)');gr.addColorStop(1,'rgba(22,163,74,0)');
+  ctx.fillStyle=gr;ctx.fill();
+  ctx.beginPath();
+  data.forEach((v,i)=>{const[x,y]=pt(i);i?ctx.lineTo(x,y):ctx.moveTo(x,y)});
+  ctx.strokeStyle=lineColor;ctx.lineWidth=1.5;ctx.stroke();
+  const[lx,ly]=pt(data.length-1);
+  ctx.fillStyle=lineColor;ctx.beginPath();ctx.arc(lx,ly,2.5,0,Math.PI*2);ctx.fill();
+}
+
+window.handleEvent=function(ev,data){
+  if(ev==='login_success'){
+    document.getElementById('view-login').classList.remove('active');
+    document.getElementById('view-dashboard').classList.add('active');
+    document.body.classList.add('dashboard-active');
+    document.getElementById('user-info').textContent=data.username;
+    document.getElementById('btn-login').disabled=false;
+    document.getElementById('btn-register').disabled=false;
+    requestAnimationFrame(drawGraph);
+  }
+  else if(ev==='login_error'){
+    const code = data.code || 'err_invalid_credentials';
+    const errMap = {
+      invalid_credentials:'err_invalid_credentials',
+      login_failed:'err_login_failed',
+      username_taken:'err_username_taken',
+      email_taken:'err_email_taken',
+      weak_password:'err_weak_password',
+      invalid_input:'err_invalid_input',
+      register_failed:'err_register_failed',
+      network:'err_network'
+    };
+    const tKey = errMap[code] || 'err_login_failed';
+    const loginActive = document.getElementById('screen-login').classList.contains('active');
+    if(loginActive) showLoginError(tKey);
+    else showRegError(tKey);
+  }
+  else if(ev==='meta'){}
+  else if(ev==='log'){document.getElementById('status-event').textContent=data}
+  else if(ev==='backends'){
+    const sel = document.getElementById('backend-select');
+    sel.innerHTML = '';
+    window._currentBackend = data.current;
+    const order = [
+      {key:'cuda', label:'CUDA (NVIDIA)'},
+      {key:'rocm', label:'ROCm (AMD)'},
+      {key:'mps', label:'MPS (Apple)'},
+      {key:'xpu', label:'XPU (Intel)'},
+      {key:'directml', label:'DirectML (Windows)'},
+      {key:'cpu', label:'CPU'}
+    ];
+    order.forEach(bk=>{
+      const opt = document.createElement('option');
+      opt.value = bk.key;
+      opt.textContent = bk.label;
+      opt.disabled = !data.available[bk.key];
+      if(bk.key === data.current) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    sel.disabled = false;
+  }
+  else if(ev==='overlay_show'){overlayShow(data)}
+  else if(ev==='overlay_progress'){
+    const bar=document.getElementById('overlay-bar');
+    if(data.total>0){
+      bar.classList.remove('indet');
+      const pct=Math.min(100,data.done/data.total*100);
+      document.getElementById('overlay-fill').style.width=pct+'%';
+      document.getElementById('overlay-pct').textContent=pct.toFixed(1)+'%';
+      document.getElementById('overlay-mb').textContent=mb(data.done)+' / '+mb(data.total)+' MB';
+    }else{bar.classList.add('indet');document.getElementById('overlay-mb').textContent=mb(data.done)+' MB'}
+  }
+  else if(ev==='overlay_hide'){overlayHide()}
+  else if(ev==='cal_stats'){
+    document.getElementById('stat-loss').textContent=data.loss.toFixed(4);
+    if(data.tps !== undefined) document.getElementById('stat-tps').textContent=Math.round(data.tps);
+    document.getElementById('stat-round').textContent='—';
+    document.getElementById('stat-step-cur').textContent=data.step;
+    document.getElementById('stat-step-tot').textContent=data.total;
+    const pct=Math.min(100,(data.step/Math.max(1,data.total))*100);
+    document.getElementById('progress-bar').style.width=pct+'%';
+    document.getElementById('progress-text').textContent=pct.toFixed(1)+'%';
+    document.getElementById('graph-last').textContent=data.loss.toFixed(4);
+    lossHistory.push(data.loss);
+    if(lossHistory.length>MAXP*2)lossHistory.splice(0,lossHistory.length-MAXP*2);
+    drawGraph();
+  }
+  else if(ev==='stats'){
+    document.getElementById('stat-loss').textContent=data.loss.toFixed(4);
+    document.getElementById('stat-tps').textContent=Math.round(data.tps);
+    document.getElementById('stat-round').textContent=data.round;
+    document.getElementById('stat-step-cur').textContent=data.step;
+    document.getElementById('stat-step-tot').textContent=data.target;
+    const pct=Math.min(100,(data.step/Math.max(1,data.target))*100);
+    document.getElementById('progress-bar').style.width=pct+'%';
+    document.getElementById('progress-text').textContent=pct.toFixed(1)+'%';
+    document.getElementById('graph-last').textContent=data.loss.toFixed(4);
+    lossHistory.push(data.loss);
+    if(lossHistory.length>MAXP*2)lossHistory.splice(0,lossHistory.length-MAXP*2);
+    drawGraph();
+  }else if(ev==='preview_loss'){}
+  else if(ev==='status'){
+    statusKey=data;
+    document.getElementById('status-indicator').textContent=t(statusKey);
+    if(data==='training'||data==='idle'||data==='calibrating'||data==='preparing')overlayHide();
+    if(data==='idle'){document.getElementById('btn-start').disabled=false;document.getElementById('btn-stop').disabled=true}
+  }
+};
+window.addEventListener('resize',()=>requestAnimationFrame(drawGraph));
+if(window.ResizeObserver){new ResizeObserver(()=>requestAnimationFrame(drawGraph)).observe(document.getElementById('loss-graph'))}
+
+/* ===== DARK MODE + LOGO SWAP (fully guarded) ===== */
+function updateLogo(){
+  try {
+    var img = document.getElementById('logo-img');
+    if(!img) return;
+    var isDark = document.body.classList.contains('dark');
+    var src = isDark ? img.getAttribute('data-dark') : img.getAttribute('data-light');
+    if(src && src.length > 30) img.src = src;
+  } catch(e){}
+}
+
+(function(){
+  try{
+    var saved=null;
+    try{ saved=localStorage.getItem('crowdgpt-theme'); }catch(e){}
+    var prefersDark=false;
+    try{ prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches; }catch(e){}
+    if(saved==='dark' || (!saved && prefersDark)){ document.body.classList.add('dark'); }
+    updateLogo();
+  }catch(e){}
+  var tbtn=document.getElementById('theme-toggle');
+  if(tbtn){
+    tbtn.addEventListener('click',function(){
+      document.body.classList.toggle('dark');
+      try{ localStorage.setItem('crowdgpt-theme', document.body.classList.contains('dark')?'dark':'light'); }catch(e){}
+      updateLogo();
+      requestAnimationFrame(drawGraph);
+    });
+  }
+})();
+
+applyT();
+</script></body></html>"""
+
+
+class Api:
+    def __init__(self):
+        self.window=None; self.stop_event=threading.Event()
+        self.thread=None; self.auth_token=None; self.username=None
+        self.server_url="http://api.crowdgpt.net:5006"; self._lp=0.0
+        self.selected_backend = get_best_default_backend()
+
+    def emit(self, ev, data):
+        if not self.window: return
+        if ev=='preview_loss':
+            n=time.time()
+            if n-self._lp<0.4: return
+            self._lp=n
+        try: self.window.evaluate_js(f"window.handleEvent({json.dumps(ev)},{json.dumps(data)});")
+        except: pass
+
+    def get_backends(self):
+        available = get_available_backends()
+        self.emit('backends', {'available': available, 'current': self.selected_backend})
+
+    def set_backend(self, backend_name):
+        self.selected_backend = backend_name
+        if self.thread and self.thread.is_alive():
+            self.stop_event.set()
+
+    def login(self, s, u, p):
+        self.server_url = s or self.server_url
+        threading.Thread(target=self._do_login, args=(u, p), daemon=True).start()
+
+    def _do_login(self, u, p):
+        tok, err = do_login(self.server_url, u, p)
+        if tok:
+            self.auth_token, self.username = tok, u
+            self.emit('login_success', {'username': u})
         else:
-            log.info("Round finished. Checking for next round in 10s...")
-            
-        for _ in range(10):
-            if USER_STOP_EVENT.is_set(): break
-            time.sleep(1)
+            self.emit('login_error', {'code': err or 'login_failed'})
 
-    log.info("👋 Swarm node shut down cleanly. Goodbye!")
+    def register(self, s, u, email, p):
+        self.server_url = s or self.server_url
+        threading.Thread(target=self._do_register, args=(u, email, p), daemon=True).start()
+
+    def _do_register(self, u, email, p):
+        tok, err = do_register(self.server_url, u, email, p)
+        if tok:
+            self.auth_token, self.username = tok, u
+            self.emit('login_success', {'username': u})
+        else:
+            self.emit('login_error', {'code': err or 'register_failed'})
+
+    def login_anon(self):
+        self.auth_token, self.username = None, "anonymous"
+        self.emit('login_success', {'username': 'anonymous'})
+
+    def start(self):
+        if self.thread and self.thread.is_alive(): return
+        self.stop_event.clear(); self.thread=threading.Thread(target=self._rs, daemon=True); self.thread.start()
+        
+    def stop(self): self.stop_event.set()
+    
+    def _rs(self):
+        global train_device, train_backend
+        try:
+            train_device, train_backend = detect_training_backend(self.selected_backend)
+            self.emit('meta',{'backend':train_backend})
+            self.emit('log',f"Backend: {train_backend} ({train_device})")
+            auto_detect_vram_budget()
+            self.emit('log',f"VRAM: {memory_config['ram_gb']:.1f} GB")
+        except Exception as e:
+            self.emit('log',f"Error: {e}"); self.emit('status','idle'); return
+        while not self.stop_event.is_set():
+            try: run_single_round(self.server_url, self.auth_token, self.stop_event, self.emit)
+            except Exception as e: self.emit('log',f"Failed: {e}"); time.sleep(5)
+            if self.stop_event.is_set(): break
+            for _ in range(10):
+                if self.stop_event.is_set(): break
+                time.sleep(1)
+        self.emit('status','idle')
+
+
+def startup():
+    try:
+        scr = webview.screens[0]
+        aw, ah = scr.width, scr.height
+        w = max(480, min(1040, int(aw * 0.80)))
+        h = max(360, min(800, int(ah * 0.80)))
+        w = min(w, aw - 16); h = min(h, ah - 48)
+        w = max(320, w); h = max(240, h)
+        window.resize(w, h)
+        window.move(max(0, (aw - w)//2), max(0, (ah - h)//2))
+    except Exception:
+        pass
+    
+    def set_window_icon():
+        try:
+            import gi
+            gi.require_version('Gtk', '3.0')
+            from gi.repository import Gtk, GdkPixbuf
+            
+            icon_path = None
+            if ICON_PATH and os.path.exists(ICON_PATH):
+                icon_path = ICON_PATH
+            elif _lp_light.exists():
+                icon_path = str(_lp_light.absolute())
+                
+            if not icon_path:
+                return
+                
+            for w in Gtk.Window.list_toplevels():
+                if w.get_title() == "CrowdGPT":
+                    pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(icon_path, 64, 64, True)
+                    w.set_icon(pixbuf)
+                    break
+        except Exception:
+            pass
+
+    threading.Timer(0.5, set_window_icon).start()
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--server", default="http://api.crowdgpt.net:5006")
-    parser.add_argument("--backend", default="auto")
-    parser.add_argument("--batch-size", type=int, default=0)
-    parser.add_argument("--seq-len", type=int, default=0)
-    parser.add_argument("--tokens-per-step", type=int, default=131072,
-                        help="Target tokens per optimizer step (grad accum). 4096 = vanilla.")
-    parser.add_argument("--precision", default="bf16")
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--username", default=None)
-    parser.add_argument("--password", default=None)
-    try: run_swarm_node(parser.parse_args())
-    except KeyboardInterrupt: log.info("Disconnected.")
+    api = Api()
+    kwargs = {
+        "js_api": api,
+        "width": 960,
+        "height": 680,
+        "min_size": (320, 240),
+    }
+    
+    html_out = HTML.replace("__LOGO__", LOGO_URI_LIGHT).replace("__LOGO_DARK__", LOGO_URI_DARK)
+    
+    try:
+        if ICON_PATH and os.path.exists(ICON_PATH):
+            window = webview.create_window(
+                "CrowdGPT", html=html_out,
+                icon=ICON_PATH, **kwargs
+            )
+        else:
+            window = webview.create_window(
+                "CrowdGPT", html=html_out,
+                **kwargs
+            )
+    except TypeError:
+        window = webview.create_window(
+            "CrowdGPT", html=html_out,
+            **kwargs
+        )
+    
+    api.window = window
+    webview.start(startup, debug=False)
