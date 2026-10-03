@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client — Continuous Swarm Edition v1.0
+CrowdGPT GUI Client — Qwen tokenizer preview + fixed loss graph + instant stop
 """
-import os, sys, io, json, time, struct, math, gc, threading, base64, logging, tempfile, atexit
+import os, sys, io, json, time, struct, math, gc, threading, base64, logging, tempfile, atexit, subprocess
 from pathlib import Path
 import webview
 import numpy as np
@@ -26,7 +26,9 @@ log = logging.getLogger(__name__)
 # ============ CONFIG ============
 CHECKPOINT_DIR = Path("checkpoints")
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+
 DATASET_REPO_ID = "Vxtzq/CrowdGPT"
+TOKENIZER_REPO = "Qwen/Qwen2.5-1.5B"
 
 MODEL_CONFIG = {
     "vocabSize": 151669, "dim": 1536, "nLayers": 24, "nHeads": 16, "nKvHeads": 4,
@@ -53,7 +55,6 @@ EXPECTED_ENGRAM_SIZE = ENG_NUM_BUCKETS * DIM
 EXPECTED_WEIGHT_BYTES = (EXPECTED_MODEL_SIZE + EXPECTED_ENGRAM_SIZE) * 2
 memory_config = {"ram_gb": 12, "is_auto_detected": False}
 train_device, train_backend = None, None
-last_logits = None
 
 def safe_float(v, default=0.0):
     try:
@@ -61,7 +62,60 @@ def safe_float(v, default=0.0):
         return float(v)
     except: return default
 
-# ============ DUAL LOGOS ============
+# ============ TOKENIZER ============
+TOKENIZER = None
+_tokenizer_started = False
+PREVIEW_EVERY = 18
+
+def start_tokenizer_loader():
+    global _tokenizer_started
+    if _tokenizer_started: return
+    _tokenizer_started = True
+    threading.Thread(target=_load_tokenizer_worker, daemon=True).start()
+
+def _load_tokenizer_worker():
+    global TOKENIZER
+    try:
+        from transformers import AutoTokenizer
+        candidates = [
+            TOKENIZER_REPO,
+            "Qwen/Qwen2.5-0.5B",
+            "Vxtzq/Crowd-v1",
+        ]
+        for repo in candidates:
+            try:
+                tok = AutoTokenizer.from_pretrained(repo, trust_remote_code=True)
+                if len(tok) >= 151000:
+                    TOKENIZER = tok
+                    log.info(f"Tokenizer loaded: {repo} ({len(tok)} tokens)")
+                    return
+            except Exception:
+                continue
+        log.warning("No compatible tokenizer loaded. Preview will use token IDs.")
+    except ImportError:
+        log.warning("transformers not installed. Preview will use token IDs.")
+    TOKENIZER = None
+
+def decode_ids(ids, max_chars=220):
+    try:
+        ids = [int(i) for i in ids]
+        if TOKENIZER is not None:
+            s = TOKENIZER.decode(ids, skip_special_tokens=True)
+            s = ' '.join(s.split())
+            if len(s) > max_chars: s = s[:max_chars] + "…"
+            return s or "…"
+    except Exception:
+        pass
+    s = ' '.join(f"#{int(i)}" for i in ids)
+    if len(s) > max_chars: s = s[:max_chars] + "…"
+    return s
+
+def decode_one(tok_id):
+    s = decode_ids([tok_id], max_chars=32)
+    if not s.strip(): return "␠"
+    return s
+
+# ============ LOGOS / ICON ============
 LOGO_URI_LIGHT = ""
 LOGO_URI_DARK = ""
 _lp_light = Path(__file__).parent / "docs/logo-black.svg"
@@ -77,7 +131,6 @@ if _lp_dark.exists():
 if not LOGO_URI_DARK:
     LOGO_URI_DARK = LOGO_URI_LIGHT
 
-# ============ APP ICON ============
 ICON_PATH = None
 _cleanup_icon = []
 if _lp_light.exists():
@@ -163,7 +216,6 @@ def auto_detect_vram_budget():
         except: pass
     if train_backend == "MPS":
         try:
-            import subprocess
             out = subprocess.check_output(["sysctl", "-n", "hw.memsize"]).decode().strip()
             total_gb = int(out) / 1024**3
             memory_config.update({"ram_gb": round(max(1.0, total_gb * 0.75 - 2.0), 2), "is_auto_detected": True}); return
@@ -287,6 +339,7 @@ class SotaGPT(nn.Module):
             if not n.startswith('engram.'):
                 s = p.numel(); p.data.copy_(ft[o:o+s].view(p.shape).to(p.device)); o += s
 
+# ============ DATASET ============
 def _fetch_with_retry(url, headers=None, timeout=60, retries=5):
     for a in range(retries):
         try:
@@ -368,6 +421,7 @@ def decompress_weights(raw, fmt="bf16"):
     if fmt == "fp16": return np.frombuffer(raw, dtype=np.uint16).view(np.float16).astype(np.float32)
     return torch.from_numpy(np.frombuffer(raw, dtype=np.uint16).copy()).view(torch.bfloat16).to(torch.float32).numpy()
 
+# ============ AUTH ============
 def do_login(srv, u, p):
     try:
         r = requests.post(f"{srv}/auth/login", json={"username": u, "password": p}, timeout=30)
@@ -394,6 +448,7 @@ def do_register(srv, u, email, p):
     except requests.exceptions.ConnectionError: return None, "network"
     except: return None, "network"
 
+# ============ HEARTBEAT / ROUND ============
 class HeartbeatManager:
     def __init__(self, srv, h, cr, se, emit):
         self.srv, self.h, self.cr = srv, h, cr
@@ -482,9 +537,10 @@ def fetch_task(srv, h, prec, se, emit):
             if se.is_set(): return None, None
             emit('log', f"Task fetch failed: {e}"); time.sleep(15)
 
+# ============ FORWARD / LOSS ============
 def _chunk_ce(m, xs, ys): return F.cross_entropy(m.lm_head(xs).reshape(-1, VOCAB_SIZE), ys.reshape(-1))
 
-def _fwl(m, x, y, sl, ua, ad, ls=1.0):
+def _fwl(m, x, y, sl, ua, ad, ls=1.0, preview=False):
     def fwd():
         xe = m.wte(x)
         if ua:
@@ -493,6 +549,7 @@ def _fwl(m, x, y, sl, ua, ad, ls=1.0):
         xe = xe + eo.to(xe.dtype)
         for b in m.blocks: xe = checkpoint(b, xe, m.freqs_cos, m.freqs_sin, True, use_reentrant=False)
         return m.ln_f(xe)
+
     nc = max(1, math.ceil(sl/LOSS_CHUNK))
     if ua:
         with torch.autocast(device_type='cuda', dtype=ad):
@@ -501,34 +558,94 @@ def _fwl(m, x, y, sl, ua, ad, ls=1.0):
     else:
         xe = fwd()
         lo = sum(checkpoint(_chunk_ce, m, xe[:, i:i+LOSS_CHUNK, :], y[:, i:i+LOSS_CHUNK], use_reentrant=False) for i in range(0, sl, LOSS_CHUNK))/nc
-    return lo*ls
 
-def run_single_round(srv, at, se, emit):
-    global train_device, train_backend, last_logits
+    cards = []
+    if preview:
+        try:
+            with torch.no_grad():
+                B, T, C = xe.shape
+                items = []
+                for b in range(min(B, 3)):
+                    items.append((b, T - 1))
+                for offset in (24, 48, 72):
+                    p = T - offset - 1
+                    if p >= 9:
+                        items.append((0, p))
+                items = items[:6]
+
+                for b, p in items:
+                    if p < 9 or p >= T: continue
+                    start = max(0, p - 9)
+                    ctx_ids = x[b, start:p + 1].tolist()
+                    target_id = int(y[b, p].item())
+
+                    hidden = xe[b, p, :].unsqueeze(0).to(m.lm_head.weight.dtype)
+                    logits = m.lm_head(hidden).float()
+                    probs = torch.softmax(logits[0], dim=-1)
+                    prob, pred = torch.max(probs, dim=0)
+                    pred_id = int(pred.item())
+
+                    cards.append({
+                        'context': decode_ids(ctx_ids),
+                        'target': decode_one(target_id),
+                        'pred': decode_one(pred_id),
+                        'match': bool(pred_id == target_id),
+                        'prob': safe_float(prob.item()),
+                        'target_id': int(target_id),
+                        'pred_id': int(pred_id)
+                    })
+        except Exception as e:
+            log.warning(f"Preview extraction failed: {e}")
+            cards = []
+
+    return lo * ls, cards
+
+# ============ TRAIN ROUND ============
+def run_single_round_wrapper(srv, at, se, emit):
+    global train_device, train_backend
     h = {"Authorization": f"Bearer {at}"} if at else {}
     emit('status', 'waiting')
     rs = wait_for_round(srv, h, se, emit)
     if not rs: return
+
     cr = rs["current_round"]
-    hb = HeartbeatManager(srv, h, cr, se, emit); hb.start()
+    hb = HeartbeatManager(srv, h, cr, se, emit)
+    hb.start()
+
+    model = ob = oe = x = y = lo = iw = ie = iew = ds = None
+    micro_step = 0
+    lval = 10.0
+    tt = 0
+    tid = ""
+
     try:
         emit('log', "Downloading weights...")
         md, wb = fetch_task(srv, h, "bf16", se, emit)
         if md is None: return
-        
+
         emit('status', 'preparing')
         emit('log', "Preparing model...")
-        
+
         tid, gs = md['taskId'], md['globalStep']
         sl = 2048
-        bbl = EXPECTED_MODEL_SIZE*2
-        iw = decompress_weights(wb[:bbl], "bf16"); ie = decompress_weights(wb[bbl:], "bf16")
+        bbl = EXPECTED_MODEL_SIZE * 2
+        iw = decompress_weights(wb[:bbl], "bf16")
+        ie = decompress_weights(wb[bbl:], "bf16")
         del wb; gc.collect()
-        dc = md.get("datasetConfig", {}); sc = md.get("shardConfig", {})
-        ds = StreamingShardDataset(dc.get("repoId", DATASET_REPO_ID), dc.get("chunkIdx", 0),
-            dc.get("subChunkSize", 10*1024*1024), dc.get("tokensPerSample", sl+1), sc.get("slot", 0), at)
+
+        dc = md.get("datasetConfig", {})
+        sc = md.get("shardConfig", {})
+        ds = StreamingShardDataset(
+            dc.get("repoId", DATASET_REPO_ID),
+            dc.get("chunkIdx", 0),
+            dc.get("subChunkSize", 10*1024*1024),
+            dc.get("tokensPerSample", sl+1),
+            sc.get("slot", 0),
+            at
+        )
+
         bs = recommend_batch_size(sl)
-        model = None
+
         while bs >= 1:
             try:
                 if train_backend in ("CUDA", "ROCM"):
@@ -536,15 +653,10 @@ def run_single_round(srv, at, se, emit):
                     except: pass
                 gc.collect()
                 model = SotaGPT(train_backend, train_device).to(train_device)
-                model.engram.table.to('cpu'); model.load_base_weights(iw)
+                model.engram.table.to('cpu')
+                model.load_base_weights(iw)
                 model.engram.table.weight.data.copy_(torch.from_numpy(ie).view(model.engram.table.weight.shape))
                 model.train()
-                
-                def _capture_logits(module, input, output):
-                    global last_logits
-                    last_logits = output[:, -1, :].detach().cpu()
-                
-                model.lm_head.register_forward_hook(_capture_logits)
                 break
             except RuntimeError as e:
                 if "out of memory" in str(e).lower():
@@ -554,7 +666,13 @@ def run_single_round(srv, at, se, emit):
                         except: pass
                     gc.collect(); bs = max(1, bs//2)
                 else: raise
+
+        if model is None:
+            emit('log', "Failed to initialize model.")
+            return
+
         mbt = bs*sl; as_ = max(1, round(131072/mbt)); ls = 1.0/as_
+
         def ha():
             nonlocal as_, ls
             as_ = max(1, as_//2); ls = 1.0/as_
@@ -563,113 +681,122 @@ def run_single_round(srv, at, se, emit):
                 try: torch.cuda.empty_cache()
                 except: pass
             emit('log', f"OOM -> accum now {as_}x")
+
         bp = [p for n, p in model.named_parameters() if not n.startswith('engram.')]
         ep = list(model.engram.parameters())
+
         try:
             import bitsandbytes as bnb
             ob = bnb.optim.AdamW8bit(bp, lr=1e-4, betas=(0.9, 0.95), weight_decay=0.01)
-        except: ob = torch.optim.AdamW(bp, lr=1e-4, betas=(0.9, 0.95), weight_decay=0.01)
-        try: oe = torch.optim.SparseAdam(ep, lr=1e-4)
-        except: oe = torch.optim.AdamW(ep, lr=1e-4, weight_decay=0.01)
+        except:
+            ob = torch.optim.AdamW(bp, lr=1e-4, betas=(0.9, 0.95), weight_decay=0.01)
+
+        try:
+            oe = torch.optim.SparseAdam(ep, lr=1e-4)
+        except:
+            oe = torch.optim.AdamW(ep, lr=1e-4, weight_decay=0.01)
+
         iew = model.engram.table.weight.data.cpu().clone()
         ua = train_backend in ("CUDA", "ROCM") and torch.cuda.is_bf16_supported()
         ad = torch.bfloat16 if ua else None
+
         emit('log', "Calibrating speed...")
-        tt = 0; cs_ = time.time()
-        micro_step = 0
+        cs_ = time.time()
         cal_global_steps = 3
         target_micro_steps = 100
         emit('status', 'calibrating')
         cal_done = 0
+
         while cal_done < cal_global_steps:
             if hb.should_stop() or se.is_set(): return
             ob.zero_grad(set_to_none=True)
             try:
                 for mi in range(as_):
+                    if hb.should_stop() or se.is_set(): break
                     if ds.needs_new_subchunk(): ds.advance(srv, "bf16")
-                    sd = (hash("cal") % 10000) + cal_done*1000 + mi
+                    sd = (abs(hash("cal")) % 10000) + cal_done*1000 + mi
                     x, y = ds.get_batch(bs, seed=sd); x, y = x.to(train_device), y.to(train_device)
-                    lo = _fwl(model, x, y, sl, ua, ad, ls)
+
+                    want_preview = ((micro_step + 1) % PREVIEW_EVERY == 0)
+                    lo, cards = _fwl(model, x, y, sl, ua, ad, ls, preview=want_preview)
                     lval = float(lo.item())
                     micro_step += 1
+
+                    if cards:
+                        emit('model_preview', {'step': micro_step, 'cards': cards})
+
                     if cal_done >= 1 and mi == 0:
                         elapsed = time.time() - cs_
                         sps_micro = elapsed / micro_step
                         rh = max(0.1, rs.get("max_round_hours", 2.0) - rs.get("round_elapsed_hours", 0))
                         remaining = max(60, (rh*3600) - elapsed - (UPLOAD_BUFFER_MIN*60))
                         target_micro_steps = micro_step + int(remaining / sps_micro)
-                    
+
                     elapsed_cal = time.time() - cs_
                     current_tps = tt / max(elapsed_cal, 1.0)
-                    
+
                     emit('cal_stats', {
-                        'step': micro_step, 'total': target_micro_steps,
-                        'loss': safe_float(lval * as_, 10.0), 
+                        'step': micro_step,
+                        'total': target_micro_steps,
+                        'loss': safe_float(lval * as_, 10.0),
                         'microbatch': micro_step,
                         'tps': safe_float(current_tps)
                     })
+
                     lo.backward()
                     oe.step(); oe.zero_grad(set_to_none=True)
                     tt += x.numel(); del lo, x, y
+
+                if hb.should_stop() or se.is_set(): return
+
             except RuntimeError as e:
                 if "out of memory" not in str(e).lower(): raise
                 ha(); continue
-            torch.nn.utils.clip_grad_norm_(bp, 1.0); ob.step(); ob.zero_grad(set_to_none=True)
+
+            torch.nn.utils.clip_grad_norm_(bp, 1.0)
+            ob.step(); ob.zero_grad(set_to_none=True)
             gc.collect()
             cal_done += 1
+
+        if se.is_set(): return
 
         rh = max(0.1, rs.get("max_round_hours", 2.0) - rs.get("round_elapsed_hours", 0))
         remaining = max(60, (rh*3600) - (time.time() - cs_) - (UPLOAD_BUFFER_MIN*60))
         dl = time.time() + remaining
-        
+
         if micro_step > 0:
             sps_micro = (time.time() - cs_) / micro_step
             target_micro_steps = micro_step + int(remaining / sps_micro)
         else:
             target_micro_steps = 1000
-            
+
         emit('status', 'training')
         emit('log', f"Target: ~{target_micro_steps} micro-steps")
-        
+
         last_stats_emit = 0.0
-        
+
         while time.time() < dl:
             if hb.should_stop() or se.is_set(): break
-            
             ob.zero_grad(set_to_none=True)
             als = 0.0; cc = 0
-            
             try:
                 for mi in range(as_):
                     if hb.should_stop() or se.is_set() or time.time() >= dl: break
                     if ds.needs_new_subchunk(): ds.advance(srv, "bf16")
-                    sd = (hash("t") % 10000) + micro_step*1000 + mi
+                    sd = (abs(hash("t")) % 10000) + micro_step*1000 + mi
                     x, y = ds.get_batch(bs, seed=sd); x, y = x.to(train_device), y.to(train_device)
-                    lo = _fwl(model, x, y, sl, ua, ad, ls)
+
+                    want_preview = ((micro_step + 1) % PREVIEW_EVERY == 0)
+                    lo, cards = _fwl(model, x, y, sl, ua, ad, ls, preview=want_preview)
                     lval = float(lo.item())*as_
                     lo.backward()
                     oe.step(); oe.zero_grad(set_to_none=True)
-                    als += lval; tt += x.numel(); cc += 1
-                    micro_step += 1
-                    
-                    if micro_step % 30 == 0 and last_logits is not None:
-                        try:
-                            with torch.no_grad():
-                                probs = torch.softmax(last_logits[0].float(), dim=-1)
-                                topk = torch.topk(probs, 5)
-                                target_tok = y[0, -1].item() if y.dim() > 1 else 0
-                                pred_data = {
-                                    'step': micro_step,
-                                    'predictions': [
-                                        {'token': int(topk.indices[i]), 'prob': safe_float(topk.values[i].item())}
-                                        for i in range(5)
-                                    ],
-                                    'target': int(target_tok),
-                                    'match': int(topk.indices[0]) == int(target_tok)
-                                }
-                                emit('model_preview', pred_data)
-                        except: pass
-                    
+
+                    als += lval; tt += x.numel(); cc += 1; micro_step += 1
+
+                    if cards:
+                        emit('model_preview', {'step': micro_step, 'cards': cards})
+
                     rem_time = max(1, dl - time.time())
                     elapsed_total = time.time() - cs_
                     if micro_step > 5:
@@ -678,93 +805,100 @@ def run_single_round(srv, at, se, emit):
                         current_target = micro_step + future_steps
                         if current_target > target_micro_steps:
                             target_micro_steps = current_target
-                            
+
                     if time.time() - last_stats_emit > 0.25 or time.time() >= dl:
                         last_stats_emit = time.time()
                         lv = als/cc if cc > 0 else 10.0
                         ctps = tt/max(time.time()-cs_, 1)
                         emit('stats', {
-                            'step': micro_step, 'target': target_micro_steps, 
-                            'loss': safe_float(lv, 10.0), 
-                            'tps': safe_float(ctps), 'global_step': gs, 'round': cr, 
+                            'step': micro_step,
+                            'target': target_micro_steps,
+                            'loss': safe_float(lv, 10.0),
+                            'tps': safe_float(ctps),
+                            'global_step': gs,
+                            'round': cr,
                             'time_left': safe_float(max(0, (dl-time.time())/60))
                         })
+
                     del lo, x, y
+
+                if hb.should_stop() or se.is_set(): break
+
             except RuntimeError as e:
                 if "out of memory" not in str(e).lower(): raise
                 ha(); continue
-                
+
             if cc == 0: break
-            torch.nn.utils.clip_grad_norm_(bp, 1.0); ob.step(); ob.zero_grad(set_to_none=True)
+            torch.nn.utils.clip_grad_norm_(bp, 1.0)
+            ob.step(); ob.zero_grad(set_to_none=True)
+
+        if se.is_set():
+            emit('log', "Stopped by user. Skipping upload.")
+            return
+
+        fl = float(lval) if lval else 10.0
+        emit('log', f"Done: {micro_step} micro-steps, loss {fl:.4f}")
+        emit('status', 'uploading')
+
+        dbf = torch.from_numpy(model.get_base_weights()-iw).to(torch.bfloat16).view(torch.uint16).numpy()
+        ed = model.engram.table.weight.data.cpu()-iew
+        rn = ed.abs().sum(dim=1); k = max(1, int(len(rn)*0.10))
+        tv, ti = torch.topk(rn, k); ai = ti[tv > 1e-8]
+        si = ai.cpu().numpy().astype(np.uint32) if len(ai) else np.array([], dtype=np.uint32)
+        sv = ed[ai].to(torch.bfloat16).view(torch.uint16).numpy() if len(ai) else np.array([], dtype=np.uint16)
+
+        pl = json.dumps({"taskId": tid, "loss": fl, "localSteps": micro_step, "tokensProcessed": tt, "loraRank": 0, "isDelta": True, "weightFormat": "bf16", "hasEngram": True, "engramSparseCount": len(si)}).encode()
+        bi = struct.pack('<I', len(pl)) + pl + np.ascontiguousarray(dbf).tobytes() + np.ascontiguousarray(si).tobytes() + np.ascontiguousarray(sv).tobytes()
+
+        compressed_data = gzip.compress(bi, compresslevel=2)
+        upload_size_mb = len(compressed_data) / (1024 * 1024)
+
+        def stream_with_progress(data, emit_cb, total_size, stop_evt):
+            chunk_size = 128 * 1024
+            uploaded = 0
+            last_emit = 0.0
+            for i in range(0, len(data), chunk_size):
+                if stop_evt.is_set(): raise KeyboardInterrupt("Stop requested")
+                chunk = data[i:i+chunk_size]
+                uploaded += len(chunk)
+                now = time.time()
+                if now - last_emit > 0.25:
+                    emit_cb('overlay_progress', {'done': uploaded, 'total': total_size})
+                    last_emit = now
+                yield chunk
+            emit_cb('overlay_progress', {'done': total_size, 'total': total_size})
+
+        emit('overlay_show', {'title_key': 'uploading', 'indeterminate': False})
+        emit('log', f"Uploading {upload_size_mb:.1f} MB delta to server...")
+
+        try:
+            r = requests.post(
+                f"{srv}/fl/submit",
+                headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **h},
+                data=stream_with_progress(compressed_data, emit, len(compressed_data), se),
+                timeout=600
+            )
+            if r.status_code == 200: emit('log', "Submitted successfully!")
+            else: emit('log', f"Submit failed: {r.text[:100]}")
+        except KeyboardInterrupt:
+            emit('log', "Upload aborted by user.")
+        except Exception as e:
+            emit('log', f"Upload failed: {e}")
+        finally:
+            emit('overlay_hide', {})
 
     finally:
         hb.stop()
-        if 'ds' in locals() and ds: del ds
+        model = ob = oe = x = y = lo = iw = ie = iew = ds = None
         gc.collect()
         if train_backend in ("CUDA", "ROCM"):
-            try: torch.cuda.empty_cache()
+            try:
+                torch.cuda.empty_cache()
+                gc.collect()
+                torch.cuda.empty_cache()
             except: pass
 
-    if 'micro_step' not in locals() or micro_step <= 0: return
-    
-    if se.is_set():
-        emit('log', "Stopped by user. Skipping upload.")
-        return
-
-    fl = float(lval) if 'lval' in locals() else 10.0
-    emit('log', f"Done: {micro_step} micro-steps, loss {fl:.4f}")
-    
-    emit('status', 'uploading')
-    
-    dbf = torch.from_numpy(model.get_base_weights()-iw).to(torch.bfloat16).view(torch.uint16).numpy()
-    ed = model.engram.table.weight.data.cpu()-iew
-    rn = ed.abs().sum(dim=1); k = max(1, int(len(rn)*0.10))
-    tv, ti = torch.topk(rn, k); ai = ti[tv > 1e-8]
-    si = ai.cpu().numpy().astype(np.uint32) if len(ai) else np.array([], dtype=np.uint32)
-    sv = ed[ai].to(torch.bfloat16).view(torch.uint16).numpy() if len(ai) else np.array([], dtype=np.uint16)
-    
-    pl = json.dumps({"taskId": tid, "loss": fl, "localSteps": micro_step, "tokensProcessed": tt, "loraRank": 0, "isDelta": True, "weightFormat": "bf16", "hasEngram": True, "engramSparseCount": len(si)}).encode()
-    bi = struct.pack('<I', len(pl)) + pl + np.ascontiguousarray(dbf).tobytes() + np.ascontiguousarray(si).tobytes() + np.ascontiguousarray(sv).tobytes()
-    
-    compressed_data = gzip.compress(bi, compresslevel=2)
-    upload_size_mb = len(compressed_data) / (1024 * 1024)
-    
-    def stream_with_progress(data, emit_cb, total_size):
-        chunk_size = 128 * 1024
-        uploaded = 0
-        last_emit = 0.0
-        for i in range(0, len(data), chunk_size):
-            chunk = data[i:i+chunk_size]
-            uploaded += len(chunk)
-            now = time.time()
-            if now - last_emit > 0.25:
-                emit_cb('overlay_progress', {'done': uploaded, 'total': total_size})
-                last_emit = now
-            yield chunk
-        emit_cb('overlay_progress', {'done': total_size, 'total': total_size})
-
-    emit('overlay_show', {'title_key': 'uploading', 'indeterminate': False})
-    emit('log', f"Uploading {upload_size_mb:.1f} MB delta to server...")
-    
-    try:
-        r = requests.post(
-            f"{srv}/fl/submit", 
-            headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **h}, 
-            data=stream_with_progress(compressed_data, emit, len(compressed_data)),
-            timeout=600
-        )
-        if r.status_code == 200:
-            emit('log', "Submitted successfully!")
-        else:
-            emit('log', f"Submit failed: {r.text[:100]}")
-    except Exception as e: 
-        emit('log', f"Upload failed: {e}")
-    finally:
-        emit('overlay_hide')
-        
-    del model; gc.collect()
-
-
+# ============ HTML / CSS / JS ============
 HTML = """<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -774,9 +908,9 @@ HTML = """<!DOCTYPE html>
   --text:#111113; --text-dim:#3a3a40; --text-muted:#6b6b73;
   --border:#e4e4e1; --border-strong:#d0d0cb;
   --accent:#16a34a; --accent-dim:#15803d;
-  --err:#dc2626; --err-soft:rgba(220,38,38,.06); --err-border:rgba(220,38,38,.28);
-  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
-  --mono:'JetBrains Mono',ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --err:#dc2626;
+  --mono:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
   --r:6px;
 }
 body.dark{
@@ -784,13 +918,11 @@ body.dark{
   --text:#e8e8ec; --text-dim:#b8b8be; --text-muted:#888890;
   --border:#3a3a40; --border-strong:#505058;
   --accent:#22c55e; --accent-dim:#4ade80;
-  --err:#f87171; --err-soft:rgba(248,113,113,.08); --err-border:rgba(248,113,113,.35);
+  --err:#f87171;
 }
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%;width:100%}
 body{background:var(--bg);color:var(--text);font-family:var(--sans);display:flex;flex-direction:column;overflow:hidden;font-size:14px;line-height:1.5}
-.mono{font-family:var(--mono)}
-
 header{flex:0 0 auto;height:54px;border-bottom:1px solid var(--border);background:var(--bg);display:flex;align-items:center;justify-content:space-between;padding:0 clamp(12px,2vw,20px);gap:10px}
 .logo{display:flex;align-items:center;gap:9px;min-width:0}
 .logo-img{height:22px;width:auto}
@@ -799,67 +931,29 @@ header{flex:0 0 auto;height:54px;border-bottom:1px solid var(--border);backgroun
 .logo-ver{font-family:var(--mono);font-size:10px;color:var(--text-muted);border:1px solid var(--border);padding:1px 5px;border-radius:3px}
 .header-right{display:flex;align-items:center;gap:8px}
 #user-info{font-family:var(--mono);font-size:11px;color:var(--text-muted);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-
-.theme-toggle{
-  width:30px;height:30px;flex:0 0 auto;
-  display:flex;align-items:center;justify-content:center;
-  background:var(--bg-soft);color:var(--text);
-  border:1px solid var(--border);border-radius:4px;
-  cursor:pointer;outline:none;font-size:14px;line-height:1;padding:0;
+.theme-toggle,.backend-select{
+  font-family:var(--sans);font-size:12px;background:var(--bg-soft);color:var(--text);
+  border:1px solid var(--border);padding:5px 10px;border-radius:4px;cursor:pointer;outline:none;
 }
-.theme-toggle:hover{border-color:var(--border-strong)}
-.theme-toggle .icon-sun{display:none}
-.theme-toggle .icon-moon{display:inline}
-body.dark .theme-toggle .icon-sun{display:inline}
-body.dark .theme-toggle .icon-moon{display:none}
-
-body:not(.dashboard-active) #backend-select { display: none; }
-
-.backend-select, .lang-select{
-  font-family:var(--sans);font-size:12px;
-  background:var(--bg-soft);color:var(--text);
-  border:1px solid var(--border);
-  padding:5px 22px 5px 8px;border-radius:4px;
-  cursor:pointer;outline:none;appearance:none;-webkit-appearance:none;
-  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'><path d='M0 0l4 5 4-5z' fill='%236b6b73'/></svg>");
-  background-repeat:no-repeat;background-position:right 7px center;background-size:8px;
-}
-body.dark .backend-select, body.dark .lang-select{
-  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'><path d='M0 0l4 5 4-5z' fill='%23888890'/></svg>");
-}
-.backend-select:hover, .lang-select:hover{border-color:var(--border-strong)}
-.backend-select:focus, .lang-select:focus{border-color:var(--accent)}
-.backend-select:disabled{opacity:.5;cursor:not-allowed}
-.backend-select option:disabled{color:var(--text-muted);opacity:.5}
-
+.theme-toggle{width:34px;height:30px;padding:0}
+body:not(.dashboard-active) #backend-select{display:none}
 main{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:clamp(10px,2vw,18px) clamp(12px,2vw,20px)}
 .view{display:none;height:100%;min-height:0}
 .view.active{display:flex;flex-direction:column}
-
 #view-login.active{flex:1 1 auto;align-items:center;justify-content:center;padding:10px 0;min-height:0}
 .login-box{
-  width: min(380px, 100%); max-height: 100%; overflow-y: auto;
-  background: var(--bg-soft); border: 1px solid var(--border);
-  padding: clamp(14px, 2.5vw, 24px); border-radius: 8px;
-  display: flex; flex-direction: column;
-  scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent;
+  width:min(380px,100%);max-height:100%;overflow-y:auto;background:var(--bg-soft);border:1px solid var(--border);
+  padding:clamp(14px,2.5vw,24px);border-radius:8px;display:flex;flex-direction:column;
 }
-.login-box::-webkit-scrollbar { width: 4px; }
-.login-box::-webkit-scrollbar-track { background: transparent; }
-.login-box::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 2px; }
-
 .auth-screen{display:none;flex-direction:column;gap:0}
 .auth-screen.active{display:flex}
-
 .login-box h2{font-size:clamp(17px,3vw,21px);font-weight:600;text-align:center;margin-bottom:3px}
 .login-box h2 .em{color:var(--accent);font-weight:700}
 .login-sub{font-size:12px;color:var(--text-dim);text-align:center;margin-bottom:14px}
 .fg{margin-bottom:9px}
 .fg label{display:block;font-size:9px;color:var(--text-muted);margin-bottom:3px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.07em}
-input{width:100%;font-family:inherit;font-size:12.5px;background:var(--bg-softer);color:var(--text);border:1px solid var(--border);padding:8px 10px;border-radius:4px;outline:none;transition:border-color .15s}
+input{width:100%;font-family:inherit;font-size:12.5px;background:var(--bg-softer);color:var(--text);border:1px solid var(--border);padding:8px 10px;border-radius:4px;outline:none}
 input:focus{border-color:var(--accent)}
-input.err{border-color:var(--err)}
-
 button{font-family:inherit;font-size:12.5px;font-weight:500;cursor:pointer;border-radius:4px;transition:all .15s}
 .btn-primary{background:var(--text);color:var(--bg);border:1px solid var(--text);padding:9px 14px}
 .btn-primary:hover:not(:disabled){opacity:.85}
@@ -867,111 +961,63 @@ button{font-family:inherit;font-size:12.5px;font-weight:500;cursor:pointer;borde
 .btn-danger:hover:not(:disabled){background:var(--err);color:#fff}
 button:disabled{opacity:.4;cursor:not-allowed}
 .auth-btn{width:100%;margin-top:2px}
-
-.error-box{
-  display:none;margin-top:8px;padding:8px 10px 8px 12px;
-  background:var(--err-soft);border:1px solid var(--err-border);border-left:3px solid var(--err);
-  border-radius:4px;font-size:12px;color:var(--err);line-height:1.4;
-}
+.error-box{display:none;margin-top:8px;padding:8px 10px;background:rgba(220,38,38,.06);border:1px solid rgba(220,38,38,.28);border-left:3px solid var(--err);border-radius:4px;font-size:12px;color:var(--err)}
 .error-box.show{display:block}
-
 .auth-switch{margin-top:12px;font-size:12px;color:var(--text-muted);text-align:center}
-.auth-switch a{color:var(--accent-dim);font-weight:500;cursor:pointer;text-decoration:none;border-bottom:1px solid transparent;transition:border-color .15s}
-.auth-switch a:hover{border-bottom-color:var(--accent-dim)}
-
-.anon-hint{margin-top:10px;padding-top:10px;border-top:1px solid var(--border);font-size:11px;color:var(--text-muted);text-align:center;line-height:1.4}
-.anon-hint a{color:var(--text-dim);cursor:pointer;text-decoration:none;border-bottom:1px dotted var(--border-strong)}
-.anon-hint a:hover{color:var(--text);border-bottom-color:var(--text)}
-
+.auth-switch a{color:var(--accent-dim);font-weight:500;cursor:pointer}
+.anon-hint{margin-top:10px;padding-top:10px;border-top:1px solid var(--border);font-size:11px;color:var(--text-muted);text-align:center}
+.anon-hint a{color:var(--text-dim);cursor:pointer}
 .dash{display:flex;flex-direction:column;gap:10px;flex:1 1 auto;min-height:0}
 .dash-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex:0 0 auto}
 .dash-title{font-size:17px;font-weight:600}
 .status-badge{font-family:var(--mono);font-size:10px;padding:3px 10px;border-radius:100px;background:rgba(22,163,74,.08);color:var(--accent-dim);border:1px solid rgba(22,163,74,.35);white-space:nowrap}
 body.dark .status-badge{background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.4)}
-
 .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;flex:0 0 auto}
 .stat-card{background:var(--bg-soft);border:1px solid var(--border);padding:12px 14px;border-radius:var(--r);min-width:0}
 .stat-val{font-family:var(--mono);font-size:clamp(17px,2.4vw,22px);font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .stat-val.accent{color:var(--accent-dim)}
 .stat-lbl{font-size:11px;color:var(--text-muted);margin-top:2px}
-
 .panel{background:var(--bg-soft);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;flex:0 0 auto}
 .panel-head{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:8px;font-family:var(--mono);font-size:11px;color:var(--text-muted);flex-wrap:wrap}
 .panel-head .pv{color:var(--text)}
 .progress-track{height:6px;background:var(--bg-softer);border:1px solid var(--border);border-radius:3px;overflow:hidden}
 .progress-fill{height:100%;width:0%;background:var(--accent);transition:width .4s ease}
-
 #loss-graph{display:block;width:100%;height:64px}
 .graph-empty{color:var(--text-muted);font-family:var(--mono);font-size:11px;text-align:center;padding:20px 0}
-
-.preview-container{font-family:var(--mono);font-size:12px;padding:8px 0;min-height:120px}
-.preview-empty{color:var(--text-muted);text-align:center;padding:24px 0;font-size:11px}
-.pred-row{display:flex;align-items:center;gap:8px;margin-bottom:5px}
-.pred-token{width:72px;text-align:right;color:var(--text-dim);flex-shrink:0;font-size:11px}
-.pred-bar-bg{flex:1;height:18px;background:var(--bg-softer);border-radius:4px;overflow:hidden;border:1px solid var(--border)}
-.pred-bar{height:100%;border-radius:3px;transition:width .4s ease;background:linear-gradient(90deg,var(--accent-dim),var(--accent))}
-body.dark .pred-bar{background:linear-gradient(90deg,var(--accent-dim),var(--accent))}
-.pred-pct{width:50px;text-align:right;color:var(--text-muted);flex-shrink:0;font-size:11px}
-.pred-target{margin-top:10px;padding-top:8px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;font-size:11px}
-.pred-match{color:var(--accent);font-weight:600}
-.pred-mismatch{color:var(--err);font-weight:600}
-
-.status-strip{
-  flex:0 0 auto;
-  font-family:var(--mono);font-size:11px;color:var(--text-muted);
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  padding: 4px 0;
-}
+.preview-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;min-height:130px}
+.preview-empty{grid-column:1/-1;color:var(--text-muted);text-align:center;padding:24px 0;font-size:11px}
+.pred-card{border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--bg-softer);animation:cardIn .35s ease;overflow:hidden}
+.pred-card.good{border-color:rgba(22,163,74,.45);box-shadow:inset 3px 0 0 var(--accent)}
+.pred-card.bad{border-color:rgba(220,38,38,.35);box-shadow:inset 3px 0 0 var(--err)}
+.pred-context{font-family:var(--mono);font-size:11.5px;line-height:1.45;color:var(--text-dim);word-break:break-word}
+.pred-next{font-weight:700;padding:1px 5px;border-radius:4px;margin-left:4px;display:inline-block}
+.good .pred-next{color:var(--accent-dim);background:rgba(22,163,74,.10)}
+.bad .pred-next{color:var(--err);background:rgba(220,38,38,.08)}
+.pred-meta{margin-top:7px;font-family:var(--mono);font-size:10px;color:var(--text-muted);display:flex;justify-content:space-between;gap:8px}
+.pred-badge{font-weight:700}
+.good .pred-badge{color:var(--accent-dim)}
+.bad .pred-badge{color:var(--err)}
+@keyframes cardIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.status-strip{flex:0 0 auto;font-family:var(--mono);font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:4px 0}
 .ss-event{display:block;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-
 .controls{flex:0 0 auto;display:flex;gap:8px;justify-content:flex-end;align-items:center;flex-wrap:wrap}
-
 .overlay{position:fixed;inset:0;background:rgba(250,250,249,.86);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;z-index:50;opacity:0;pointer-events:none;transition:opacity .25s}
 body.dark .overlay{background:rgba(26,26,30,.86)}
 .overlay.show{opacity:1;pointer-events:auto}
-.overlay-card{width:min(420px,88vw);background:var(--bg-soft);border:1px solid var(--border);border-radius:8px;padding:22px 24px;box-shadow:0 8px 28px rgba(17,17,19,.08)}
-body.dark .overlay-card{box-shadow:0 8px 28px rgba(0,0,0,.35)}
+.overlay-card{width:min(420px,88vw);background:var(--bg-soft);border:1px solid var(--border);border-radius:8px;padding:22px 24px}
 .overlay-title{font-size:15px;font-weight:600;margin-bottom:4px}
 .overlay-subtitle{font-size:12.5px;color:var(--text-muted);margin-bottom:14px;line-height:1.5;display:none}
 .overlay-subtitle.show{display:block}
 .overlay-bar{height:10px;background:var(--bg-softer);border:1px solid var(--border);border-radius:5px;overflow:hidden;position:relative}
 .overlay-bar.hidden{display:none}
-.overlay-fill{height:100%;width:0%;background:linear-gradient(90deg,#15803d,#16a34a 55%,#4ade80);position:relative;overflow:hidden;transition:width .25s ease}
+.overlay-fill{height:100%;width:0%;background:linear-gradient(90deg,#15803d,#16a34a 55%,#4ade80);transition:width .25s ease}
 body.dark .overlay-fill{background:linear-gradient(90deg,#15803d,#22c55e 55%,#86efac)}
-.overlay-fill::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent);animation:shimmer 1.6s linear infinite}
-@keyframes shimmer{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
 .overlay-bar.indet .overlay-fill{width:35%;transition:none;animation:indet 1.15s ease-in-out infinite}
 @keyframes indet{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
 .overlay-sub{margin-top:10px;font-family:var(--mono);font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;gap:8px}
-
 .overlay-card .overlay-msg{font-size:13px;color:var(--text-dim);line-height:1.5;margin-bottom:16px}
 .overlay-card .overlay-actions{display:flex;gap:8px;justify-content:flex-end}
 .overlay-card .overlay-actions button{min-width:90px;justify-content:center}
-
-@media (max-width:520px){
-  header{height:auto;flex-wrap:wrap;padding:8px 12px}
-  #user-info{display:none}
-  .controls button{flex:1}
-}
-
-@media (max-height: 560px){
-  main { padding: 8px 12px; }
-  .login-box { padding: 12px; }
-  .login-box h2 { font-size: 16px; margin-bottom: 2px; }
-  .login-sub { font-size: 11px; margin-bottom: 10px; }
-  .fg { margin-bottom: 7px; }
-  .fg label { margin-bottom: 2px; font-size: 8px; }
-  input { padding: 7px 9px; font-size: 12px; }
-  .auth-btn { padding: 8px 12px; margin-top: 1px; font-size: 12px; }
-  .auth-switch { margin-top: 8px; font-size: 11px; }
-  .anon-hint { margin-top: 8px; padding-top: 8px; font-size: 10px; }
-  .error-box { font-size: 11px; padding: 6px 8px 6px 10px; }
-  #loss-graph{height:48px}
-  .stat-card{padding:8px 10px}
-  .stat-val{font-size:15px}
-  .panel{padding:8px 10px}
-  .graph-empty{padding:12px 0}
-}
 </style></head>
 <body>
 <header>
@@ -979,19 +1025,12 @@ body.dark .overlay-fill{background:linear-gradient(90deg,#15803d,#22c55e 55%,#86
     <img src="__LOGO__" id="logo-img" data-light="__LOGO__" data-dark="__LOGO_DARK__" class="logo-img" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='grid';">
     <div class="logo-fallback">C</div>
     <span class="logo-text">CrowdGPT</span>
-    <span class="logo-ver">v1.0</span>
+    <span class="logo-ver">v1.2</span>
   </div>
   <div class="header-right">
     <span id="user-info"></span>
     <select class="backend-select" id="backend-select" disabled></select>
-    <select class="lang-select" id="lang-select">
-      <option value="en">English</option>
-      <option value="fr">Francais</option>
-      <option value="es">Espanol</option>
-      <option value="de">Deutsch</option>
-      <option value="tr">Turkce</option>
-    </select>
-    <button class="theme-toggle" id="theme-toggle" title="Toggle dark mode"><span class="icon-moon">&#127769;</span><span class="icon-sun">&#9728;&#65039;</span></button>
+    <button class="theme-toggle" id="theme-toggle" title="Toggle dark mode">🌙</button>
   </div>
 </header>
 
@@ -1002,33 +1041,24 @@ body.dark .overlay-fill{background:linear-gradient(90deg,#15803d,#22c55e 55%,#86
         <h2><span data-i18n="login_pre"></span><span class="em">CrowdGPT</span></h2>
         <p class="login-sub" data-i18n="login_sub"></p>
         <div class="fg"><label data-i18n="server_url"></label><input type="text" id="login-server" value="http://api.crowdgpt.net:5006"></div>
-        <div class="fg"><label data-i18n="username"></label><input type="text" id="login-user" data-i18n-ph="ph_user" autocomplete="username"></div>
+        <div class="fg"><label data-i18n="username"></label><input type="text" id="login-user" autocomplete="username"></div>
         <div class="fg"><label data-i18n="password"></label><input type="password" id="login-pass" autocomplete="current-password"></div>
         <div class="error-box" id="login-error"></div>
         <button id="btn-login" class="btn-primary auth-btn" data-i18n="login_btn"></button>
-        <div class="auth-switch">
-          <span data-i18n="no_account"></span>
-          <a id="go-to-register" data-i18n="register_link"></a>
-        </div>
-        <div class="anon-hint">
-          <span data-i18n="anon_preface"></span>
-          <a id="btn-anon" data-i18n="anon_link"></a>
-        </div>
+        <div class="auth-switch"><span data-i18n="no_account"></span> <a id="go-to-register" data-i18n="register_link"></a></div>
+        <div class="anon-hint"><span data-i18n="anon_preface"></span> <a id="btn-anon" data-i18n="anon_link"></a></div>
       </div>
 
       <div class="auth-screen" id="screen-register">
         <h2><span data-i18n="register_title_pre"></span><span class="em">CrowdGPT</span></h2>
         <p class="login-sub" data-i18n="register_sub"></p>
         <div class="fg"><label data-i18n="server_url"></label><input type="text" id="reg-server" value="http://api.crowdgpt.net:5006"></div>
-        <div class="fg"><label data-i18n="username"></label><input type="text" id="reg-user" data-i18n-ph="ph_user" autocomplete="username"></div>
+        <div class="fg"><label data-i18n="username"></label><input type="text" id="reg-user" autocomplete="username"></div>
         <div class="fg"><label data-i18n="email"></label><input type="email" id="reg-email" autocomplete="email"></div>
         <div class="fg"><label data-i18n="password"></label><input type="password" id="reg-pass" autocomplete="new-password"></div>
         <div class="error-box" id="reg-error"></div>
         <button id="btn-register" class="btn-primary auth-btn" data-i18n="register_btn"></button>
-        <div class="auth-switch">
-          <span data-i18n="have_account"></span>
-          <a id="go-to-login" data-i18n="login_link"></a>
-        </div>
+        <div class="auth-switch"><span data-i18n="have_account"></span> <a id="go-to-login" data-i18n="login_link"></a></div>
       </div>
     </div>
   </div>
@@ -1047,7 +1077,7 @@ body.dark .overlay-fill{background:linear-gradient(90deg,#15803d,#22c55e 55%,#86
 
       <div class="panel">
         <div class="panel-head">
-          <span><span data-i18n="round"></span> <span class="pv" id="stat-round">-</span> . <span data-i18n="step"></span> <span class="pv" id="stat-step-cur">0</span>/<span class="pv" id="stat-step-tot">0</span></span>
+          <span><span data-i18n="round"></span> <span class="pv" id="stat-round">-</span> · <span data-i18n="step"></span> <span class="pv" id="stat-step-cur">0</span>/<span class="pv" id="stat-step-tot">0</span></span>
           <span class="pv" id="progress-text">0%</span>
         </div>
         <div class="progress-track"><div class="progress-fill" id="progress-bar"></div></div>
@@ -1062,19 +1092,17 @@ body.dark .overlay-fill{background:linear-gradient(90deg,#15803d,#22c55e 55%,#86
         <div class="graph-empty" id="graph-empty" data-i18n="waiting_data"></div>
       </div>
 
-      <div class="panel">
+      <div class="panel preview-panel">
         <div class="panel-head">
           <span data-i18n="model_thoughts"></span>
           <span class="pv" id="preview-step">-</span>
         </div>
-        <div id="model-preview" class="preview-container">
+        <div id="model-preview" class="preview-grid">
           <div class="preview-empty" data-i18n="waiting_preview"></div>
         </div>
       </div>
 
-      <div class="status-strip">
-        <span class="ss-event" id="status-event"></span>
-      </div>
+      <div class="status-strip"><span class="ss-event" id="status-event"></span></div>
 
       <div class="controls">
         <button id="btn-start" class="btn-primary api-btn" data-i18n="start"></button>
@@ -1110,178 +1138,142 @@ const I18N={
    login_pre:"Sign in to ",login_sub:"Welcome back to the swarm.",
    register_title_pre:"Join ",register_sub:"Create your account and start contributing.",
    server_url:"Server address",username:"Username",password:"Password",email:"Email",
-   ph_user:" ",
    login_btn:"Log in",register_btn:"Create account",
    no_account:"No account yet?",register_link:"Create one",
    have_account:"Already registered?",login_link:"Log in",
    anon_preface:"Prefer to stay anonymous?",anon_link:"Skip and contribute anonymously",
    dash_title:"Training",loss:"Loss",tokens_sec:"Tokens/sec",round:"Round",step:"Step",
-   loss_history:"Loss history",waiting_data:"Waiting for training data...",time_left:"Left",
+   loss_history:"Loss history",waiting_data:"Waiting for training data...",
    model_thoughts:"Model Predictions",waiting_preview:"Waiting for first prediction...",
    idle:"Idle",training:"Training...",waiting:"Waiting...",uploading:"Uploading...",
    downloading:"Downloading...",preparing:"Preparing...",calibrating:"Calibrating...",
    dl_weights:"Downloading weights...",wait_coord:"Waiting for coordinator...",
-   wait_coord_sub:"This can take a few minutes. The coordinator aggregates updates from all clients between rounds.",
+   wait_coord_sub:"This can take a few minutes.",
    start:"Start training",stop:"Stop",
    backend_change_title:"Switch backend?",
-   backend_change_msg:"Switching backend will reset your current training session and restart the round. Your contribution so far will be discarded. Continue?",
+   backend_change_msg:"Switching backend will reset your current training session. Continue?",
    cancel:"Cancel",confirm:"Switch & restart",
    err_invalid_credentials:"Invalid username or password.",
-   err_username_taken:"This username is already taken. Please choose another.",
+   err_username_taken:"This username is already taken.",
    err_email_taken:"An account with this email already exists.",
    err_weak_password:"Password must be at least 6 characters.",
    err_invalid_input:"Please check your input and try again.",
-   err_login_failed:"Could not log in. Please try again.",
-   err_register_failed:"Could not create account. Please try again.",
+   err_login_failed:"Could not log in.",
+   err_register_failed:"Could not create account.",
    err_network:"Cannot reach the server."
- },
- fr:{
-   login_pre:"Connexion a ",login_sub:"Bon retour parmi nous.",
-   register_title_pre:"Rejoignez ",register_sub:"Creez votre compte et commencez a contribuer.",
-   server_url:"Adresse du serveur",username:"Nom d'utilisateur",password:"Mot de passe",email:"E-mail",
-   ph_user:" ",
-   login_btn:"Se connecter",register_btn:"Creer le compte",
-   no_account:"Pas encore de compte ?",register_link:"Creer un compte",
-   have_account:"Deja inscrit ?",login_link:"Se connecter",
-   anon_preface:"Vous preferez rester anonyme ?",anon_link:"Continuer anonymement",
-   dash_title:"Entrainement",loss:"Perte",tokens_sec:"Tokens/sec",round:"Manche",step:"Etape",
-   loss_history:"Historique de perte",waiting_data:"En attente de donnees...",time_left:"Reste",
-   model_thoughts:"Predictions du modele",waiting_preview:"En attente de la premiere prediction...",
-   idle:"Inactif",training:"Entrainement...",waiting:"Attente...",uploading:"Envoi...",
-   downloading:"Telechargement...",preparing:"Preparation...",calibrating:"Calibration...",
-   dl_weights:"Telechargement des poids...",wait_coord:"En attente du coordinateur...",
-   wait_coord_sub:"Cela peut prendre quelques minutes.",
-   start:"Demarrer l'entrainement",stop:"Arreter",
-   backend_change_title:"Changer de backend ?",
-   backend_change_msg:"Changer de backend reinitialisera votre session.",
-   cancel:"Annuler",confirm:"Changer & redemarrer",
-   err_invalid_credentials:"Nom d'utilisateur ou mot de passe invalide.",
-   err_username_taken:"Ce nom d'utilisateur est deja pris.",
-   err_email_taken:"Un compte avec cet e-mail existe deja.",
-   err_weak_password:"Le mot de passe doit contenir au moins 6 caracteres.",
-   err_invalid_input:"Veuillez verifier vos informations.",
-   err_login_failed:"Connexion impossible. Reessayez.",
-   err_register_failed:"Creation du compte impossible. Reessayez.",
-   err_network:"Serveur injoignable."
- },
- es:{
-   login_pre:"Inicia sesion en ",login_sub:"Bienvenido de vuelta.",
-   register_title_pre:"Unete a ",register_sub:"Crea tu cuenta y empieza a contribuir.",
-   server_url:"Direccion del servidor",username:"Nombre de usuario",password:"Contrasena",email:"Correo",
-   ph_user:" ",
-   login_btn:"Iniciar sesion",register_btn:"Crear cuenta",
-   no_account:"Aun no tienes cuenta?",register_link:"Crear una",
-   have_account:"Ya estas registrado?",login_link:"Iniciar sesion",
-   anon_preface:"Prefieres seguir anonimo?",anon_link:"Continuar anonimamente",
-   dash_title:"Entrenamiento",loss:"Perdida",tokens_sec:"Tokens/seg",round:"Ronda",step:"Paso",
-   loss_history:"Historial de perdida",waiting_data:"Esperando datos...",time_left:"Queda",
-   model_thoughts:"Predicciones del modelo",waiting_preview:"Esperando la primera prediccion...",
-   idle:"Inactivo",training:"Entrenando...",waiting:"Esperando...",uploading:"Subiendo...",
-   downloading:"Descargando...",preparing:"Preparando...",calibrating:"Calibrando...",
-   dl_weights:"Descargando pesos...",wait_coord:"Esperando al coordinador...",
-   wait_coord_sub:"Esto puede tardar unos minutos.",
-   start:"Iniciar entrenamiento",stop:"Detener",
-   backend_change_title:"Cambiar de backend?",
-   backend_change_msg:"Cambiar de backend reiniciara tu sesion.",
-   cancel:"Cancelar",confirm:"Cambiar y reiniciar",
-   err_invalid_credentials:"Usuario o contrasena incorrectos.",
-   err_username_taken:"Este nombre de usuario ya esta en uso.",
-   err_email_taken:"Ya existe una cuenta con este correo.",
-   err_weak_password:"La contrasena debe tener al menos 6 caracteres.",
-   err_invalid_input:"Revisa los datos e intentalo de nuevo.",
-   err_login_failed:"No se pudo iniciar sesion.",
-   err_register_failed:"No se pudo crear la cuenta.",
-   err_network:"No se puede contactar el servidor."
- },
- de:{
-   login_pre:"Anmelden bei ",login_sub:"Willkommen zuruck.",
-   register_title_pre:"Tritt ",register_sub:"Erstelle dein Konto.",
-   server_url:"Serveradresse",username:"Benutzername",password:"Passwort",email:"E-Mail",
-   ph_user:" ",
-   login_btn:"Anmelden",register_btn:"Konto erstellen",
-   no_account:"Noch kein Konto?",register_link:"Jetzt erstellen",
-   have_account:"Bereits registriert?",login_link:"Anmelden",
-   anon_preface:"Lieber anonym bleiben?",anon_link:"Anonym weitermachen",
-   dash_title:"Training",loss:"Verlust",tokens_sec:"Tokens/Sek",round:"Runde",step:"Schritt",
-   loss_history:"Verlustverlauf",waiting_data:"Warte auf Daten...",time_left:"Rest",
-   model_thoughts:"Modellvorhersagen",waiting_preview:"Warte auf erste Vorhersage...",
-   idle:"Bereit",training:"Training...",waiting:"Warten...",uploading:"Upload...",
-   downloading:"Wird heruntergeladen...",preparing:"Vorbereitung...",calibrating:"Kalibrierung...",
-   dl_weights:"Gewichte werden heruntergeladen...",wait_coord:"Warte auf Koordinator...",
-   wait_coord_sub:"Das kann ein paar Minuten dauern.",
-   start:"Training starten",stop:"Stopp",
-   backend_change_title:"Backend wechseln?",
-   backend_change_msg:"Das Wechseln des Backends setzt deine Sitzung zuruck.",
-   cancel:"Abbrechen",confirm:"Wechseln & neu starten",
-   err_invalid_credentials:"Benutzername oder Passwort ungultig.",
-   err_username_taken:"Dieser Benutzername ist bereits vergeben.",
-   err_email_taken:"Ein Konto mit dieser E-Mail existiert bereits.",
-   err_weak_password:"Das Passwort muss mindestens 6 Zeichen lang sein.",
-   err_invalid_input:"Bitte Eingabe prufen.",
-   err_login_failed:"Anmeldung fehlgeschlagen.",
-   err_register_failed:"Konto konnte nicht erstellt werden.",
-   err_network:"Server nicht erreichbar."
- },
- tr:{
-   login_pre:"Giris yap: ",login_sub:"Suruyla tekrar hos geldin.",
-   register_title_pre:"Katil: ",register_sub:"Hesabini olustur.",
-   server_url:"Sunucu adresi",username:"Kullanici adi",password:"Sifre",email:"E-posta",
-   ph_user:" ",
-   login_btn:"Giris yap",register_btn:"Hesap olustur",
-   no_account:"Hesabin yok mu?",register_link:"Bir tane olustur",
-   have_account:"Zaten kayitli misin?",login_link:"Giris yap",
-   anon_preface:"Anonim kalmayi mi tercih edersin?",anon_link:"Atla ve anonim olarak katki ver",
-   dash_title:"Egitim",loss:"Kayip",tokens_sec:"Token/sn",round:"Tur",step:"Adim",
-   loss_history:"Kayip gecmisi",waiting_data:"Veri bekleniyor...",time_left:"Kalan",
-   model_thoughts:"Model Tahminleri",waiting_preview:"Ilk tahmin bekleniyor...",
-   idle:"Bosta",training:"Egitiliyor...",waiting:"Bekleniyor...",uploading:"Yukleniyor...",
-   downloading:"Indiriliyor...",preparing:"Hazirlaniyor...",calibrating:"Kalibre ediliyor...",
-   dl_weights:"Agirliklar indiriliyor...",wait_coord:"Koordinator bekleniyor...",
-   wait_coord_sub:"Bu birkac dakika surebilir.",
-   start:"Egitimi baslat",stop:"Durdur",
-   backend_change_title:"Backend degistir?",
-   backend_change_msg:"Backend degistirmek mevcut oturumu sifirlayacak.",
-   cancel:"Iptal",confirm:"Degistir & yeniden baslat",
-   err_invalid_credentials:"Gecersiz kullanici adi veya sifre.",
-   err_username_taken:"Bu kullanici adi zaten alinmis.",
-   err_email_taken:"Bu e-posta ile zaten bir hesap mevcut.",
-   err_weak_password:"Sifre en az 6 karakter olmalidir.",
-   err_invalid_input:"Lutfen girdinizi kontrol edin.",
-   err_login_failed:"Giris yapilamadi.",
-   err_register_failed:"Hesap olusturulamadi.",
-   err_network:"Sunucuya ulasilamiyor."
  }
 };
 
-let lang='en',statusKey='idle';
-let pendingBackend=null;
-const lossHistory=[];const MAXP=80;
+let lang='en', statusKey='idle', pendingBackend=null;
+const lossHistory=[]; const MAXP=80;
+
 function t(k){return (I18N[lang]&&I18N[lang][k])||I18N.en[k]||k}
 function applyT(){
   document.querySelectorAll('[data-i18n]').forEach(e=>e.textContent=t(e.getAttribute('data-i18n')));
-  document.querySelectorAll('[data-i18n-ph]').forEach(e=>e.placeholder=t(e.getAttribute('data-i18n-ph')));
   document.getElementById('status-indicator').textContent=t(statusKey);
 }
-document.getElementById('lang-select').addEventListener('change',e=>{lang=e.target.value;applyT()});
-
 function showAuthScreen(name){
   document.querySelectorAll('.auth-screen').forEach(s=>s.classList.remove('active'));
   document.getElementById('screen-'+name).classList.add('active');
-  const loginSrv = document.getElementById('login-server');
-  const regSrv = document.getElementById('reg-server');
-  if(name==='register' && loginSrv.value) regSrv.value = loginSrv.value;
-  if(name==='login' && regSrv.value) loginSrv.value = regSrv.value;
+  const loginSrv=document.getElementById('login-server');
+  const regSrv=document.getElementById('reg-server');
+  if(name==='register' && loginSrv.value) regSrv.value=loginSrv.value;
+  if(name==='login' && regSrv.value) loginSrv.value=regSrv.value;
   document.getElementById('login-error').classList.remove('show');
   document.getElementById('reg-error').classList.remove('show');
 }
+function callApi(n,...a){
+  if(window.pywebview && window.pywebview.api && window.pywebview.api[n]){
+    window.pywebview.api[n](...a); return true;
+  }
+  return false;
+}
+function showLoginError(code){
+  const el=document.getElementById('login-error');
+  el.textContent=t(code); el.classList.add('show');
+  document.getElementById('btn-login').disabled=false;
+}
+function showRegError(code){
+  const el=document.getElementById('reg-error');
+  el.textContent=t(code); el.classList.add('show');
+  document.getElementById('btn-register').disabled=false;
+}
+function mb(b){return (b/1048576).toFixed(1)}
+function overlayShow(data){
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('overlay-title').textContent=t(data.title_key || '');
+  const sub=document.getElementById('overlay-subtitle');
+  if(data.subtitle_key){ sub.textContent=t(data.subtitle_key); sub.classList.add('show'); }
+  else sub.classList.remove('show');
+  const bar=document.getElementById('overlay-bar');
+  const subBox=document.querySelector('#overlay .overlay-sub');
+  if(data.hide_bar){ bar.classList.add('hidden'); subBox.style.display='none'; }
+  else{
+    bar.classList.remove('hidden'); subBox.style.display='flex';
+    bar.classList.toggle('indet', !!data.indeterminate);
+    document.getElementById('overlay-fill').style.width=data.indeterminate?'':'0%';
+    document.getElementById('overlay-pct').textContent='';
+    document.getElementById('overlay-mb').textContent='';
+  }
+}
+function overlayHide(){document.getElementById('overlay').classList.remove('show')}
+function escapeHtml(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+function addLoss(v){
+  const n=Number(v);
+  if(!isFinite(n) || n <= 0) return;
+  lossHistory.push(n);
+  if(lossHistory.length > MAXP*2) lossHistory.splice(0, lossHistory.length - MAXP*2);
+  requestAnimationFrame(drawGraph);
+}
+function drawGraph(){
+  const c=document.getElementById('loss-graph'); if(!c) return;
+  const empty=document.getElementById('graph-empty');
+  const rect=c.getBoundingClientRect();
+  if(rect.width<10||rect.height<10){ if(empty){empty.style.display='block'; c.style.display='none';} return; }
+  if(lossHistory.length===0){ if(empty){empty.style.display='block'; c.style.display='none';} return; }
+  if(empty){empty.style.display='none'; c.style.display='block';}
+  const ctx=c.getContext('2d');
+  const dpr=window.devicePixelRatio||1;
+  c.width=rect.width*dpr; c.height=rect.height*dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  const W=rect.width,H=rect.height;
+  ctx.clearRect(0,0,W,H);
+  const isDark=document.body.classList.contains('dark');
+  const lineColor=isDark?'#22c55e':'#16a34a';
+  const gridColor=isDark?'rgba(255,255,255,.06)':'rgba(17,17,19,.07)';
+  const data=lossHistory.slice(-MAXP);
+  if(data.length<2){
+    ctx.fillStyle=lineColor; ctx.beginPath(); ctx.arc(W/2,H/2,3,0,Math.PI*2); ctx.fill(); return;
+  }
+  const mn=Math.min(...data), mx=Math.max(...data), range=(mx-mn)||1;
+  const pad=5,pH=H-pad*2,pW=W-pad*2,st=pW/(data.length-1);
+  ctx.strokeStyle=gridColor; ctx.lineWidth=1;
+  for(let g=1; g<4; g++){
+    const y=pad+pH*g/4;
+    ctx.beginPath(); ctx.moveTo(pad,y); ctx.lineTo(pad+pW,y); ctx.stroke();
+  }
+  const pt=i=>[pad+i*st,pad+pH-(data[i]-mn)/range*pH];
+  ctx.beginPath();
+  data.forEach((v,i)=>{const[x,y]=pt(i); i?ctx.lineTo(x,y):ctx.moveTo(x,y);});
+  ctx.lineTo(pad+pW,pad+pH); ctx.lineTo(pad,pad+pH); ctx.closePath();
+  const gr=ctx.createLinearGradient(0,0,0,H);
+  gr.addColorStop(0,isDark?'rgba(34,197,94,.20)':'rgba(22,163,74,.16)');
+  gr.addColorStop(1,'rgba(22,163,74,0)');
+  ctx.fillStyle=gr; ctx.fill();
+  ctx.beginPath();
+  data.forEach((v,i)=>{const[x,y]=pt(i); i?ctx.lineTo(x,y):ctx.moveTo(x,y);});
+  ctx.strokeStyle=lineColor; ctx.lineWidth=1.5; ctx.stroke();
+  const[lx,ly]=pt(data.length-1);
+  ctx.fillStyle=lineColor; ctx.beginPath(); ctx.arc(lx,ly,2.5,0,Math.PI*2); ctx.fill();
+}
+
+window.addEventListener('pywebviewready',()=>{ document.body.classList.add('ready'); callApi('get_backends'); });
 document.getElementById('go-to-register').addEventListener('click',e=>{e.preventDefault();showAuthScreen('register')});
 document.getElementById('go-to-login').addEventListener('click',e=>{e.preventDefault();showAuthScreen('login')});
-
-function callApi(n,...a){if(window.pywebview&&window.pywebview.api&&window.pywebview.api[n]){window.pywebview.api[n](...a);return true}return false}
-window.addEventListener('pywebviewready',()=>{
-  document.body.classList.add('ready');
-  callApi('get_backends');
-});
 
 document.getElementById('btn-login').addEventListener('click',()=>{
   const srv=document.getElementById('login-server').value.trim();
@@ -1304,116 +1296,43 @@ document.getElementById('btn-register').addEventListener('click',()=>{
   callApi('register',srv,u,email,p);
 });
 
-document.getElementById('btn-anon').addEventListener('click',e=>{
-  e.preventDefault();
-  callApi('login_anon');
+document.getElementById('btn-anon').addEventListener('click',e=>{ e.preventDefault(); callApi('login_anon'); });
+
+document.getElementById('btn-start').addEventListener('click',()=>{
+  if(callApi('start')){
+    document.getElementById('btn-start').disabled=true;
+    document.getElementById('btn-stop').disabled=false;
+  }
 });
 
-document.getElementById('btn-start').addEventListener('click',()=>{if(callApi('start')){document.getElementById('btn-start').disabled=true;document.getElementById('btn-stop').disabled=false}});
-document.getElementById('btn-stop').addEventListener('click',()=>{callApi('stop');document.getElementById('btn-start').disabled=false;document.getElementById('btn-stop').disabled=true});
+document.getElementById('btn-stop').addEventListener('click',()=>{
+  callApi('stop');
+  document.getElementById('btn-start').disabled=false;
+  document.getElementById('btn-stop').disabled=true;
+  document.getElementById('status-indicator').textContent='Stopping...';
+});
 
 document.getElementById('backend-select').addEventListener('change',e=>{
-  const newBackend = e.target.value;
-  if(newBackend === window._currentBackend){ return; }
-  if(statusKey === 'idle'){
-    callApi('set_backend', newBackend);
-  } else {
-    pendingBackend = newBackend;
+  const newBackend=e.target.value;
+  if(newBackend === window._currentBackend) return;
+  if(statusKey === 'idle') callApi('set_backend', newBackend);
+  else{
+    pendingBackend=newBackend;
     document.getElementById('backend-overlay').classList.add('show');
   }
 });
 
 document.getElementById('btn-backend-cancel').addEventListener('click',()=>{
   document.getElementById('backend-overlay').classList.remove('show');
-  const sel = document.getElementById('backend-select');
-  sel.value = window._currentBackend || sel.value;
-  pendingBackend = null;
+  const sel=document.getElementById('backend-select');
+  sel.value=window._currentBackend || sel.value;
+  pendingBackend=null;
 });
 
 document.getElementById('btn-backend-confirm').addEventListener('click',()=>{
   document.getElementById('backend-overlay').classList.remove('show');
-  if(pendingBackend){
-    callApi('set_backend', pendingBackend);
-    pendingBackend = null;
-  }
+  if(pendingBackend){ callApi('set_backend', pendingBackend); pendingBackend=null; }
 });
-
-function showLoginError(code){
-  const el=document.getElementById('login-error');
-  el.textContent=t(code);
-  el.classList.add('show');
-  document.getElementById('btn-login').disabled=false;
-}
-function showRegError(code){
-  const el=document.getElementById('reg-error');
-  el.textContent=t(code);
-  el.classList.add('show');
-  document.getElementById('btn-register').disabled=false;
-}
-
-function mb(b){return (b/1048576).toFixed(1)}
-function overlayShow(data){
-  document.getElementById('overlay').classList.add('show');
-  document.getElementById('overlay-title').textContent=t(data.title_key);
-  
-  const sub = document.getElementById('overlay-subtitle');
-  if(data.subtitle_key){
-    sub.textContent = t(data.subtitle_key);
-    sub.classList.add('show');
-  } else {
-    sub.classList.remove('show');
-  }
-  
-  const bar = document.getElementById('overlay-bar');
-  const subBox = document.querySelector('#overlay .overlay-sub');
-  if(data.hide_bar){
-    bar.classList.add('hidden');
-    subBox.style.display = 'none';
-  } else {
-    bar.classList.remove('hidden');
-    subBox.style.display = 'flex';
-    bar.classList.toggle('indet',!!data.indeterminate);
-    document.getElementById('overlay-fill').style.width=data.indeterminate?'':'0%';
-    document.getElementById('overlay-pct').textContent='';
-    document.getElementById('overlay-mb').textContent='';
-  }
-}
-function overlayHide(){document.getElementById('overlay').classList.remove('show')}
-
-function drawGraph(){
-  const c=document.getElementById('loss-graph');if(!c)return;
-  const ctx=c.getContext('2d');
-  const rect=c.getBoundingClientRect();
-  if(rect.width<10||rect.height<10)return;
-  const dpr=window.devicePixelRatio||1;
-  c.width=rect.width*dpr;c.height=rect.height*dpr;
-  ctx.setTransform(dpr,0,0,dpr,0,0);
-  const W=rect.width,H=rect.height;
-  ctx.clearRect(0,0,W,H);
-  const empty=document.getElementById('graph-empty');
-  if(lossHistory.length<2){empty.style.display='block';c.style.display='none';return}
-  empty.style.display='none';c.style.display='block';
-  const data=lossHistory.slice(-MAXP);
-  const mn=Math.min(...data),mx=Math.max(...data),range=(mx-mn)||1;
-  const pad=5,pH=H-pad*2,pW=W-pad*2,st=pW/(data.length-1);
-  const isDark=document.body.classList.contains('dark');
-  const gridColor=isDark?'rgba(255,255,255,.06)':'rgba(17,17,19,.07)';
-  const lineColor=isDark?'#22c55e':'#16a34a';
-  ctx.strokeStyle=gridColor;ctx.lineWidth=1;
-  for(let g=1;g<4;g++){const y=pad+pH*g/4;ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(pad+pW,y);ctx.stroke()}
-  const pt=i=>[pad+i*st,pad+pH-(data[i]-mn)/range*pH];
-  ctx.beginPath();
-  data.forEach((v,i)=>{const[x,y]=pt(i);i?ctx.lineTo(x,y):ctx.moveTo(x,y)});
-  ctx.lineTo(pad+pW,pad+pH);ctx.lineTo(pad,pad+pH);ctx.closePath();
-  const gr=ctx.createLinearGradient(0,0,0,H);
-  gr.addColorStop(0,isDark?'rgba(34,197,94,.20)':'rgba(22,163,74,.16)');gr.addColorStop(1,'rgba(22,163,74,0)');
-  ctx.fillStyle=gr;ctx.fill();
-  ctx.beginPath();
-  data.forEach((v,i)=>{const[x,y]=pt(i);i?ctx.lineTo(x,y):ctx.moveTo(x,y)});
-  ctx.strokeStyle=lineColor;ctx.lineWidth=1.5;ctx.stroke();
-  const[lx,ly]=pt(data.length-1);
-  ctx.fillStyle=lineColor;ctx.beginPath();ctx.arc(lx,ly,2.5,0,Math.PI*2);ctx.fill();
-}
 
 window.handleEvent=function(ev,data){
   if(ev==='login_success'){
@@ -1426,29 +1345,16 @@ window.handleEvent=function(ev,data){
     requestAnimationFrame(drawGraph);
   }
   else if(ev==='login_error'){
-    const code = data.code || 'err_invalid_credentials';
-    const errMap = {
-      invalid_credentials:'err_invalid_credentials',
-      login_failed:'err_login_failed',
-      username_taken:'err_username_taken',
-      email_taken:'err_email_taken',
-      weak_password:'err_weak_password',
-      invalid_input:'err_invalid_input',
-      register_failed:'err_register_failed',
-      network:'err_network'
-    };
-    const tKey = errMap[code] || 'err_login_failed';
-    const loginActive = document.getElementById('screen-login').classList.contains('active');
-    if(loginActive) showLoginError(tKey);
-    else showRegError(tKey);
+    const code=data.code || 'err_login_failed';
+    const loginActive=document.getElementById('screen-login').classList.contains('active');
+    if(loginActive) showLoginError(code); else showRegError(code);
   }
-  else if(ev==='meta'){}
-  else if(ev==='log'){document.getElementById('status-event').textContent=data}
+  else if(ev==='log'){ document.getElementById('status-event').textContent=data; }
   else if(ev==='backends'){
-    const sel = document.getElementById('backend-select');
-    sel.innerHTML = '';
-    window._currentBackend = data.current;
-    const order = [
+    const sel=document.getElementById('backend-select');
+    sel.innerHTML='';
+    window._currentBackend=data.current;
+    const order=[
       {key:'cuda', label:'CUDA (NVIDIA)'},
       {key:'rocm', label:'ROCm (AMD)'},
       {key:'mps', label:'MPS (Apple)'},
@@ -1457,16 +1363,15 @@ window.handleEvent=function(ev,data){
       {key:'cpu', label:'CPU'}
     ];
     order.forEach(bk=>{
-      const opt = document.createElement('option');
-      opt.value = bk.key;
-      opt.textContent = bk.label;
-      opt.disabled = !data.available[bk.key];
-      if(bk.key === data.current) opt.selected = true;
+      const opt=document.createElement('option');
+      opt.value=bk.key; opt.textContent=bk.label;
+      opt.disabled=!data.available[bk.key];
+      if(bk.key === data.current) opt.selected=true;
       sel.appendChild(opt);
     });
-    sel.disabled = false;
+    sel.disabled=false;
   }
-  else if(ev==='overlay_show'){overlayShow(data)}
+  else if(ev==='overlay_show'){ overlayShow(data); }
   else if(ev==='overlay_progress'){
     const bar=document.getElementById('overlay-bar');
     if(data.total>0){
@@ -1475,97 +1380,107 @@ window.handleEvent=function(ev,data){
       document.getElementById('overlay-fill').style.width=pct+'%';
       document.getElementById('overlay-pct').textContent=pct.toFixed(1)+'%';
       document.getElementById('overlay-mb').textContent=mb(data.done)+' / '+mb(data.total)+' MB';
-    }else{bar.classList.add('indet');document.getElementById('overlay-mb').textContent=mb(data.done)+' MB'}
+    } else {
+      bar.classList.add('indet');
+      document.getElementById('overlay-mb').textContent=mb(data.done)+' MB';
+    }
   }
-  else if(ev==='overlay_hide'){overlayHide()}
+  else if(ev==='overlay_hide'){ overlayHide(); }
   else if(ev==='cal_stats'){
-    document.getElementById('stat-loss').textContent=data.loss.toFixed(4);
-    if(data.tps !== undefined) document.getElementById('stat-tps').textContent=Math.round(data.tps);
+    let lossVal=Number(data.loss); if(!isFinite(lossVal)||lossVal<=0) lossVal=10.0;
+    const tpsVal=Number(data.tps)||0;
+    document.getElementById('stat-loss').textContent=lossVal.toFixed(4);
+    document.getElementById('stat-tps').textContent=Math.round(tpsVal);
     document.getElementById('stat-round').textContent='-';
     document.getElementById('stat-step-cur').textContent=data.step;
     document.getElementById('stat-step-tot').textContent=data.total;
     const pct=Math.min(100,(data.step/Math.max(1,data.total))*100);
     document.getElementById('progress-bar').style.width=pct+'%';
     document.getElementById('progress-text').textContent=pct.toFixed(1)+'%';
-    document.getElementById('graph-last').textContent=data.loss.toFixed(4);
-    lossHistory.push(data.loss);
-    if(lossHistory.length>MAXP*2)lossHistory.splice(0,lossHistory.length-MAXP*2);
-    drawGraph();
+    document.getElementById('graph-last').textContent=lossVal.toFixed(4);
+    addLoss(lossVal);
   }
   else if(ev==='stats'){
-    document.getElementById('stat-loss').textContent=data.loss.toFixed(4);
-    document.getElementById('stat-tps').textContent=Math.round(data.tps);
+    let lossVal=Number(data.loss); if(!isFinite(lossVal)||lossVal<=0) lossVal=10.0;
+    const tpsVal=Number(data.tps)||0;
+    document.getElementById('stat-loss').textContent=lossVal.toFixed(4);
+    document.getElementById('stat-tps').textContent=Math.round(tpsVal);
     document.getElementById('stat-round').textContent=data.round;
     document.getElementById('stat-step-cur').textContent=data.step;
     document.getElementById('stat-step-tot').textContent=data.target;
     const pct=Math.min(100,(data.step/Math.max(1,data.target))*100);
     document.getElementById('progress-bar').style.width=pct+'%';
     document.getElementById('progress-text').textContent=pct.toFixed(1)+'%';
-    document.getElementById('graph-last').textContent=data.loss.toFixed(4);
-    lossHistory.push(data.loss);
-    if(lossHistory.length>MAXP*2)lossHistory.splice(0,lossHistory.length-MAXP*2);
-    drawGraph();
+    document.getElementById('graph-last').textContent=lossVal.toFixed(4);
+    addLoss(lossVal);
   }
   else if(ev==='model_preview'){
-    const container = document.getElementById('model-preview');
-    const stepEl = document.getElementById('preview-step');
-    stepEl.textContent = 'Step ' + data.step;
-    
-    let html = '';
-    data.predictions.forEach((p, i) => {
-        const pct = (p.prob * 100).toFixed(1);
-        const width = Math.max(2, p.prob * 100);
-        html += '<div class="pred-row">' +
-            '<span class="pred-token">#' + p.token + '</span>' +
-            '<div class="pred-bar-bg"><div class="pred-bar" style="width:' + width + '%"></div></div>' +
-            '<span class="pred-pct">' + pct + '%</span>' +
-            '</div>';
+    const container=document.getElementById('model-preview');
+    const stepEl=document.getElementById('preview-step');
+    if(!container || !stepEl) return;
+    stepEl.textContent='Step ' + (data.step || 0);
+    const cards=data.cards || [];
+    if(cards.length===0){
+      container.innerHTML='<div class="preview-empty">No preview yet</div>';
+      return;
+    }
+    let html='';
+    cards.forEach(card=>{
+      const cls=card.match ? 'good' : 'bad';
+      const badge=card.match ? '✓' : '✗';
+      const prob=(typeof card.prob === 'number') ? (card.prob*100).toFixed(1)+'%' : '';
+      html += `
+        <div class="pred-card ${cls}">
+          <div class="pred-context">${escapeHtml(card.context)}<span class="pred-next">${escapeHtml(card.pred)}</span></div>
+          <div class="pred-meta">
+            <span class="pred-badge">${badge} target: ${escapeHtml(card.target)}</span>
+            <span>${prob}</span>
+          </div>
+        </div>`;
     });
-    
-    const matchClass = data.match ? 'pred-match' : 'pred-mismatch';
-    const matchText = data.match ? 'Top-1 Match!' : 'Mismatch';
-    html += '<div class="pred-target">' +
-        '<span>Target: <strong>#' + data.target + '</strong></span>' +
-        '<span class="' + matchClass + '">' + matchText + '</span>' +
-        '</div>';
-    
-    container.innerHTML = html;
+    container.innerHTML=html;
   }
-  else if(ev==='preview_loss'){}
   else if(ev==='status'){
     statusKey=data;
     document.getElementById('status-indicator').textContent=t(statusKey);
-    if(data==='training'||data==='idle'||data==='calibrating'||data==='preparing')overlayHide();
-    if(data==='idle'){document.getElementById('btn-start').disabled=false;document.getElementById('btn-stop').disabled=true}
+    if(data==='training'||data==='idle'||data==='calibrating'||data==='preparing') overlayHide();
+    if(data==='idle'){
+      document.getElementById('btn-start').disabled=false;
+      document.getElementById('btn-stop').disabled=true;
+    }
   }
 };
+
 window.addEventListener('resize',()=>requestAnimationFrame(drawGraph));
-if(window.ResizeObserver){new ResizeObserver(()=>requestAnimationFrame(drawGraph)).observe(document.getElementById('loss-graph'))}
+if(window.ResizeObserver){ new ResizeObserver(()=>requestAnimationFrame(drawGraph)).observe(document.getElementById('loss-graph')); }
 
 function updateLogo(){
-  try {
-    var img = document.getElementById('logo-img');
-    if(!img) return;
-    var isDark = document.body.classList.contains('dark');
-    var src = isDark ? img.getAttribute('data-dark') : img.getAttribute('data-light');
-    if(src && src.length > 30) img.src = src;
-  } catch(e){}
+  try{
+    const img=document.getElementById('logo-img'); if(!img) return;
+    const isDark=document.body.classList.contains('dark');
+    const src=isDark ? img.getAttribute('data-dark') : img.getAttribute('data-light');
+    if(src && src.length > 30) img.src=src;
+  }catch(e){}
 }
 
 (function(){
   try{
-    var saved=null;
+    let saved=null;
     try{ saved=localStorage.getItem('crowdgpt-theme'); }catch(e){}
-    var prefersDark=false;
-    try{ prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches; }catch(e){}
-    if(saved==='dark' || (!saved && prefersDark)){ document.body.classList.add('dark'); }
+    let prefersDark=false;
+    try{ prefersDark=window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches; }catch(e){}
+    if(saved==='dark' || (!saved && prefersDark)){
+      document.body.classList.add('dark');
+      document.getElementById('theme-toggle').textContent='☀️';
+    }
     updateLogo();
   }catch(e){}
-  var tbtn=document.getElementById('theme-toggle');
+  const tbtn=document.getElementById('theme-toggle');
   if(tbtn){
     tbtn.addEventListener('click',function(){
       document.body.classList.toggle('dark');
-      try{ localStorage.setItem('crowdgpt-theme', document.body.classList.contains('dark')?'dark':'light'); }catch(e){}
+      this.textContent=document.body.classList.contains('dark') ? '☀️' : '🌙';
+      try{ localStorage.setItem('crowdgpt-theme', document.body.classList.contains('dark') ? 'dark' : 'light'); }catch(e){}
       updateLogo();
       requestAnimationFrame(drawGraph);
     });
@@ -1573,169 +1488,165 @@ function updateLogo(){
 })();
 
 applyT();
+setInterval(()=>{ if(lossHistory.length>=2) drawGraph(); }, 1000);
 </script></body></html>"""
 
-
+# ============ API ============
 class Api:
     def __init__(self):
         self.window=None; self.stop_event=threading.Event()
         self.thread=None; self.auth_token=None; self.username=None
-        self.server_url="http://api.crowdgpt.net:5006"; self._lp=0.0
-        self.selected_backend = get_best_default_backend()
+        self.server_url="http://api.crowdgpt.net:5006"
+        self.selected_backend=get_best_default_backend()
 
     def emit(self, ev, data):
         if not self.window: return
-        try: self.window.evaluate_js(f"window.handleEvent({json.dumps(ev)},{json.dumps(data)});")
-        except: pass
+        try:
+            ev_js=json.dumps(ev, ensure_ascii=True)
+            data_js=json.dumps(data, ensure_ascii=True).replace('</', '<\\/')
+            self.window.evaluate_js(f"window.handleEvent({ev_js},{data_js});")
+        except Exception as e:
+            log.warning(f"Emit failed for {ev}: {e}")
 
     def get_backends(self):
-        available = get_available_backends()
+        available=get_available_backends()
         self.emit('backends', {'available': available, 'current': self.selected_backend})
 
     def set_backend(self, backend_name):
-        self.selected_backend = backend_name
+        self.selected_backend=backend_name
         if self.thread and self.thread.is_alive():
             self.stop_event.set()
 
     def login(self, s, u, p):
-        self.server_url = s or self.server_url
-        threading.Thread(target=self._do_login, args=(u, p), daemon=True).start()
+        self.server_url=s or self.server_url
+        threading.Thread(target=self._do_login, args=(u,p), daemon=True).start()
 
     def _do_login(self, u, p):
-        tok, err = do_login(self.server_url, u, p)
+        tok, err=do_login(self.server_url, u, p)
         if tok:
-            self.auth_token, self.username = tok, u
+            self.auth_token, self.username=tok, u
             self.emit('login_success', {'username': u})
         else:
-            self.emit('login_error', {'code': err or 'login_failed'})
+            self.emit('login_error', {'code': err or 'err_login_failed'})
 
     def register(self, s, u, email, p):
-        self.server_url = s or self.server_url
-        threading.Thread(target=self._do_register, args=(u, email, p), daemon=True).start()
+        self.server_url=s or self.server_url
+        threading.Thread(target=self._do_register, args=(u,email,p), daemon=True).start()
 
     def _do_register(self, u, email, p):
-        tok, err = do_register(self.server_url, u, email, p)
+        tok, err=do_register(self.server_url, u, email, p)
         if tok:
-            self.auth_token, self.username = tok, u
+            self.auth_token, self.username=tok, u
             self.emit('login_success', {'username': u})
         else:
-            self.emit('login_error', {'code': err or 'register_failed'})
+            self.emit('login_error', {'code': err or 'err_register_failed'})
 
     def login_anon(self):
-        self.auth_token, self.username = None, "anonymous"
+        self.auth_token, self.username=None, "anonymous"
         self.emit('login_success', {'username': 'anonymous'})
 
     def start(self):
         if self.thread and self.thread.is_alive(): return
-        self.stop_event.clear(); self.thread=threading.Thread(target=self._rs, daemon=True); self.thread.start()
-        
-    def stop(self): self.stop_event.set()
-    
+        self.stop_event.clear()
+        self.thread=threading.Thread(target=self._rs, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.stop_event.set()
+        self.emit('status', 'idle')
+        self.emit('log', 'Stop requested. Freeing VRAM...')
+
     def _rs(self):
         global train_device, train_backend
         try:
-            train_device, train_backend = detect_training_backend(self.selected_backend)
-            self.emit('meta',{'backend':train_backend})
-            self.emit('log',f"Backend: {train_backend} ({train_device})")
+            train_device, train_backend=detect_training_backend(self.selected_backend)
+            self.emit('log', f"Backend: {train_backend} ({train_device})")
             auto_detect_vram_budget()
-            self.emit('log',f"VRAM: {memory_config['ram_gb']:.1f} GB")
+            self.emit('log', f"VRAM: {memory_config['ram_gb']:.1f} GB")
         except Exception as e:
-            self.emit('log',f"Error: {e}"); self.emit('status','idle'); return
-            
-        round_count = 0
+            self.emit('log', f"Error: {e}")
+            self.emit('status', 'idle')
+            return
+
+        round_count=0
         while not self.stop_event.is_set():
             round_count += 1
             self.emit('log', f"{'='*40}")
             self.emit('log', f"Starting Round Cycle #{round_count}")
             self.emit('log', f"{'='*40}")
-            
-            try: 
-                run_single_round(self.server_url, self.auth_token, self.stop_event, self.emit)
+
+            try:
+                run_single_round_wrapper(self.server_url, self.auth_token, self.stop_event, self.emit)
             except KeyboardInterrupt:
                 self.stop_event.set()
                 break
-            except Exception as e: 
-                self.emit('log',f"Round failed: {e}")
-                
-            if self.stop_event.is_set(): 
-                break
-                
+            except Exception as e:
+                self.emit('log', f"Round failed: {e}")
+
+            if self.stop_event.is_set(): break
+
             self.emit('status', 'waiting')
-            self.emit('log', "Round complete. Auto-relaunching next round in 10s...")
+            self.emit('log', 'Round complete. Auto-relaunching next round in 10s...')
             for _ in range(10):
                 if self.stop_event.is_set(): break
                 time.sleep(1)
-                
-        self.emit('status','idle')
-        self.emit('log', "Training stopped by user.")
 
+        self.emit('status', 'idle')
+        self.emit('log', 'Training stopped by user.')
 
+# ============ STARTUP ============
 def startup():
     try:
-        scr = webview.screens[0]
-        aw, ah = scr.width, scr.height
-        w = max(480, min(1040, int(aw * 0.80)))
-        h = max(360, min(800, int(ah * 0.80)))
-        w = min(w, aw - 16); h = min(h, ah - 48)
-        w = max(320, w); h = max(240, h)
+        scr=webview.screens[0]
+        aw, ah=scr.width, scr.height
+        w=max(480, min(1040, int(aw*0.80)))
+        h=max(360, min(800, int(ah*0.80)))
+        w=min(w, aw-16); h=min(h, ah-48)
+        w=max(320, w); h=max(240, h)
         window.resize(w, h)
-        window.move(max(0, (aw - w)//2), max(0, (ah - h)//2))
-    except Exception:
+        window.move(max(0, (aw-w)//2), max(0, (ah-h)//2))
+    except:
         pass
-    
+
     def set_window_icon():
         try:
             import gi
             gi.require_version('Gtk', '3.0')
             from gi.repository import Gtk, GdkPixbuf
-            
-            icon_path = None
-            if ICON_PATH and os.path.exists(ICON_PATH):
-                icon_path = ICON_PATH
-            elif _lp_light.exists():
-                icon_path = str(_lp_light.absolute())
-                
-            if not icon_path:
-                return
-                
+            icon_path=None
+            if ICON_PATH and os.path.exists(ICON_PATH): icon_path=ICON_PATH
+            elif _lp_light.exists(): icon_path=str(_lp_light.absolute())
+            if not icon_path: return
             for w in Gtk.Window.list_toplevels():
                 if w.get_title() == "CrowdGPT":
-                    pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(icon_path, 64, 64, True)
+                    pixbuf=GdkPixbuf.Pixbuf.new_from_file_at_scale(icon_path, 64, 64, True)
                     w.set_icon(pixbuf)
                     break
-        except Exception:
+        except:
             pass
 
     threading.Timer(0.5, set_window_icon).start()
 
-
 if __name__ == "__main__":
-    api = Api()
-    kwargs = {
+    api=Api()
+    start_tokenizer_loader()
+
+    kwargs={
         "js_api": api,
         "width": 960,
         "height": 680,
         "min_size": (320, 240),
     }
-    
-    html_out = HTML.replace("__LOGO__", LOGO_URI_LIGHT).replace("__LOGO_DARK__", LOGO_URI_DARK)
-    
+
+    html_out=HTML.replace("__LOGO__", LOGO_URI_LIGHT).replace("__LOGO_DARK__", LOGO_URI_DARK)
+
     try:
         if ICON_PATH and os.path.exists(ICON_PATH):
-            window = webview.create_window(
-                "CrowdGPT", html=html_out,
-                icon=ICON_PATH, **kwargs
-            )
+            window=webview.create_window("CrowdGPT", html=html_out, icon=ICON_PATH, **kwargs)
         else:
-            window = webview.create_window(
-                "CrowdGPT", html=html_out,
-                **kwargs
-            )
+            window=webview.create_window("CrowdGPT", html=html_out, **kwargs)
     except TypeError:
-        window = webview.create_window(
-            "CrowdGPT", html=html_out,
-            **kwargs
-        )
-    
-    api.window = window
+        window=webview.create_window("CrowdGPT", html=html_out, **kwargs)
+
+    api.window=window
     webview.start(startup, debug=False)
