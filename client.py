@@ -90,7 +90,7 @@ def sanitize_for_json(obj):
 # ============ TOKENIZER ============
 TOKENIZER = None
 _tokenizer_started = False
-PREVIEW_EVERY = 18
+PREVIEW_EVERY = 4
 
 def start_tokenizer_loader():
     global _tokenizer_started
@@ -729,7 +729,7 @@ def run_single_round_wrapper(srv, at, se, emit):
                     sd = (abs(hash("cal")) % 10000) + cal_done*1000 + mi
                     x, y = ds.get_batch(bs, seed=sd); x, y = x.to(train_device), y.to(train_device)
 
-                    want_preview = ((micro_step + 1) % PREVIEW_EVERY == 0)
+                    want_preview = (micro_step == 0) or ((micro_step + 1) % PREVIEW_EVERY == 0)
                     lo, cards = _fwl(model, x, y, sl, ua, ad, ls, preview=want_preview)
                     lval = float(lo.item())
                     micro_step += 1
@@ -798,7 +798,7 @@ def run_single_round_wrapper(srv, at, se, emit):
                     sd = (abs(hash("t")) % 10000) + micro_step*1000 + mi
                     x, y = ds.get_batch(bs, seed=sd); x, y = x.to(train_device), y.to(train_device)
 
-                    want_preview = ((micro_step + 1) % PREVIEW_EVERY == 0)
+                    want_preview = (micro_step == 0) or ((micro_step + 1) % PREVIEW_EVERY == 0)
                     lo, cards = _fwl(model, x, y, sl, ua, ad, ls, preview=want_preview)
                     lval = float(lo.item())*as_
                     lo.backward()
@@ -1067,31 +1067,11 @@ body.dark .status-badge{background:rgba(34,197,94,.12);border-color:rgba(34,197,
   scrollbar-color: var(--border-strong) transparent;
 }
 
-.graph-container {
-  flex: 1 1 auto;
-  position: relative;
-  min-height: 120px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-#loss-graph {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-.graph-empty {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-  font-family: var(--mono);
-  font-size: 11px;
-}
+.graph-container{position:relative;height:230px}
+#loss-graph{position:absolute;inset:0;width:100%;height:100%;display:block;transition:opacity .2s}
+#loss-graph.hidden-graph{opacity:0;pointer-events:none}
+.graph-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-family:var(--mono);font-size:11px;transition:opacity .2s}
+.graph-empty.hidden-empty{opacity:0;pointer-events:none}
 
 .pred-lines{display:flex;flex-direction:column;gap:6px;font-family:var(--mono);font-size:12px}
 .preview-empty{color:var(--text-muted);text-align:center;padding:24px 0;font-size:11px}
@@ -1565,26 +1545,45 @@ function overlayShow(data){
 function overlayHide(){document.getElementById('overlay').classList.remove('show')}
 
 function drawGraph(){
-  const c=document.getElementById('loss-graph');if(!c)return;
-  const ctx=c.getContext('2d');
-  const rect=c.getBoundingClientRect();
-  if(rect.width<10||rect.height<10)return;
-  const dpr=window.devicePixelRatio||1;
-  c.width=rect.width*dpr;c.height=rect.height*dpr;
-  ctx.setTransform(dpr,0,0,dpr,0,0);
-  const W=rect.width,H=rect.height;
-  ctx.clearRect(0,0,W,H);
+  const c=document.getElementById('loss-graph');
+  if(!c) return;
   const empty=document.getElementById('graph-empty');
-  if(lossHistory.length<2){empty.style.display='flex';c.style.display='none';return}
-  empty.style.display='none';c.style.display='block';
+  
+  if(lossHistory.length < 2){
+    c.classList.add('hidden-graph');
+    if(empty) empty.classList.remove('hidden-empty');
+    return;
+  }
+
+  c.classList.remove('hidden-graph');
+  if(empty) empty.classList.add('hidden-empty');
+
+  const rect=c.getBoundingClientRect();
+  const W = rect.width;
+  const H = rect.height;
+
+  if(W < 10 || H < 10) {
+      requestAnimationFrame(drawGraph);
+      return;
+  }
+
+  const ctx=c.getContext('2d');
+  const dpr=window.devicePixelRatio||1;
+  c.width=Math.round(W*dpr);
+  c.height=Math.round(H*dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
+
   const data=lossHistory.slice(-MAXP);
   const mn=Math.min(...data),mx=Math.max(...data),range=(mx-mn)||1;
-  const pad=5,pH=H-pad*2,pW=W-pad*2,st=pW/(data.length-1);
+  const pad=6,pH=H-pad*2,pW=W-pad*2,st=pW/(data.length-1);
   const isDark=document.body.classList.contains('dark');
   const gridColor=isDark?'rgba(255,255,255,.06)':'rgba(17,17,19,.07)';
   const lineColor=isDark?'#22c55e':'#16a34a';
+
   ctx.strokeStyle=gridColor;ctx.lineWidth=1;
   for(let g=1;g<4;g++){const y=pad+pH*g/4;ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(pad+pW,y);ctx.stroke()}
+
   const pt=i=>[pad+i*st,pad+pH-(data[i]-mn)/range*pH];
   ctx.beginPath();
   data.forEach((v,i)=>{const[x,y]=pt(i);i?ctx.lineTo(x,y):ctx.moveTo(x,y)});
@@ -1592,6 +1591,7 @@ function drawGraph(){
   const gr=ctx.createLinearGradient(0,0,0,H);
   gr.addColorStop(0,isDark?'rgba(34,197,94,.20)':'rgba(22,163,74,.16)');gr.addColorStop(1,'rgba(22,163,74,0)');
   ctx.fillStyle=gr;ctx.fill();
+
   ctx.beginPath();
   data.forEach((v,i)=>{const[x,y]=pt(i);i?ctx.lineTo(x,y):ctx.moveTo(x,y)});
   ctx.strokeStyle=lineColor;ctx.lineWidth=1.5;ctx.stroke();
@@ -1662,34 +1662,37 @@ window.handleEvent=function(ev,data){
     }else{bar.classList.add('indet');document.getElementById('overlay-mb').textContent=mb(data.done)+' MB'}
   }
   else if(ev==='overlay_hide'){overlayHide()}
-  else if(ev==='cal_stats'){
-    document.getElementById('stat-loss').textContent=data.loss.toFixed(4);
-    if(data.tps !== undefined) document.getElementById('stat-tps').textContent=Math.round(data.tps);
-    document.getElementById('stat-round').textContent='—';
-    document.getElementById('stat-step-cur').textContent=data.step;
-    document.getElementById('stat-step-tot').textContent=data.total;
-    const pct=Math.min(100,(data.step/Math.max(1,data.total))*100);
+  else if(ev==='cal_stats' || ev==='stats'){
+    const loss = Number(data.loss);
+    const tps = Number(data.tps);
+    const step = Number(data.step);
+    const target = ev==='cal_stats' ? Number(data.total) : Number(data.target);
+    const time_left = Number(data.time_left);
+
+    if(isFinite(loss)){
+        document.getElementById('stat-loss').textContent=loss.toFixed(4);
+        document.getElementById('graph-last').textContent=loss.toFixed(4);
+        if(loss > 0){
+            lossHistory.push(loss);
+            if(lossHistory.length>MAXP*2)lossHistory.splice(0,lossHistory.length-MAXP*2);
+        }
+    }
+    if(isFinite(tps)){
+        document.getElementById('stat-tps').textContent=Math.round(tps);
+    }
+    if(isFinite(time_left)){
+        document.getElementById('stat-time').textContent=Math.round(time_left)+'m';
+    }
+    
+    document.getElementById('stat-round').textContent = ev==='cal_stats' ? '—' : (data.round != null ? data.round : '—');
+    document.getElementById('stat-step-cur').textContent=isFinite(step) ? step : 0;
+    document.getElementById('stat-step-tot').textContent=isFinite(target) ? target : 0;
+    
+    const pct = (isFinite(step) && isFinite(target) && target > 0) ? Math.min(100, (step/target)*100) : 0;
     document.getElementById('progress-bar').style.width=pct+'%';
     document.getElementById('progress-text').textContent=pct.toFixed(1)+'%';
-    document.getElementById('graph-last').textContent=data.loss.toFixed(4);
-    lossHistory.push(data.loss);
-    if(lossHistory.length>MAXP*2)lossHistory.splice(0,lossHistory.length-MAXP*2);
-    drawGraph();
-  }
-  else if(ev==='stats'){
-    document.getElementById('stat-loss').textContent=data.loss.toFixed(4);
-    document.getElementById('stat-tps').textContent=Math.round(data.tps);
-    document.getElementById('stat-round').textContent=data.round;
-    document.getElementById('stat-step-cur').textContent=data.step;
-    document.getElementById('stat-step-tot').textContent=data.target;
-    document.getElementById('stat-time').textContent=Math.round(data.time_left)+'m';
-    const pct=Math.min(100,(data.step/Math.max(1,data.target))*100);
-    document.getElementById('progress-bar').style.width=pct+'%';
-    document.getElementById('progress-text').textContent=pct.toFixed(1)+'%';
-    document.getElementById('graph-last').textContent=data.loss.toFixed(4);
-    lossHistory.push(data.loss);
-    if(lossHistory.length>MAXP*2)lossHistory.splice(0,lossHistory.length-MAXP*2);
-    drawGraph();
+    
+    requestAnimationFrame(drawGraph);
   }
   else if(ev==='model_preview'){
     const container = document.getElementById('model-preview');
