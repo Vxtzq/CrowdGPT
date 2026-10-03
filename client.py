@@ -901,123 +901,212 @@ def run_single_round_wrapper(srv, at, se, emit):
 # ============ HTML / CSS / JS ============
 HTML = """<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{
-  --bg:#fafaf9; --bg-soft:#ffffff; --bg-softer:#f0f0ee;
-  --text:#111113; --text-dim:#3a3a40; --text-muted:#6b6b73;
-  --border:#e4e4e1; --border-strong:#d0d0cb;
-  --accent:#16a34a; --accent-dim:#15803d;
+  --bg:#f7f7f5; --bg-soft:#ffffff; --bg-softer:#f1f1ee;
+  --text:#121216; --text-dim:#404048; --text-muted:#70707a;
+  --border:#e3e3df; --border-strong:#cfcfca;
+  --accent:#18a05a; --accent-dim:#137a46;
   --err:#dc2626;
   --mono:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;
   --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
-  --r:6px;
+  --r:10px;
+  --shadow:0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.04);
 }
 body.dark{
-  --bg:#1a1a1e; --bg-soft:#242428; --bg-softer:#2e2e33;
-  --text:#e8e8ec; --text-dim:#b8b8be; --text-muted:#888890;
-  --border:#3a3a40; --border-strong:#505058;
-  --accent:#22c55e; --accent-dim:#4ade80;
-  --err:#f87171;
+  --bg:#141417; --bg-soft:#1d1d22; --bg-softer:#24242a;
+  --text:#ededef; --text-dim:#b8b8c0; --text-muted:#82828c;
+  --border:#2d2d35; --border-strong:#3a3a44;
+  --accent:#2dd786; --accent-dim:#68e8ab;
+  --err:#f07777;
+  --shadow:0 1px 2px rgba(0,0,0,.16), 0 10px 28px rgba(0,0,0,.22);
 }
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%;width:100%}
-body{background:var(--bg);color:var(--text);font-family:var(--sans);display:flex;flex-direction:column;overflow:hidden;font-size:14px;line-height:1.5}
-header{flex:0 0 auto;height:54px;border-bottom:1px solid var(--border);background:var(--bg);display:flex;align-items:center;justify-content:space-between;padding:0 clamp(12px,2vw,20px);gap:10px}
-.logo{display:flex;align-items:center;gap:9px;min-width:0}
-.logo-img{height:22px;width:auto}
-.logo-fallback{width:24px;height:24px;border:1px solid var(--border-strong);display:none;place-items:center;font-size:13px;font-weight:600}
-.logo-text{font-size:15px;font-weight:600;white-space:nowrap}
-.logo-ver{font-family:var(--mono);font-size:10px;color:var(--text-muted);border:1px solid var(--border);padding:1px 5px;border-radius:3px}
+body{
+  background:
+    radial-gradient(900px 500px at 85% -10%, rgba(24,160,90,.07), transparent 35%),
+    radial-gradient(700px 400px at -10% 110%, rgba(24,160,90,.05), transparent 35%),
+    var(--bg);
+  color:var(--text);
+  font-family:var(--sans);
+  display:flex;flex-direction:column;overflow:hidden;font-size:14px;line-height:1.5;
+}
+header{
+  flex:0 0 auto;height:58px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 clamp(12px,2vw,22px);gap:12px;background:color-mix(in srgb, var(--bg) 86%, transparent);
+  backdrop-filter:blur(8px);
+}
+.logo{display:flex;align-items:center;gap:10px;min-width:0}
+.logo-img{height:23px;width:auto}
+.logo-fallback{width:26px;height:26px;border:1px solid var(--border-strong);border-radius:7px;display:none;place-items:center;font-size:13px;font-weight:700}
+.logo-text{font-size:15px;font-weight:700;white-space:nowrap}
+.logo-ver{font-family:var(--mono);font-size:10px;color:var(--text-muted);border:1px solid var(--border);padding:2px 6px;border-radius:6px;background:var(--bg-soft)}
 .header-right{display:flex;align-items:center;gap:8px}
-#user-info{font-family:var(--mono);font-size:11px;color:var(--text-muted);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#user-info{font-family:var(--mono);font-size:11px;color:var(--text-muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .theme-toggle,.backend-select{
   font-family:var(--sans);font-size:12px;background:var(--bg-soft);color:var(--text);
-  border:1px solid var(--border);padding:5px 10px;border-radius:4px;cursor:pointer;outline:none;
+  border:1px solid var(--border);padding:6px 10px;border-radius:8px;cursor:pointer;outline:none;
+  box-shadow:0 1px 1px rgba(0,0,0,.03);
 }
-.theme-toggle{width:34px;height:30px;padding:0}
+.theme-toggle{width:36px;height:32px;padding:0}
 body:not(.dashboard-active) #backend-select{display:none}
-main{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:clamp(10px,2vw,18px) clamp(12px,2vw,20px)}
+main{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:clamp(10px,2vw,20px)}
 .view{display:none;height:100%;min-height:0}
 .view.active{display:flex;flex-direction:column}
-#view-login.active{flex:1 1 auto;align-items:center;justify-content:center;padding:10px 0;min-height:0}
+#view-login.active{flex:1 1 auto;align-items:center;justify-content:center;padding:12px 0;min-height:0}
 .login-box{
-  width:min(380px,100%);max-height:100%;overflow-y:auto;background:var(--bg-soft);border:1px solid var(--border);
-  padding:clamp(14px,2.5vw,24px);border-radius:8px;display:flex;flex-direction:column;
+  width:min(400px,100%);max-height:100%;overflow-y:auto;background:var(--bg-soft);
+  border:1px solid var(--border);padding:clamp(16px,2.5vw,26px);border-radius:14px;box-shadow:var(--shadow);
 }
-.auth-screen{display:none;flex-direction:column;gap:0}
+.auth-screen{display:none;flex-direction:column}
 .auth-screen.active{display:flex}
-.login-box h2{font-size:clamp(17px,3vw,21px);font-weight:600;text-align:center;margin-bottom:3px}
-.login-box h2 .em{color:var(--accent);font-weight:700}
-.login-sub{font-size:12px;color:var(--text-dim);text-align:center;margin-bottom:14px}
-.fg{margin-bottom:9px}
-.fg label{display:block;font-size:9px;color:var(--text-muted);margin-bottom:3px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.07em}
-input{width:100%;font-family:inherit;font-size:12.5px;background:var(--bg-softer);color:var(--text);border:1px solid var(--border);padding:8px 10px;border-radius:4px;outline:none}
-input:focus{border-color:var(--accent)}
-button{font-family:inherit;font-size:12.5px;font-weight:500;cursor:pointer;border-radius:4px;transition:all .15s}
-.btn-primary{background:var(--text);color:var(--bg);border:1px solid var(--text);padding:9px 14px}
-.btn-primary:hover:not(:disabled){opacity:.85}
-.btn-danger{background:transparent;color:var(--err);border:1px solid var(--err);padding:9px 14px}
+.login-box h2{font-size:clamp(18px,3vw,22px);font-weight:800;text-align:center;margin-bottom:4px}
+.login-box h2 .em{color:var(--accent);font-weight:800}
+.login-sub{font-size:12px;color:var(--text-dim);text-align:center;margin-bottom:16px}
+.fg{margin-bottom:10px}
+.fg label{display:block;font-size:9px;color:var(--text-muted);margin-bottom:4px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.08em}
+input{
+  width:100%;font-family:inherit;font-size:13px;background:var(--bg-softer);color:var(--text);
+  border:1px solid var(--border);padding:10px 11px;border-radius:9px;outline:none;transition:border-color .15s, box-shadow .15s;
+}
+input:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent)}
+button{
+  font-family:inherit;font-size:13px;font-weight:600;cursor:pointer;border-radius:9px;transition:all .16s;
+}
+.btn-primary{
+  background:linear-gradient(180deg, color-mix(in srgb, var(--text) 94%, white), var(--text));
+  color:var(--bg);border:1px solid var(--text);padding:10px 14px;
+}
+.btn-primary:hover:not(:disabled){opacity:.88;transform:translateY(-1px)}
+.btn-danger{background:transparent;color:var(--err);border:1px solid var(--err);padding:10px 14px}
 .btn-danger:hover:not(:disabled){background:var(--err);color:#fff}
-button:disabled{opacity:.4;cursor:not-allowed}
-.auth-btn{width:100%;margin-top:2px}
-.error-box{display:none;margin-top:8px;padding:8px 10px;background:rgba(220,38,38,.06);border:1px solid rgba(220,38,38,.28);border-left:3px solid var(--err);border-radius:4px;font-size:12px;color:var(--err)}
+button:disabled{opacity:.42;cursor:not-allowed;transform:none}
+.auth-btn{width:100%;margin-top:4px}
+.error-box{
+  display:none;margin-top:10px;padding:9px 11px;background:color-mix(in srgb, var(--err) 7%, transparent);
+  border:1px solid color-mix(in srgb, var(--err) 28%, transparent);border-left:3px solid var(--err);
+  border-radius:8px;font-size:12px;color:var(--err)
+}
 .error-box.show{display:block}
-.auth-switch{margin-top:12px;font-size:12px;color:var(--text-muted);text-align:center}
-.auth-switch a{color:var(--accent-dim);font-weight:500;cursor:pointer}
-.anon-hint{margin-top:10px;padding-top:10px;border-top:1px solid var(--border);font-size:11px;color:var(--text-muted);text-align:center}
-.anon-hint a{color:var(--text-dim);cursor:pointer}
-.dash{display:flex;flex-direction:column;gap:10px;flex:1 1 auto;min-height:0}
-.dash-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex:0 0 auto}
-.dash-title{font-size:17px;font-weight:600}
-.status-badge{font-family:var(--mono);font-size:10px;padding:3px 10px;border-radius:100px;background:rgba(22,163,74,.08);color:var(--accent-dim);border:1px solid rgba(22,163,74,.35);white-space:nowrap}
-body.dark .status-badge{background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.4)}
-.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;flex:0 0 auto}
-.stat-card{background:var(--bg-soft);border:1px solid var(--border);padding:12px 14px;border-radius:var(--r);min-width:0}
-.stat-val{font-family:var(--mono);font-size:clamp(17px,2.4vw,22px);font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.auth-switch{margin-top:13px;font-size:12px;color:var(--text-muted);text-align:center}
+.auth-switch a{color:var(--accent-dim);font-weight:700;cursor:pointer}
+.anon-hint{margin-top:12px;padding-top:12px;border-top:1px solid var(--border);font-size:11px;color:var(--text-muted);text-align:center}
+.anon-hint a{color:var(--text-dim);cursor:pointer;font-weight:600}
+.dash{display:flex;flex-direction:column;gap:12px;flex:1 1 auto;min-height:0}
+.dash-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:0 0 auto}
+.dash-title{font-size:18px;font-weight:800}
+.status-badge{
+  font-family:var(--mono);font-size:10px;padding:5px 10px;border-radius:999px;
+  background:color-mix(in srgb, var(--accent) 9%, transparent);
+  color:var(--accent-dim);border:1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  white-space:nowrap;
+}
+.status-badge::before{
+  content:'';display:inline-block;width:6px;height:6px;border-radius:50%;
+  background:currentColor;margin-right:7px;vertical-align:middle;
+  animation:pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse{0%,100%{opacity:.55;transform:scale(.9)}50%{opacity:1;transform:scale(1.15)}}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;flex:0 0 auto}
+.stat-card{
+  background:var(--bg-soft);border:1px solid var(--border);padding:14px;border-radius:var(--r);
+  min-width:0;box-shadow:var(--shadow);
+}
+.stat-val{
+  font-family:var(--mono);font-size:clamp(18px,2.4vw,24px);font-weight:700;color:var(--text);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
 .stat-val.accent{color:var(--accent-dim)}
-.stat-lbl{font-size:11px;color:var(--text-muted);margin-top:2px}
-.panel{background:var(--bg-soft);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;flex:0 0 auto}
-.panel-head{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:8px;font-family:var(--mono);font-size:11px;color:var(--text-muted);flex-wrap:wrap}
+.stat-lbl{font-size:11px;color:var(--text-muted);margin-top:4px}
+.panel{
+  background:var(--bg-soft);border:1px solid var(--border);border-radius:var(--r);
+  padding:12px 14px;flex:0 0 auto;box-shadow:var(--shadow);
+}
+.panel-head{
+  display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:10px;
+  font-family:var(--mono);font-size:11px;color:var(--text-muted);flex-wrap:wrap;
+}
 .panel-head .pv{color:var(--text)}
-.progress-track{height:6px;background:var(--bg-softer);border:1px solid var(--border);border-radius:3px;overflow:hidden}
-.progress-fill{height:100%;width:0%;background:var(--accent);transition:width .4s ease}
-#loss-graph{display:block;width:100%;height:64px}
-.graph-empty{color:var(--text-muted);font-family:var(--mono);font-size:11px;text-align:center;padding:20px 0}
-.preview-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;min-height:130px}
-.preview-empty{grid-column:1/-1;color:var(--text-muted);text-align:center;padding:24px 0;font-size:11px}
-.pred-card{border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--bg-softer);animation:cardIn .35s ease;overflow:hidden}
-.pred-card.good{border-color:rgba(22,163,74,.45);box-shadow:inset 3px 0 0 var(--accent)}
-.pred-card.bad{border-color:rgba(220,38,38,.35);box-shadow:inset 3px 0 0 var(--err)}
-.pred-context{font-family:var(--mono);font-size:11.5px;line-height:1.45;color:var(--text-dim);word-break:break-word}
-.pred-next{font-weight:700;padding:1px 5px;border-radius:4px;margin-left:4px;display:inline-block}
-.good .pred-next{color:var(--accent-dim);background:rgba(22,163,74,.10)}
-.bad .pred-next{color:var(--err);background:rgba(220,38,38,.08)}
-.pred-meta{margin-top:7px;font-family:var(--mono);font-size:10px;color:var(--text-muted);display:flex;justify-content:space-between;gap:8px}
-.pred-badge{font-weight:700}
+.progress-track{
+  height:8px;background:var(--bg-softer);border:1px solid var(--border);border-radius:999px;overflow:hidden;
+}
+.progress-fill{
+  height:100%;width:0%;border-radius:999px;
+  background:linear-gradient(90deg, color-mix(in srgb, var(--accent) 75%, black), var(--accent) 55%, color-mix(in srgb, var(--accent) 55%, white));
+  transition:width .45s ease;
+}
+#loss-graph{display:block;width:100%;height:72px}
+.graph-empty{color:var(--text-muted);font-family:var(--mono);font-size:11px;text-align:center;padding:24px 0}
+.pred-lines{display:flex;flex-direction:column;gap:7px;font-family:var(--mono)}
+.preview-empty{color:var(--text-muted);text-align:center;padding:26px 0;font-size:11px}
+.pred-line{
+  display:flex;justify-content:space-between;gap:12px;padding:8px 10px;border-radius:9px;
+  border:1px solid var(--border);background:var(--bg-softer);
+  animation:lineIn .24s ease;
+}
+@keyframes lineIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.pred-line.good{border-left:3px solid var(--accent)}
+.pred-line.bad{border-left:3px solid var(--err)}
+.pred-main{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
+.pred-text{color:var(--text-dim);font-size:12px;word-break:break-word}
+.pred-token{
+  font-weight:800;padding:1px 7px;border-radius:6px;font-size:12px;
+}
+.good .pred-token{background:color-mix(in srgb, var(--accent) 13%, transparent);color:var(--accent-dim)}
+.bad .pred-token{background:color-mix(in srgb, var(--err) 12%, transparent);color:var(--err)}
+.pred-side{
+  display:flex;align-items:center;gap:9px;color:var(--text-muted);font-size:10px;white-space:nowrap;flex:0 0 auto;
+}
+.pred-badge{font-weight:800}
 .good .pred-badge{color:var(--accent-dim)}
 .bad .pred-badge{color:var(--err)}
-@keyframes cardIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-.status-strip{flex:0 0 auto;font-family:var(--mono);font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:4px 0}
+.status-strip{
+  flex:0 0 auto;font-family:var(--mono);font-size:11px;color:var(--text-muted);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:2px 2px;
+}
 .ss-event{display:block;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.controls{flex:0 0 auto;display:flex;gap:8px;justify-content:flex-end;align-items:center;flex-wrap:wrap}
-.overlay{position:fixed;inset:0;background:rgba(250,250,249,.86);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;z-index:50;opacity:0;pointer-events:none;transition:opacity .25s}
-body.dark .overlay{background:rgba(26,26,30,.86)}
+.controls{flex:0 0 auto;display:flex;gap:9px;justify-content:flex-end;align-items:center;flex-wrap:wrap}
+.overlay{
+  position:fixed;inset:0;background:color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter:blur(5px);display:flex;align-items:center;justify-content:center;z-index:50;
+  opacity:0;pointer-events:none;transition:opacity .22s;
+}
 .overlay.show{opacity:1;pointer-events:auto}
-.overlay-card{width:min(420px,88vw);background:var(--bg-soft);border:1px solid var(--border);border-radius:8px;padding:22px 24px}
-.overlay-title{font-size:15px;font-weight:600;margin-bottom:4px}
-.overlay-subtitle{font-size:12.5px;color:var(--text-muted);margin-bottom:14px;line-height:1.5;display:none}
+.overlay-card{
+  width:min(430px,90vw);background:var(--bg-soft);border:1px solid var(--border);
+  border-radius:14px;padding:22px 24px;box-shadow:var(--shadow);
+}
+.overlay-title{font-size:16px;font-weight:800;margin-bottom:5px}
+.overlay-subtitle{font-size:12.5px;color:var(--text-muted);margin-bottom:14px;line-height:1.55;display:none}
 .overlay-subtitle.show{display:block}
-.overlay-bar{height:10px;background:var(--bg-softer);border:1px solid var(--border);border-radius:5px;overflow:hidden;position:relative}
+.overlay-bar{
+  height:10px;background:var(--bg-softer);border:1px solid var(--border);border-radius:999px;
+  overflow:hidden;position:relative;
+}
 .overlay-bar.hidden{display:none}
-.overlay-fill{height:100%;width:0%;background:linear-gradient(90deg,#15803d,#16a34a 55%,#4ade80);transition:width .25s ease}
-body.dark .overlay-fill{background:linear-gradient(90deg,#15803d,#22c55e 55%,#86efac)}
-.overlay-bar.indet .overlay-fill{width:35%;transition:none;animation:indet 1.15s ease-in-out infinite}
-@keyframes indet{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
-.overlay-sub{margin-top:10px;font-family:var(--mono);font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;gap:8px}
-.overlay-card .overlay-msg{font-size:13px;color:var(--text-dim);line-height:1.5;margin-bottom:16px}
+.overlay-fill{
+  height:100%;width:0%;border-radius:999px;
+  background:linear-gradient(90deg,color-mix(in srgb, var(--accent) 75%, black),var(--accent) 55%,color-mix(in srgb, var(--accent) 55%, white));
+  transition:width .22s ease;
+}
+.overlay-bar.indet .overlay-fill{width:36%;transition:none;animation:indet 1.1s ease-in-out infinite}
+@keyframes indet{0%{transform:translateX(-110%)}100%{transform:translateX(320%)}}
+.overlay-sub{
+  margin-top:10px;font-family:var(--mono);font-size:11px;color:var(--text-muted);
+  display:flex;justify-content:space-between;gap:8px;
+}
+.overlay-card .overlay-msg{font-size:13px;color:var(--text-dim);line-height:1.55;margin-bottom:16px}
 .overlay-card .overlay-actions{display:flex;gap:8px;justify-content:flex-end}
-.overlay-card .overlay-actions button{min-width:90px;justify-content:center}
+.overlay-card .overlay-actions button{min-width:92px;justify-content:center}
+@media (max-width:560px){
+  header{height:auto;flex-wrap:wrap;padding:10px 12px}
+  #user-info{display:none}
+  .controls button{flex:1}
+  .pred-side{display:none}
+}
 </style></head>
 <body>
 <header>
@@ -1025,7 +1114,7 @@ body.dark .overlay-fill{background:linear-gradient(90deg,#15803d,#22c55e 55%,#86
     <img src="__LOGO__" id="logo-img" data-light="__LOGO__" data-dark="__LOGO_DARK__" class="logo-img" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='grid';">
     <div class="logo-fallback">C</div>
     <span class="logo-text">CrowdGPT</span>
-    <span class="logo-ver">v1.2</span>
+    <span class="logo-ver">v0.5</span>
   </div>
   <div class="header-right">
     <span id="user-info"></span>
@@ -1073,11 +1162,16 @@ body.dark .overlay-fill{background:linear-gradient(90deg,#15803d,#22c55e 55%,#86
       <div class="stats-grid">
         <div class="stat-card"><div class="stat-val accent" id="stat-loss">-</div><div class="stat-lbl" data-i18n="loss"></div></div>
         <div class="stat-card"><div class="stat-val" id="stat-tps">-</div><div class="stat-lbl" data-i18n="tokens_sec"></div></div>
+        <div class="stat-card"><div class="stat-val" id="stat-time">-</div><div class="stat-lbl" data-i18n="time_left"></div></div>
       </div>
 
       <div class="panel">
         <div class="panel-head">
-          <span><span data-i18n="round"></span> <span class="pv" id="stat-round">-</span> · <span data-i18n="step"></span> <span class="pv" id="stat-step-cur">0</span>/<span class="pv" id="stat-step-tot">0</span></span>
+          <span>
+            <span data-i18n="round"></span> <span class="pv" id="stat-round">-</span>
+            ·
+            <span data-i18n="step"></span> <span class="pv" id="stat-step-cur">0</span>/<span class="pv" id="stat-step-tot">0</span>
+          </span>
           <span class="pv" id="progress-text">0%</span>
         </div>
         <div class="progress-track"><div class="progress-fill" id="progress-bar"></div></div>
@@ -1097,7 +1191,7 @@ body.dark .overlay-fill{background:linear-gradient(90deg,#15803d,#22c55e 55%,#86
           <span data-i18n="model_thoughts"></span>
           <span class="pv" id="preview-step">-</span>
         </div>
-        <div id="model-preview" class="preview-grid">
+        <div id="model-preview" class="pred-lines">
           <div class="preview-empty" data-i18n="waiting_preview"></div>
         </div>
       </div>
@@ -1142,7 +1236,7 @@ const I18N={
    no_account:"No account yet?",register_link:"Create one",
    have_account:"Already registered?",login_link:"Log in",
    anon_preface:"Prefer to stay anonymous?",anon_link:"Skip and contribute anonymously",
-   dash_title:"Training",loss:"Loss",tokens_sec:"Tokens/sec",round:"Round",step:"Step",
+   dash_title:"Training",loss:"Loss",tokens_sec:"Tokens/sec",time_left:"Time left",round:"Round",step:"Step",
    loss_history:"Loss history",waiting_data:"Waiting for training data...",
    model_thoughts:"Model Predictions",waiting_preview:"Waiting for first prediction...",
    idle:"Idle",training:"Training...",waiting:"Waiting...",uploading:"Uploading...",
@@ -1164,299 +1258,446 @@ const I18N={
  }
 };
 
-let lang='en', statusKey='idle', pendingBackend=null;
-const lossHistory=[]; const MAXP=80;
+let lang='en';
+let statusKey='idle';
+let pendingBackend=null;
+let lossHistory=[];
+const MAXP=110;
+
+let lastLossLen=0;
+let lastPreviewStep=-1;
+let lastErrorNonce=0;
+let lastAuthNonce=0;
+let lastOverlayJSON='';
+let lastBackendsJSON='';
 
 function t(k){return (I18N[lang]&&I18N[lang][k])||I18N.en[k]||k}
 function applyT(){
   document.querySelectorAll('[data-i18n]').forEach(e=>e.textContent=t(e.getAttribute('data-i18n')));
-  document.getElementById('status-indicator').textContent=t(statusKey);
+  const badge=document.getElementById('status-indicator');
+  if(badge) badge.textContent=t(statusKey);
 }
-function showAuthScreen(name){
-  document.querySelectorAll('.auth-screen').forEach(s=>s.classList.remove('active'));
-  document.getElementById('screen-'+name).classList.add('active');
-  const loginSrv=document.getElementById('login-server');
-  const regSrv=document.getElementById('reg-server');
-  if(name==='register' && loginSrv.value) regSrv.value=loginSrv.value;
-  if(name==='login' && regSrv.value) loginSrv.value=regSrv.value;
-  document.getElementById('login-error').classList.remove('show');
-  document.getElementById('reg-error').classList.remove('show');
+function setText(id,v){
+  const el=document.getElementById(id);
+  if(el) el.textContent=v;
 }
-function callApi(n,...a){
-  if(window.pywebview && window.pywebview.api && window.pywebview.api[n]){
-    window.pywebview.api[n](...a); return true;
-  }
-  return false;
-}
-function showLoginError(code){
-  const el=document.getElementById('login-error');
-  el.textContent=t(code); el.classList.add('show');
-  document.getElementById('btn-login').disabled=false;
-}
-function showRegError(code){
-  const el=document.getElementById('reg-error');
-  el.textContent=t(code); el.classList.add('show');
-  document.getElementById('btn-register').disabled=false;
-}
-function mb(b){return (b/1048576).toFixed(1)}
-function overlayShow(data){
-  document.getElementById('overlay').classList.add('show');
-  document.getElementById('overlay-title').textContent=t(data.title_key || '');
-  const sub=document.getElementById('overlay-subtitle');
-  if(data.subtitle_key){ sub.textContent=t(data.subtitle_key); sub.classList.add('show'); }
-  else sub.classList.remove('show');
-  const bar=document.getElementById('overlay-bar');
-  const subBox=document.querySelector('#overlay .overlay-sub');
-  if(data.hide_bar){ bar.classList.add('hidden'); subBox.style.display='none'; }
-  else{
-    bar.classList.remove('hidden'); subBox.style.display='flex';
-    bar.classList.toggle('indet', !!data.indeterminate);
-    document.getElementById('overlay-fill').style.width=data.indeterminate?'':'0%';
-    document.getElementById('overlay-pct').textContent='';
-    document.getElementById('overlay-mb').textContent='';
-  }
-}
-function overlayHide(){document.getElementById('overlay').classList.remove('show')}
 function escapeHtml(s){
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
     '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
   }[c]));
 }
-function addLoss(v){
-  const n=Number(v);
-  if(!isFinite(n) || n <= 0) return;
-  lossHistory.push(n);
-  if(lossHistory.length > MAXP*2) lossHistory.splice(0, lossHistory.length - MAXP*2);
-  requestAnimationFrame(drawGraph);
+function errKey(code){
+  const map={
+    invalid_credentials:'err_invalid_credentials',
+    login_failed:'err_login_failed',
+    username_taken:'err_username_taken',
+    email_taken:'err_email_taken',
+    weak_password:'err_weak_password',
+    invalid_input:'err_invalid_input',
+    register_failed:'err_register_failed',
+    network:'err_network'
+  };
+  return map[code] || 'err_login_failed';
 }
+function showLoginError(key){
+  const el=document.getElementById('login-error');
+  if(!el) return;
+  el.textContent=t(key);
+  el.classList.add('show');
+  document.getElementById('btn-login').disabled=false;
+}
+function showRegError(key){
+  const el=document.getElementById('reg-error');
+  if(!el) return;
+  el.textContent=t(key);
+  el.classList.add('show');
+  document.getElementById('btn-register').disabled=false;
+}
+function apiCall(name){
+  if(window.pywebview && window.pywebview.api && window.pywebview.api[name]){
+    const args=Array.prototype.slice.call(arguments,1);
+    try{ window.pywebview.api[name].apply(null,args); return true; }catch(e){ return false; }
+  }
+  return false;
+}
+function mb(b){return (Number(b||0)/1048576).toFixed(1)}
+
 function drawGraph(){
-  const c=document.getElementById('loss-graph'); if(!c) return;
+  const c=document.getElementById('loss-graph');
+  if(!c) return;
   const empty=document.getElementById('graph-empty');
   const rect=c.getBoundingClientRect();
-  if(rect.width<10||rect.height<10){ if(empty){empty.style.display='block'; c.style.display='none';} return; }
-  if(lossHistory.length===0){ if(empty){empty.style.display='block'; c.style.display='none';} return; }
-  if(empty){empty.style.display='none'; c.style.display='block';}
+
+  if(rect.width<10||rect.height<10){
+    if(empty){ empty.style.display='block'; c.style.display='none'; }
+    return;
+  }
+
+  if(lossHistory.length===0){
+    if(empty){ empty.style.display='block'; c.style.display='none'; }
+    return;
+  }
+
+  if(empty){ empty.style.display='none'; c.style.display='block'; }
+
   const ctx=c.getContext('2d');
   const dpr=window.devicePixelRatio||1;
-  c.width=rect.width*dpr; c.height=rect.height*dpr;
+  c.width=rect.width*dpr;
+  c.height=rect.height*dpr;
   ctx.setTransform(dpr,0,0,dpr,0,0);
+
   const W=rect.width,H=rect.height;
   ctx.clearRect(0,0,W,H);
+
   const isDark=document.body.classList.contains('dark');
-  const lineColor=isDark?'#22c55e':'#16a34a';
+  const lineColor=isDark?'#2dd786':'#18a05a';
   const gridColor=isDark?'rgba(255,255,255,.06)':'rgba(17,17,19,.07)';
   const data=lossHistory.slice(-MAXP);
+
   if(data.length<2){
-    ctx.fillStyle=lineColor; ctx.beginPath(); ctx.arc(W/2,H/2,3,0,Math.PI*2); ctx.fill(); return;
+    ctx.fillStyle=lineColor;
+    ctx.beginPath();
+    ctx.arc(W/2,H/2,3.2,0,Math.PI*2);
+    ctx.fill();
+    return;
   }
+
   const mn=Math.min(...data), mx=Math.max(...data), range=(mx-mn)||1;
   const pad=5,pH=H-pad*2,pW=W-pad*2,st=pW/(data.length-1);
-  ctx.strokeStyle=gridColor; ctx.lineWidth=1;
-  for(let g=1; g<4; g++){
+
+  ctx.strokeStyle=gridColor;
+  ctx.lineWidth=1;
+  for(let g=1;g<4;g++){
     const y=pad+pH*g/4;
-    ctx.beginPath(); ctx.moveTo(pad,y); ctx.lineTo(pad+pW,y); ctx.stroke();
+    ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(pad+pW,y);ctx.stroke();
   }
+
   const pt=i=>[pad+i*st,pad+pH-(data[i]-mn)/range*pH];
+
   ctx.beginPath();
   data.forEach((v,i)=>{const[x,y]=pt(i); i?ctx.lineTo(x,y):ctx.moveTo(x,y);});
-  ctx.lineTo(pad+pW,pad+pH); ctx.lineTo(pad,pad+pH); ctx.closePath();
+  ctx.lineTo(pad+pW,pad+pH);
+  ctx.lineTo(pad,pad+pH);
+  ctx.closePath();
+
   const gr=ctx.createLinearGradient(0,0,0,H);
-  gr.addColorStop(0,isDark?'rgba(34,197,94,.20)':'rgba(22,163,74,.16)');
-  gr.addColorStop(1,'rgba(22,163,74,0)');
-  ctx.fillStyle=gr; ctx.fill();
+  gr.addColorStop(0,isDark?'rgba(45,215,134,.22)':'rgba(24,160,90,.18)');
+  gr.addColorStop(1,'rgba(24,160,90,0)');
+  ctx.fillStyle=gr;
+  ctx.fill();
+
   ctx.beginPath();
   data.forEach((v,i)=>{const[x,y]=pt(i); i?ctx.lineTo(x,y):ctx.moveTo(x,y);});
-  ctx.strokeStyle=lineColor; ctx.lineWidth=1.5; ctx.stroke();
+  ctx.strokeStyle=lineColor;
+  ctx.lineWidth=1.7;
+  ctx.stroke();
+
   const[lx,ly]=pt(data.length-1);
-  ctx.fillStyle=lineColor; ctx.beginPath(); ctx.arc(lx,ly,2.5,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle=lineColor;
+  ctx.beginPath();
+  ctx.arc(lx,ly,2.8,0,Math.PI*2);
+  ctx.fill();
 }
 
-window.addEventListener('pywebviewready',()=>{ document.body.classList.add('ready'); callApi('get_backends'); });
-document.getElementById('go-to-register').addEventListener('click',e=>{e.preventDefault();showAuthScreen('register')});
-document.getElementById('go-to-login').addEventListener('click',e=>{e.preventDefault();showAuthScreen('login')});
+function renderPreview(p){
+  const el=document.getElementById('model-preview');
+  const stepEl=document.getElementById('preview-step');
+  if(!el || !stepEl) return;
 
-document.getElementById('btn-login').addEventListener('click',()=>{
-  const srv=document.getElementById('login-server').value.trim();
-  const u=document.getElementById('login-user').value.trim();
-  const p=document.getElementById('login-pass').value;
-  if(!u||!p){ showLoginError('err_invalid_credentials'); return; }
-  document.getElementById('login-error').classList.remove('show');
-  document.getElementById('btn-login').disabled=true;
-  callApi('login',srv,u,p);
-});
+  stepEl.textContent='Step ' + (p && p.step != null ? p.step : 0);
 
-document.getElementById('btn-register').addEventListener('click',()=>{
-  const srv=document.getElementById('reg-server').value.trim();
-  const u=document.getElementById('reg-user').value.trim();
-  const email=document.getElementById('reg-email').value.trim();
-  const p=document.getElementById('reg-pass').value;
-  if(!u||!email||!p){ showRegError('err_invalid_input'); return; }
-  document.getElementById('reg-error').classList.remove('show');
-  document.getElementById('btn-register').disabled=true;
-  callApi('register',srv,u,email,p);
-});
-
-document.getElementById('btn-anon').addEventListener('click',e=>{ e.preventDefault(); callApi('login_anon'); });
-
-document.getElementById('btn-start').addEventListener('click',()=>{
-  if(callApi('start')){
-    document.getElementById('btn-start').disabled=true;
-    document.getElementById('btn-stop').disabled=false;
+  if(!p || !Array.isArray(p.cards) || p.cards.length===0){
+    el.innerHTML='<div class="preview-empty">' + escapeHtml(t('waiting_preview')) + '</div>';
+    return;
   }
-});
 
-document.getElementById('btn-stop').addEventListener('click',()=>{
-  callApi('stop');
-  document.getElementById('btn-start').disabled=false;
-  document.getElementById('btn-stop').disabled=true;
-  document.getElementById('status-indicator').textContent='Stopping...';
-});
+  el.innerHTML = p.cards.map(card=>{
+    const cls=card.match ? 'good' : 'bad';
+    const badge=card.match ? '✓' : '✗';
+    const prob=(typeof card.prob === 'number' && isFinite(card.prob)) ? (card.prob*100).toFixed(1)+'%' : '';
+    return `
+      <div class="pred-line ${cls}">
+        <div class="pred-main">
+          <span class="pred-text">${escapeHtml(card.context)}</span>
+          <span class="pred-token">${escapeHtml(card.pred)}</span>
+        </div>
+        <div class="pred-side">
+          <span class="pred-badge">${badge}</span>
+          <span class="pred-target">target: ${escapeHtml(card.target)}</span>
+          <span class="pred-prob">${prob}</span>
+        </div>
+      </div>`;
+  }).join('');
+}
 
-document.getElementById('backend-select').addEventListener('change',e=>{
-  const newBackend=e.target.value;
-  if(newBackend === window._currentBackend) return;
-  if(statusKey === 'idle') callApi('set_backend', newBackend);
-  else{
-    pendingBackend=newBackend;
-    document.getElementById('backend-overlay').classList.add('show');
+function renderOverlay(o){
+  const overlay=document.getElementById('overlay');
+  if(!overlay) return;
+
+  const json=JSON.stringify(o||null);
+  if(json === lastOverlayJSON) return;
+  lastOverlayJSON=json;
+
+  if(!o){
+    overlay.classList.remove('show');
+    return;
   }
-});
 
-document.getElementById('btn-backend-cancel').addEventListener('click',()=>{
-  document.getElementById('backend-overlay').classList.remove('show');
+  overlay.classList.add('show');
+  setText('overlay-title', t(o.title_key || ''));
+
+  const sub=document.getElementById('overlay-subtitle');
+  if(sub){
+    if(o.subtitle_key){ sub.textContent=t(o.subtitle_key); sub.classList.add('show'); }
+    else sub.classList.remove('show');
+  }
+
+  const bar=document.getElementById('overlay-bar');
+  const subBox=document.querySelector('#overlay .overlay-sub');
+  if(bar && subBox){
+    if(o.hide_bar){ bar.classList.add('hidden'); subBox.style.display='none'; }
+    else{ bar.classList.remove('hidden'); subBox.style.display='flex'; }
+  }
+
+  if(Number(o.total) > 0){
+    if(bar) bar.classList.remove('indet');
+    const pct=Math.min(100, Number(o.done||0) / Number(o.total) * 100);
+    const fill=document.getElementById('overlay-fill');
+    if(fill) fill.style.width=pct.toFixed(1)+'%';
+    setText('overlay-pct', pct.toFixed(1)+'%');
+    setText('overlay-mb', mb(o.done)+' / '+mb(o.total)+' MB');
+  } else {
+    if(bar) bar.classList.add('indet');
+    setText('overlay-pct', '');
+    setText('overlay-mb', mb(o.done)+' MB');
+  }
+}
+
+function renderMetrics(m){
+  if(!m) return;
+
+  const loginView=document.getElementById('view-login');
+  const dashView=document.getElementById('view-dashboard');
+
+  if(m.auth_nonce !== lastAuthNonce){
+    lastAuthNonce = m.auth_nonce || 0;
+    if(m.user && loginView && loginView.classList.contains('active')){
+      loginView.classList.remove('active');
+      if(dashView) dashView.classList.add('active');
+      document.body.classList.add('dashboard-active');
+      setText('user-info', m.user);
+      requestAnimationFrame(drawGraph);
+    }
+  }
+
+  if(m.login_error_nonce && m.login_error_nonce !== lastErrorNonce){
+    lastErrorNonce = m.login_error_nonce;
+    const key=errKey(m.login_error);
+    const loginActive=document.getElementById('screen-login') && document.getElementById('screen-login').classList.contains('active');
+    if(loginActive) showLoginError(key);
+    else showRegError(key);
+  }
+
   const sel=document.getElementById('backend-select');
-  sel.value=window._currentBackend || sel.value;
-  pendingBackend=null;
-});
+  if(sel && m.backends && m.backends.available){
+    const j=JSON.stringify(m.backends.available);
+    if(sel.dataset.available !== j){
+      sel.dataset.available=j;
+      sel.innerHTML='';
+      const order=[
+        {key:'cuda', label:'CUDA (NVIDIA)'},
+        {key:'rocm', label:'ROCm (AMD)'},
+        {key:'mps', label:'MPS (Apple)'},
+        {key:'xpu', label:'XPU (Intel)'},
+        {key:'directml', label:'DirectML (Windows)'},
+        {key:'cpu', label:'CPU'}
+      ];
+      order.forEach(bk=>{
+        const opt=document.createElement('option');
+        opt.value=bk.key;
+        opt.textContent=bk.label;
+        opt.disabled=!m.backends.available[bk.key];
+        sel.appendChild(opt);
+      });
+      sel.disabled=false;
+    }
+    if(m.current_backend) sel.value=m.current_backend;
+  }
 
-document.getElementById('btn-backend-confirm').addEventListener('click',()=>{
-  document.getElementById('backend-overlay').classList.remove('show');
-  if(pendingBackend){ callApi('set_backend', pendingBackend); pendingBackend=null; }
-});
+  if(m.status){
+    statusKey=m.status;
+    setText('status-indicator', t(statusKey));
+    const startBtn=document.getElementById('btn-start');
+    const stopBtn=document.getElementById('btn-stop');
+    if(startBtn && stopBtn){
+      if(statusKey === 'idle'){
+        startBtn.disabled=false;
+        stopBtn.disabled=true;
+      } else {
+        startBtn.disabled=true;
+        stopBtn.disabled=false;
+      }
+    }
+  }
 
-window.handleEvent=function(ev,data){
-  if(ev==='login_success'){
-    document.getElementById('view-login').classList.remove('active');
-    document.getElementById('view-dashboard').classList.add('active');
-    document.body.classList.add('dashboard-active');
-    document.getElementById('user-info').textContent=data.username;
-    document.getElementById('btn-login').disabled=false;
-    document.getElementById('btn-register').disabled=false;
+  if(typeof m.log === 'string') setText('status-event', m.log);
+
+  renderOverlay(m.overlay || null);
+
+  if(dashView && dashView.classList.contains('active')){
+    if(m.loss != null && isFinite(Number(m.loss))) setText('stat-loss', Number(m.loss).toFixed(4));
+    if(m.tps != null && isFinite(Number(m.tps))) setText('stat-tps', String(Math.round(Number(m.tps))));
+    setText('stat-time', m.time_left != null ? Math.round(Number(m.time_left)||0) + 'm' : '-');
+    setText('stat-round', m.round != null ? String(m.round) : '-');
+    setText('stat-step-cur', String(m.step != null ? m.step : 0));
+    setText('stat-step-tot', String(m.target != null ? m.target : 0));
+
+    const step=Number(m.step)||0;
+    const target=Math.max(1, Number(m.target)||1);
+    const pct=Math.min(100, step/target*100);
+    const bar=document.getElementById('progress-bar');
+    if(bar) bar.style.width=pct.toFixed(1)+'%';
+    setText('progress-text', pct.toFixed(1)+'%');
+
+    if(Array.isArray(m.lossHistory) && m.lossHistory.length !== lastLossLen){
+      lossHistory = m.lossHistory.map(Number).filter(x=>isFinite(x) && x > 0);
+      lastLossLen = m.lossHistory.length;
+      setText('graph-last', lossHistory.length ? Number(lossHistory[lossHistory.length-1]).toFixed(4) : '');
+      requestAnimationFrame(drawGraph);
+    }
+
+    if(m.preview && (m.preview.step !== lastPreviewStep || lastPreviewStep === -1)){
+      lastPreviewStep = m.preview.step;
+      renderPreview(m.preview);
+    }
+  }
+}
+
+async function pollMetrics(){
+  try{
+    if(window.pywebview && window.pywebview.api && window.pywebview.api.get_metrics){
+      let m = await window.pywebview.api.get_metrics();
+      if(typeof m === 'string') m = JSON.parse(m);
+      if(m) renderMetrics(m);
+    }
+  }catch(e){}
+  setTimeout(pollMetrics, 300);
+}
+
+function showAuthScreen(name){
+  document.querySelectorAll('.auth-screen').forEach(s=>s.classList.remove('active'));
+  const scr=document.getElementById('screen-'+name);
+  if(scr) scr.classList.add('active');
+  const loginSrv=document.getElementById('login-server');
+  const regSrv=document.getElementById('reg-server');
+  if(name==='register' && loginSrv && loginSrv.value && regSrv) regSrv.value=loginSrv.value;
+  if(name==='login' && regSrv && regSrv.value && loginSrv) loginSrv.value=regSrv.value;
+  const le=document.getElementById('login-error'); if(le) le.classList.remove('show');
+  const re=document.getElementById('reg-error'); if(re) re.classList.remove('show');
+}
+
+function initEvents(){
+  const goReg=document.getElementById('go-to-register');
+  if(goReg) goReg.addEventListener('click',e=>{e.preventDefault();showAuthScreen('register')});
+
+  const goLogin=document.getElementById('go-to-login');
+  if(goLogin) goLogin.addEventListener('click',e=>{e.preventDefault();showAuthScreen('login')});
+
+  const btnLogin=document.getElementById('btn-login');
+  if(btnLogin) btnLogin.addEventListener('click',()=>{
+    const srv=document.getElementById('login-server').value.trim();
+    const u=document.getElementById('login-user').value.trim();
+    const p=document.getElementById('login-pass').value;
+    if(!u || !p){ showLoginError('err_invalid_credentials'); return; }
+    const le=document.getElementById('login-error'); if(le) le.classList.remove('show');
+    btnLogin.disabled=true;
+    apiCall('login', srv, u, p);
+  });
+
+  const btnRegister=document.getElementById('btn-register');
+  if(btnRegister) btnRegister.addEventListener('click',()=>{
+    const srv=document.getElementById('reg-server').value.trim();
+    const u=document.getElementById('reg-user').value.trim();
+    const email=document.getElementById('reg-email').value.trim();
+    const p=document.getElementById('reg-pass').value;
+    if(!u || !email || !p){ showRegError('err_invalid_input'); return; }
+    const re=document.getElementById('reg-error'); if(re) re.classList.remove('show');
+    btnRegister.disabled=true;
+    apiCall('register', srv, u, email, p);
+  });
+
+  const btnAnon=document.getElementById('btn-anon');
+  if(btnAnon) btnAnon.addEventListener('click',e=>{e.preventDefault(); apiCall('login_anon');});
+
+  const btnStart=document.getElementById('btn-start');
+  if(btnStart) btnStart.addEventListener('click',()=>{
+    if(apiCall('start')){
+      btnStart.disabled=true;
+      const btnStop=document.getElementById('btn-stop');
+      if(btnStop) btnStop.disabled=false;
+      setText('status-indicator', t('waiting'));
+    }
+  });
+
+  const btnStop=document.getElementById('btn-stop');
+  if(btnStop) btnStop.addEventListener('click',()=>{
+    apiCall('stop');
+    btnStop.disabled=true;
+    const btnStart2=document.getElementById('btn-start');
+    if(btnStart2) btnStart2.disabled=false;
+    setText('status-indicator', 'Stopping...');
+  });
+
+  const backendSel=document.getElementById('backend-select');
+  if(backendSel) backendSel.addEventListener('change',e=>{
+    const newBackend=e.target.value;
+    if(!window._currentBackend || newBackend === window._currentBackend) return;
+    if(statusKey === 'idle') apiCall('set_backend', newBackend);
+    else{
+      pendingBackend=newBackend;
+      const ov=document.getElementById('backend-overlay');
+      if(ov) ov.classList.add('show');
+    }
+  });
+
+  const bCancel=document.getElementById('btn-backend-cancel');
+  if(bCancel) bCancel.addEventListener('click',()=>{
+    const ov=document.getElementById('backend-overlay');
+    if(ov) ov.classList.remove('show');
+    const sel2=document.getElementById('backend-select');
+    if(sel2 && window._currentBackend) sel2.value=window._currentBackend;
+    pendingBackend=null;
+  });
+
+  const bConfirm=document.getElementById('btn-backend-confirm');
+  if(bConfirm) bConfirm.addEventListener('click',()=>{
+    const ov=document.getElementById('backend-overlay');
+    if(ov) ov.classList.remove('show');
+    if(pendingBackend){
+      apiCall('set_backend', pendingBackend);
+      pendingBackend=null;
+    }
+  });
+
+  const themeBtn=document.getElementById('theme-toggle');
+  if(themeBtn) themeBtn.addEventListener('click',()=>{
+    document.body.classList.toggle('dark');
+    themeBtn.textContent=document.body.classList.contains('dark') ? '☀️' : '🌙';
+    try{ localStorage.setItem('crowdgpt-theme', document.body.classList.contains('dark') ? 'dark' : 'light'); }catch(e){}
+    updateLogo();
     requestAnimationFrame(drawGraph);
-  }
-  else if(ev==='login_error'){
-    const code=data.code || 'err_login_failed';
-    const loginActive=document.getElementById('screen-login').classList.contains('active');
-    if(loginActive) showLoginError(code); else showRegError(code);
-  }
-  else if(ev==='log'){ document.getElementById('status-event').textContent=data; }
-  else if(ev==='backends'){
-    const sel=document.getElementById('backend-select');
-    sel.innerHTML='';
-    window._currentBackend=data.current;
-    const order=[
-      {key:'cuda', label:'CUDA (NVIDIA)'},
-      {key:'rocm', label:'ROCm (AMD)'},
-      {key:'mps', label:'MPS (Apple)'},
-      {key:'xpu', label:'XPU (Intel)'},
-      {key:'directml', label:'DirectML (Windows)'},
-      {key:'cpu', label:'CPU'}
-    ];
-    order.forEach(bk=>{
-      const opt=document.createElement('option');
-      opt.value=bk.key; opt.textContent=bk.label;
-      opt.disabled=!data.available[bk.key];
-      if(bk.key === data.current) opt.selected=true;
-      sel.appendChild(opt);
-    });
-    sel.disabled=false;
-  }
-  else if(ev==='overlay_show'){ overlayShow(data); }
-  else if(ev==='overlay_progress'){
-    const bar=document.getElementById('overlay-bar');
-    if(data.total>0){
-      bar.classList.remove('indet');
-      const pct=Math.min(100,data.done/data.total*100);
-      document.getElementById('overlay-fill').style.width=pct+'%';
-      document.getElementById('overlay-pct').textContent=pct.toFixed(1)+'%';
-      document.getElementById('overlay-mb').textContent=mb(data.done)+' / '+mb(data.total)+' MB';
-    } else {
-      bar.classList.add('indet');
-      document.getElementById('overlay-mb').textContent=mb(data.done)+' MB';
-    }
-  }
-  else if(ev==='overlay_hide'){ overlayHide(); }
-  else if(ev==='cal_stats'){
-    let lossVal=Number(data.loss); if(!isFinite(lossVal)||lossVal<=0) lossVal=10.0;
-    const tpsVal=Number(data.tps)||0;
-    document.getElementById('stat-loss').textContent=lossVal.toFixed(4);
-    document.getElementById('stat-tps').textContent=Math.round(tpsVal);
-    document.getElementById('stat-round').textContent='-';
-    document.getElementById('stat-step-cur').textContent=data.step;
-    document.getElementById('stat-step-tot').textContent=data.total;
-    const pct=Math.min(100,(data.step/Math.max(1,data.total))*100);
-    document.getElementById('progress-bar').style.width=pct+'%';
-    document.getElementById('progress-text').textContent=pct.toFixed(1)+'%';
-    document.getElementById('graph-last').textContent=lossVal.toFixed(4);
-    addLoss(lossVal);
-  }
-  else if(ev==='stats'){
-    let lossVal=Number(data.loss); if(!isFinite(lossVal)||lossVal<=0) lossVal=10.0;
-    const tpsVal=Number(data.tps)||0;
-    document.getElementById('stat-loss').textContent=lossVal.toFixed(4);
-    document.getElementById('stat-tps').textContent=Math.round(tpsVal);
-    document.getElementById('stat-round').textContent=data.round;
-    document.getElementById('stat-step-cur').textContent=data.step;
-    document.getElementById('stat-step-tot').textContent=data.target;
-    const pct=Math.min(100,(data.step/Math.max(1,data.target))*100);
-    document.getElementById('progress-bar').style.width=pct+'%';
-    document.getElementById('progress-text').textContent=pct.toFixed(1)+'%';
-    document.getElementById('graph-last').textContent=lossVal.toFixed(4);
-    addLoss(lossVal);
-  }
-  else if(ev==='model_preview'){
-    const container=document.getElementById('model-preview');
-    const stepEl=document.getElementById('preview-step');
-    if(!container || !stepEl) return;
-    stepEl.textContent='Step ' + (data.step || 0);
-    const cards=data.cards || [];
-    if(cards.length===0){
-      container.innerHTML='<div class="preview-empty">No preview yet</div>';
-      return;
-    }
-    let html='';
-    cards.forEach(card=>{
-      const cls=card.match ? 'good' : 'bad';
-      const badge=card.match ? '✓' : '✗';
-      const prob=(typeof card.prob === 'number') ? (card.prob*100).toFixed(1)+'%' : '';
-      html += `
-        <div class="pred-card ${cls}">
-          <div class="pred-context">${escapeHtml(card.context)}<span class="pred-next">${escapeHtml(card.pred)}</span></div>
-          <div class="pred-meta">
-            <span class="pred-badge">${badge} target: ${escapeHtml(card.target)}</span>
-            <span>${prob}</span>
-          </div>
-        </div>`;
-    });
-    container.innerHTML=html;
-  }
-  else if(ev==='status'){
-    statusKey=data;
-    document.getElementById('status-indicator').textContent=t(statusKey);
-    if(data==='training'||data==='idle'||data==='calibrating'||data==='preparing') overlayHide();
-    if(data==='idle'){
-      document.getElementById('btn-start').disabled=false;
-      document.getElementById('btn-stop').disabled=true;
-    }
-  }
-};
+  });
 
-window.addEventListener('resize',()=>requestAnimationFrame(drawGraph));
-if(window.ResizeObserver){ new ResizeObserver(()=>requestAnimationFrame(drawGraph)).observe(document.getElementById('loss-graph')); }
+  window.addEventListener('resize',()=>requestAnimationFrame(drawGraph));
+  if(window.ResizeObserver){
+    new ResizeObserver(()=>requestAnimationFrame(drawGraph)).observe(document.getElementById('loss-graph'));
+  }
+}
 
 function updateLogo(){
   try{
-    const img=document.getElementById('logo-img'); if(!img) return;
+    const img=document.getElementById('logo-img');
+    if(!img) return;
     const isDark=document.body.classList.contains('dark');
     const src=isDark ? img.getAttribute('data-dark') : img.getAttribute('data-light');
     if(src && src.length > 30) img.src=src;
@@ -1469,111 +1710,236 @@ function updateLogo(){
     try{ saved=localStorage.getItem('crowdgpt-theme'); }catch(e){}
     let prefersDark=false;
     try{ prefersDark=window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches; }catch(e){}
-    if(saved==='dark' || (!saved && prefersDark)){
+    if(saved === 'dark' || (!saved && prefersDark)){
       document.body.classList.add('dark');
-      document.getElementById('theme-toggle').textContent='☀️';
+      const themeBtn=document.getElementById('theme-toggle');
+      if(themeBtn) themeBtn.textContent='☀️';
     }
     updateLogo();
   }catch(e){}
-  const tbtn=document.getElementById('theme-toggle');
-  if(tbtn){
-    tbtn.addEventListener('click',function(){
-      document.body.classList.toggle('dark');
-      this.textContent=document.body.classList.contains('dark') ? '☀️' : '🌙';
-      try{ localStorage.setItem('crowdgpt-theme', document.body.classList.contains('dark') ? 'dark' : 'light'); }catch(e){}
-      updateLogo();
-      requestAnimationFrame(drawGraph);
-    });
-  }
 })();
 
+window.addEventListener('pywebviewready',()=>{
+  document.body.classList.add('ready');
+});
+
 applyT();
-setInterval(()=>{ if(lossHistory.length>=2) drawGraph(); }, 1000);
+initEvents();
+pollMetrics();
+setInterval(()=>{ if(lossHistory.length >= 2) drawGraph(); }, 1000);
 </script></body></html>"""
 
 # ============ API ============
 class Api:
     def __init__(self):
-        self.window=None; self.stop_event=threading.Event()
-        self.thread=None; self.auth_token=None; self.username=None
-        self.server_url="http://api.crowdgpt.net:5006"
-        self.selected_backend=get_best_default_backend()
+        self.window = None
+        self.stop_event = threading.Event()
+        self.thread = None
+        self.auth_token = None
+        self.username = None
+        self.server_url = "http://api.crowdgpt.net:5006"
+        self.selected_backend = get_best_default_backend()
+
+        self._lock = threading.Lock()
+        self._metrics = {
+            "status": "idle",
+            "log": "",
+            "user": None,
+            "auth_nonce": 0,
+            "login_error": None,
+            "login_error_nonce": 0,
+            "backends": {
+                "available": get_available_backends(),
+                "current": self.selected_backend
+            },
+            "current_backend": self.selected_backend,
+            "round": "-",
+            "global_step": 0,
+            "step": 0,
+            "target": 0,
+            "loss": None,
+            "tps": 0,
+            "time_left": 0,
+            "lossHistory": [],
+            "preview": {"step": 0, "cards": []},
+            "overlay": None,
+        }
 
     def emit(self, ev, data):
-        if not self.window: return
         try:
-            ev_js=json.dumps(ev, ensure_ascii=True)
-            data_js=json.dumps(data, ensure_ascii=True).replace('</', '<\\/')
-            self.window.evaluate_js(f"window.handleEvent({ev_js},{data_js});")
+            with self._lock:
+                if ev == "log":
+                    self._metrics["log"] = str(data)
+
+                elif ev == "status":
+                    self._metrics["status"] = str(data)
+
+                elif ev == "login_success":
+                    self._metrics["user"] = data.get("username")
+                    self._metrics["auth_nonce"] += 1
+                    self._metrics["login_error"] = None
+
+                elif ev == "login_error":
+                    self._metrics["login_error"] = data.get("code")
+                    self._metrics["login_error_nonce"] += 1
+
+                elif ev == "backends":
+                    self._metrics["backends"] = {
+                        "available": data.get("available", {}),
+                        "current": data.get("current", "cpu")
+                    }
+                    self._metrics["current_backend"] = data.get("current", "cpu")
+
+                elif ev == "overlay_show":
+                    self._metrics["overlay"] = {
+                        "title_key": data.get("title_key", ""),
+                        "subtitle_key": data.get("subtitle_key"),
+                        "indeterminate": bool(data.get("indeterminate", False)),
+                        "hide_bar": bool(data.get("hide_bar", False)),
+                        "done": 0,
+                        "total": 0
+                    }
+
+                elif ev == "overlay_progress":
+                    o = self._metrics.get("overlay")
+                    if o:
+                        o["done"] = safe_float(data.get("done"), 0)
+                        o["total"] = safe_float(data.get("total"), 0)
+                        o["indeterminate"] = o["total"] <= 0
+
+                elif ev == "overlay_hide":
+                    self._metrics["overlay"] = None
+
+                elif ev in ("cal_stats", "stats"):
+                    self._metrics["step"] = int(safe_float(data.get("step"), 0))
+
+                    target_key = "total" if ev == "cal_stats" else "target"
+                    self._metrics["target"] = int(safe_float(data.get(target_key), 0))
+
+                    loss = safe_float(data.get("loss"), 0)
+                    if loss > 0:
+                        self._metrics["loss"] = loss
+                        self._metrics["lossHistory"].append(loss)
+                        if len(self._metrics["lossHistory"]) > 160:
+                            del self._metrics["lossHistory"][:len(self._metrics["lossHistory"]) - 160]
+
+                    self._metrics["tps"] = safe_float(data.get("tps"), 0)
+
+                    if "round" in data:
+                        self._metrics["round"] = data["round"]
+                    if "global_step" in data:
+                        self._metrics["global_step"] = data["global_step"]
+                    if "time_left" in data:
+                        self._metrics["time_left"] = safe_float(data.get("time_left"), 0)
+
+                elif ev == "model_preview":
+                    self._metrics["preview"] = {
+                        "step": int(safe_float(data.get("step"), 0)),
+                        "cards": data.get("cards", [])
+                    }
+
         except Exception as e:
-            log.warning(f"Emit failed for {ev}: {e}")
+            log.warning(f"Metrics emit failed for {ev}: {e}")
+
+    def get_metrics(self):
+        with self._lock:
+            m = dict(self._metrics)
+            m["lossHistory"] = list(self._metrics["lossHistory"])
+
+            if self._metrics.get("preview"):
+                m["preview"] = {
+                    "step": self._metrics["preview"].get("step", 0),
+                    "cards": list(self._metrics["preview"].get("cards", []))
+                }
+            else:
+                m["preview"] = {"step": 0, "cards": []}
+
+            if self._metrics.get("overlay"):
+                m["overlay"] = dict(self._metrics["overlay"])
+            else:
+                m["overlay"] = None
+
+            if self._metrics.get("backends"):
+                m["backends"] = {
+                    "available": dict(self._metrics["backends"].get("available", {})),
+                    "current": self._metrics["backends"].get("current", "cpu")
+                }
+            else:
+                m["backends"] = None
+
+            return m
 
     def get_backends(self):
-        available=get_available_backends()
-        self.emit('backends', {'available': available, 'current': self.selected_backend})
+        available = get_available_backends()
+        self.emit("backends", {"available": available, "current": self.selected_backend})
 
     def set_backend(self, backend_name):
-        self.selected_backend=backend_name
+        self.selected_backend = backend_name
+        with self._lock:
+            self._metrics["current_backend"] = backend_name
+            if self._metrics.get("backends"):
+                self._metrics["backends"]["current"] = backend_name
         if self.thread and self.thread.is_alive():
             self.stop_event.set()
 
     def login(self, s, u, p):
-        self.server_url=s or self.server_url
-        threading.Thread(target=self._do_login, args=(u,p), daemon=True).start()
+        self.server_url = s or self.server_url
+        threading.Thread(target=self._do_login, args=(u, p), daemon=True).start()
 
     def _do_login(self, u, p):
-        tok, err=do_login(self.server_url, u, p)
+        tok, err = do_login(self.server_url, u, p)
         if tok:
-            self.auth_token, self.username=tok, u
-            self.emit('login_success', {'username': u})
+            self.auth_token, self.username = tok, u
+            self.emit("login_success", {"username": u})
         else:
-            self.emit('login_error', {'code': err or 'err_login_failed'})
+            self.emit("login_error", {"code": err or "login_failed"})
 
     def register(self, s, u, email, p):
-        self.server_url=s or self.server_url
-        threading.Thread(target=self._do_register, args=(u,email,p), daemon=True).start()
+        self.server_url = s or self.server_url
+        threading.Thread(target=self._do_register, args=(u, email, p), daemon=True).start()
 
     def _do_register(self, u, email, p):
-        tok, err=do_register(self.server_url, u, email, p)
+        tok, err = do_register(self.server_url, u, email, p)
         if tok:
-            self.auth_token, self.username=tok, u
-            self.emit('login_success', {'username': u})
+            self.auth_token, self.username = tok, u
+            self.emit("login_success", {"username": u})
         else:
-            self.emit('login_error', {'code': err or 'err_register_failed'})
+            self.emit("login_error", {"code": err or "register_failed"})
 
     def login_anon(self):
-        self.auth_token, self.username=None, "anonymous"
-        self.emit('login_success', {'username': 'anonymous'})
+        self.auth_token, self.username = None, "anonymous"
+        self.emit("login_success", {"username": "anonymous"})
 
     def start(self):
-        if self.thread and self.thread.is_alive(): return
+        if self.thread and self.thread.is_alive():
+            return
         self.stop_event.clear()
-        self.thread=threading.Thread(target=self._rs, daemon=True)
+        self.emit("status", "waiting")
+        self.emit("log", "Starting swarm node...")
+        self.thread = threading.Thread(target=self._rs, daemon=True)
         self.thread.start()
 
     def stop(self):
         self.stop_event.set()
-        self.emit('status', 'idle')
-        self.emit('log', 'Stop requested. Freeing VRAM...')
+        self.emit("status", "idle")
+        self.emit("log", "Stop requested. Freeing VRAM...")
 
     def _rs(self):
         global train_device, train_backend
         try:
-            train_device, train_backend=detect_training_backend(self.selected_backend)
-            self.emit('log', f"Backend: {train_backend} ({train_device})")
+            train_device, train_backend = detect_training_backend(self.selected_backend)
+            self.emit("log", f"Backend: {train_backend} ({train_device})")
             auto_detect_vram_budget()
-            self.emit('log', f"VRAM: {memory_config['ram_gb']:.1f} GB")
+            self.emit("log", f"VRAM budget: {memory_config['ram_gb']:.1f} GB")
         except Exception as e:
-            self.emit('log', f"Error: {e}")
-            self.emit('status', 'idle')
+            self.emit("log", f"Error: {e}")
+            self.emit("status", "idle")
             return
 
-        round_count=0
+        round_count = 0
         while not self.stop_event.is_set():
             round_count += 1
-            self.emit('log', f"{'='*40}")
-            self.emit('log', f"Starting Round Cycle #{round_count}")
-            self.emit('log', f"{'='*40}")
+            self.emit("log", f"Starting round cycle #{round_count}")
 
             try:
                 run_single_round_wrapper(self.server_url, self.auth_token, self.stop_event, self.emit)
@@ -1581,18 +1947,20 @@ class Api:
                 self.stop_event.set()
                 break
             except Exception as e:
-                self.emit('log', f"Round failed: {e}")
+                self.emit("log", f"Round failed: {e}")
 
-            if self.stop_event.is_set(): break
+            if self.stop_event.is_set():
+                break
 
-            self.emit('status', 'waiting')
-            self.emit('log', 'Round complete. Auto-relaunching next round in 10s...')
+            self.emit("status", "waiting")
+            self.emit("log", "Round complete. Auto-relaunching next round in 10s...")
             for _ in range(10):
-                if self.stop_event.is_set(): break
+                if self.stop_event.is_set():
+                    break
                 time.sleep(1)
 
-        self.emit('status', 'idle')
-        self.emit('log', 'Training stopped by user.')
+        self.emit("status", "idle")
+        self.emit("log", "Training stopped.")
 
 # ============ STARTUP ============
 def startup():
@@ -1628,25 +1996,25 @@ def startup():
     threading.Timer(0.5, set_window_icon).start()
 
 if __name__ == "__main__":
-    api=Api()
+    api = Api()
     start_tokenizer_loader()
 
-    kwargs={
+    kwargs = {
         "js_api": api,
-        "width": 960,
-        "height": 680,
-        "min_size": (320, 240),
+        "width": 1000,
+        "height": 720,
+        "min_size": (360, 260),
     }
 
-    html_out=HTML.replace("__LOGO__", LOGO_URI_LIGHT).replace("__LOGO_DARK__", LOGO_URI_DARK)
+    html_out = HTML.replace("__LOGO__", LOGO_URI_LIGHT).replace("__LOGO_DARK__", LOGO_URI_DARK)
 
     try:
         if ICON_PATH and os.path.exists(ICON_PATH):
-            window=webview.create_window("CrowdGPT", html=html_out, icon=ICON_PATH, **kwargs)
+            window = webview.create_window("CrowdGPT", html=html_out, icon=ICON_PATH, **kwargs)
         else:
-            window=webview.create_window("CrowdGPT", html=html_out, **kwargs)
+            window = webview.create_window("CrowdGPT", html=html_out, **kwargs)
     except TypeError:
-        window=webview.create_window("CrowdGPT", html=html_out, **kwargs)
+        window = webview.create_window("CrowdGPT", html=html_out, **kwargs)
 
-    api.window=window
+    api.window = window
     webview.start(startup, debug=False)
