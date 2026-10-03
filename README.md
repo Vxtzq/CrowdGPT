@@ -26,11 +26,9 @@
 </p>
 
 ---
-# 🥳🥳🥳 CrowdGPT v0.4 released 🥳🥳🥳
+# 🥳🥳🥳 CrowdGPT v0.5 released 🥳🥳🥳
 ## Key changes
-- GUI version
-- Dataset has now 280B tokens
-- Model already trained on 1.6B tokens
+- Enhanced GUI version
 
 ---
 
