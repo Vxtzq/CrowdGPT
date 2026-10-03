@@ -90,7 +90,7 @@ def sanitize_for_json(obj):
 # ============ TOKENIZER ============
 TOKENIZER = None
 _tokenizer_started = False
-PREVIEW_EVERY = 15
+PREVIEW_EVERY = 10
 
 def start_tokenizer_loader():
     global _tokenizer_started
