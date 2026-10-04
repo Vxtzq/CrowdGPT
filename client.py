@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client — Final Unified Edition
-- Reverted to clean, austere original UI style
-- 2-column responsive grid for fullscreen (no more ugly elongation)
-- Text-based prediction lines (green/red)
-- Bulletproof JSON sanitization to guarantee loss graph updates
-- Time left estimation active EVEN DURING CALIBRATION
-- MOTD (Message of the Day) warning pop-up fetched from GitHub
+CrowdGPT GUI Client — HF-Direct + Chunked Upload Edition (Final Fixed)
 """
-import os, sys, io, json, time, struct, math, gc, threading, base64, logging, tempfile, atexit, subprocess
+
+import os, sys, io, json, time, struct, math, gc, threading, base64, logging, tempfile, atexit, subprocess, hashlib
 from pathlib import Path
 import webview
 import numpy as np
@@ -33,8 +28,17 @@ log = logging.getLogger(__name__)
 CHECKPOINT_DIR = Path("checkpoints")
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
+DEFAULT_SERVER = "https://server.crowdgpt.net"
+
 DATASET_REPO_ID = "Vxtzq/CrowdGPT"
 TOKENIZER_REPO = "Qwen/Qwen2.5-1.5B"
+HF_MODEL_REPO_ID = "Vxtzq/Crowd-v1"
+
+USE_HF_WEIGHTS = True
+
+UPLOAD_CHUNK_BYTES = 64 * 1024 * 1024  # 64 MB
+MAX_DIRECT_UPLOAD_BYTES = 80 * 1024 * 1024  # 80 MB
+MAX_CHUNK_RETRY = 4
 
 MODEL_CONFIG = {
     "vocabSize": 151669, "dim": 1536, "nLayers": 24, "nHeads": 16, "nKvHeads": 4,
@@ -68,7 +72,6 @@ def safe_float(v, default=0.0):
         return float(v)
     except: return default
 
-# ============ JSON SANITIZER (Fixes Loss Graph) ============
 def sanitize_for_json(obj):
     if isinstance(obj, dict):
         return {str(k): sanitize_for_json(v) for k, v in obj.items()}
@@ -418,11 +421,27 @@ class StreamingShardDataset:
         try:
             h = {"Authorization": f"Bearer {self.auth_token}"} if self.auth_token else {}
             r = requests.get(f"{srv}/fl/task?format={fmt}&skip_weights=true", headers=h, timeout=30)
-            if r.status_code == 200:
-                raw = r.content; ml = struct.unpack('<I', raw[:4])[0]
-                ni = json.loads(raw[4:4+ml].decode()).get("datasetConfig", {}).get("chunkIdx", self.ci)
-                if ni != self.ci: self.ci = ni; return True
-        except: pass
+            if r.status_code != 200:
+                return False
+
+            ct = (r.headers.get("content-type") or "").lower()
+            if "json" in ct:
+                md = r.json()
+            else:
+                raw = r.content
+                if len(raw) < 4:
+                    return False
+                ml = struct.unpack('<I', raw[:4])[0]
+                if len(raw) < 4 + ml:
+                    return False
+                md = json.loads(raw[4:4+ml].decode())
+
+            ni = md.get("datasetConfig", {}).get("chunkIdx", self.ci)
+            if ni != self.ci:
+                self.ci = ni
+                return True
+        except Exception:
+            pass
         return False
     def get_batch(self, bs, seed=None):
         if self.data is None or self.n == 0: self.advance()
@@ -520,6 +539,244 @@ def wait_for_round(srv, h, se, emit):
         except: time.sleep(10)
     hide(); return None
 
+# ============ TASK METADATA / HF WEIGHTS ============
+def fetch_task_metadata(srv, h, se, emit):
+    while not se.is_set():
+        try:
+            r = requests.get(
+                f"{srv}/fl/task?format=bf16&skip_weights=true",
+                headers=h,
+                timeout=30,
+            )
+
+            if r.headers.get("X-Status") == "wait":
+                for _ in range(10):
+                    if se.is_set(): return None
+                    time.sleep(1)
+                continue
+
+            if r.status_code == 200:
+                ct = (r.headers.get("content-type") or "").lower()
+
+                if "json" in ct:
+                    md = r.json()
+                    if md.get("status") == "wait":
+                        for _ in range(10):
+                            if se.is_set(): return None
+                            time.sleep(1)
+                        continue
+                    return md
+
+                raw = r.content
+                if len(raw) >= 4:
+                    ml = struct.unpack('<I', raw[:4])[0]
+                    if len(raw) >= 4 + ml:
+                        return json.loads(raw[4:4+ml].decode())
+
+                raise RuntimeError("Invalid task metadata response")
+
+            if r.status_code in (503, 504):
+                time.sleep(10)
+                continue
+
+            time.sleep(5)
+
+        except Exception as e:
+            if se.is_set(): return None
+            emit('log', f"Task metadata fetch failed: {e}")
+            time.sleep(10)
+
+    return None
+
+def _weight_cache_path(revision, filename):
+    rev = str(revision or "main").strip().replace("/", "_").replace("\\", "_")
+    d = CHECKPOINT_DIR / "hf_weights" / rev
+    d.mkdir(parents=True, exist_ok=True)
+    return d / filename
+
+def _download_file_with_progress(url, dest, emit, stop_evt, expected_size=None, label="file"):
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    if dest.exists():
+        sz = dest.stat().st_size
+        if expected_size is None or sz == int(expected_size):
+            log.info(f"Using cached weight file: {dest}")
+            return dest
+        try:
+            dest.unlink()
+        except Exception:
+            pass
+
+    last_err = None
+
+    for attempt in range(3):
+        if stop_evt.is_set():
+            raise KeyboardInterrupt("Stop requested during weight download")
+
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+
+        try:
+            log.info(f"Downloading {label}: {url}")
+            r = requests.get(
+                url,
+                stream=True,
+                timeout=(15, 3600),
+                allow_redirects=True,
+            )
+            r.raise_for_status()
+
+            content_length = int(r.headers.get("content-length", 0) or 0)
+            total = int(expected_size) if expected_size else content_length
+            done = 0
+            last_emit = 0.0
+
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    if stop_evt.is_set():
+                        raise KeyboardInterrupt("Stop requested during weight download")
+
+                    if not chunk:
+                        continue
+
+                    f.write(chunk)
+                    done += len(chunk)
+
+                    now = time.time()
+                    if now - last_emit > 0.25:
+                        emit("overlay_progress", {"done": done, "total": total})
+                        last_emit = now
+
+            if expected_size and done != int(expected_size):
+                raise RuntimeError(
+                    f"Downloaded size mismatch for {label}: got {done}, expected {expected_size}"
+                )
+
+            os.replace(tmp, dest)
+            log.info(f"Finished downloading {label}: {dest}")
+            return dest
+
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            last_err = e
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
+
+            if attempt < 2:
+                emit("log", f"Download retry {attempt + 1} for {label}: {e}")
+                time.sleep(5 * (attempt + 1))
+
+    raise RuntimeError(f"Failed to download {label}: {last_err}")
+
+def _load_safetensors_flat(path, expected_numel, label="weights"):
+    try:
+        from safetensors.torch import load_file
+    except ImportError as e:
+        raise RuntimeError("Missing dependency: safetensors. Add 'safetensors' to requirements.") from e
+
+    tensors = load_file(str(path))
+
+    if "weights" in tensors:
+        t = tensors["weights"]
+    elif "flat" in tensors:
+        t = tensors["flat"]
+    elif len(tensors) == 1:
+        t = next(iter(tensors.values()))
+    else:
+        raise RuntimeError(
+            f"{label}: could not identify expected tensor key. "
+            f"Expected 'weights' or 'flat'. Found keys: {list(tensors.keys())[:20]}"
+        )
+
+    arr = t.to(torch.float32).flatten().cpu().numpy()
+
+    del tensors, t
+    gc.collect()
+
+    if arr.size != int(expected_numel):
+        raise RuntimeError(
+            f"{label} element count mismatch: got {arr.size}, expected {expected_numel}."
+        )
+
+    return arr
+
+def fetch_weights_from_hf(md, se, emit):
+    wcfg = md.get("weights") or {}
+
+    if wcfg.get("source") != "huggingface":
+        raise RuntimeError("Task metadata does not advertise Hugging Face weights.")
+
+    revision = wcfg.get("revision") or "main"
+    files = wcfg.get("files") or {}
+
+    model_info = files.get("model") or {}
+    engram_info = files.get("engram") or {}
+
+    model_url = model_info.get("url") or (
+        f"https://huggingface.co/{HF_MODEL_REPO_ID}/resolve/{revision}/model_bf16.safetensors"
+    )
+    engram_url = engram_info.get("url") or (
+        f"https://huggingface.co/{HF_MODEL_REPO_ID}/resolve/{revision}/engram_bf16.safetensors"
+    )
+
+    model_size = model_info.get("size")
+    engram_size = engram_info.get("size")
+
+    if not model_size:
+        try:
+            hr = requests.head(model_url, allow_redirects=True, timeout=30)
+            model_size = int(hr.headers.get("content-length", 0) or 0) or None
+        except Exception:
+            model_size = None
+
+    if not engram_size:
+        try:
+            hr = requests.head(engram_url, allow_redirects=True, timeout=30)
+            engram_size = int(hr.headers.get("content-length", 0) or 0) or None
+        except Exception:
+            engram_size = None
+
+    model_path = _weight_cache_path(revision, "model_bf16.safetensors")
+    engram_path = _weight_cache_path(revision, "engram_bf16.safetensors")
+
+    emit("status", "downloading")
+    emit("overlay_show", {"title_key": "dl_weights", "indeterminate": False})
+
+    _download_file_with_progress(
+        model_url,
+        model_path,
+        emit,
+        se,
+        expected_size=model_size,
+        label="model_bf16.safetensors",
+    )
+
+    _download_file_with_progress(
+        engram_url,
+        engram_path,
+        emit,
+        se,
+        expected_size=engram_size,
+        label="engram_bf16.safetensors",
+    )
+
+    emit("overlay_hide", {})
+    emit("status", "preparing")
+    emit("log", "Loading weights from safetensors...")
+
+    iw = _load_safetensors_flat(model_path, EXPECTED_MODEL_SIZE, "model weights")
+    ie = _load_safetensors_flat(engram_path, EXPECTED_ENGRAM_SIZE, "engram weights")
+
+    return iw, ie
+
 def fetch_task(srv, h, prec, se, emit):
     while not se.is_set():
         try:
@@ -614,6 +871,161 @@ def _fwl(m, x, y, sl, ua, ad, ls=1.0, preview=False):
 
     return lo * ls, cards
 
+# ============ CHUNKED UPLOAD HELPERS ============
+def _sha256_hex(data):
+    return hashlib.sha256(data).hexdigest()
+
+def _post_json_with_retry(url, payload, h, emit, se, timeout=60, retries=4):
+    last_err = None
+
+    for attempt in range(retries):
+        if se.is_set():
+            raise KeyboardInterrupt("Stop requested")
+
+        try:
+            r = requests.post(url, json=payload, headers=h, timeout=timeout)
+
+            if r.status_code == 503:
+                emit("log", "Server busy/aggregating, waiting before retry...")
+                last_err = RuntimeError("server busy 503")
+                time.sleep(10)
+                continue
+
+            r.raise_for_status()
+            return r
+
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            last_err = e
+            if attempt < retries - 1:
+                emit("log", f"POST retry {attempt + 1}: {e}")
+                time.sleep(min(20, 2 ** (attempt + 1)))
+
+    raise RuntimeError(f"POST {url} failed: {last_err}")
+
+def _chunked_submit_once(srv, h, compressed_data, meta, emit, se, chunk_size):
+    total = len(compressed_data)
+    chunks = max(1, math.ceil(total / chunk_size))
+    checksum = _sha256_hex(compressed_data)
+
+    init_payload = {
+        **meta,
+        "totalBytes": total,
+        "chunkSize": chunk_size,
+        "chunks": chunks,
+        "checksum": checksum,
+    }
+
+    emit("log", f"Initializing chunked upload: {chunks} chunks, {total / (1024*1024):.1f} MB total")
+
+    r = _post_json_with_retry(
+        f"{srv}/fl/submit/init",
+        init_payload,
+        h,
+        emit,
+        se,
+        timeout=60,
+        retries=4,
+    )
+
+    j = r.json()
+    upload_id = j.get("uploadId")
+
+    if not upload_id:
+        raise RuntimeError("Server did not return uploadId")
+
+    for idx in range(chunks):
+        if se.is_set():
+            raise KeyboardInterrupt("Stop requested during upload")
+
+        start = idx * chunk_size
+        end = min(total, start + chunk_size)
+        part = compressed_data[start:end]
+        part_sha = _sha256_hex(part)
+
+        attempt = 0
+        while True:
+            try:
+                rr = requests.post(
+                    f"{srv}/fl/submit/chunk?uploadId={upload_id}&index={idx}",
+                    data=part,
+                    headers={
+                        **h,
+                        "Content-Type": "application/octet-stream",
+                        "X-Chunk-Sha256": part_sha,
+                    },
+                    timeout=300,
+                )
+
+                if rr.status_code == 413:
+                    raise RuntimeError("CHUNK_TOO_LARGE")
+
+                rr.raise_for_status()
+                break
+
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                if "CHUNK_TOO_LARGE" in str(e):
+                    raise
+
+                attempt += 1
+                if se.is_set() or attempt >= MAX_CHUNK_RETRY:
+                    raise
+
+                emit("log", f"Chunk {idx + 1}/{chunks} failed, retry {attempt}: {e}")
+                time.sleep(min(20, 2 ** attempt))
+
+        emit("overlay_progress", {"done": end, "total": total})
+
+    emit("log", "Finalizing chunked upload...")
+
+    return _post_json_with_retry(
+        f"{srv}/fl/submit/finalize",
+        {"uploadId": upload_id},
+        h,
+        emit,
+        se,
+        timeout=900,
+        retries=2,
+    )
+
+def chunked_submit_delta(srv, h, compressed_data, meta, emit, se):
+    chunk_size = UPLOAD_CHUNK_BYTES
+
+    while True:
+        try:
+            return _chunked_submit_once(srv, h, compressed_data, meta, emit, se, chunk_size)
+        except Exception as e:
+            msg = str(e)
+            if ("CHUNK_TOO_LARGE" in msg or "413" in msg) and chunk_size > 8 * 1024 * 1024:
+                chunk_size = max(8 * 1024 * 1024, chunk_size // 2)
+                emit("log", f"Chunk too large. Reducing chunk size to {chunk_size / (1024*1024):.0f} MB and retrying.")
+                continue
+            raise
+
+def stream_with_progress(data, emit_cb, total_size, stop_evt):
+    chunk_size = 128 * 1024
+    uploaded = 0
+    last_emit = 0.0
+
+    for i in range(0, len(data), chunk_size):
+        if stop_evt.is_set():
+            raise KeyboardInterrupt("Stop requested")
+
+        chunk = data[i:i + chunk_size]
+        uploaded += len(chunk)
+
+        now = time.time()
+        if now - last_emit > 0.25:
+            emit_cb("overlay_progress", {"done": uploaded, "total": total_size})
+            last_emit = now
+
+        yield chunk
+
+    emit_cb("overlay_progress", {"done": total_size, "total": total_size})
+
 # ============ TRAIN ROUND ============
 def run_single_round_wrapper(srv, at, se, emit):
     global train_device, train_backend
@@ -633,22 +1045,67 @@ def run_single_round_wrapper(srv, at, se, emit):
     tid = ""
 
     try:
-        emit('log', "Downloading weights...")
-        md, wb = fetch_task(srv, h, "bf16", se, emit)
-        if md is None: return
+        emit('log', "Fetching task metadata...")
+        md = fetch_task_metadata(srv, h, se, emit)
+        if md is None:
+            return
+
+        tid = md.get("taskId")
+        gs = md.get("globalStep")
+        sl = MAX_SEQ_LEN
+
+        if not tid:
+            emit("log", "Task metadata missing taskId.")
+            return
+
+        iw = ie = None
+
+        if USE_HF_WEIGHTS:
+            wcfg = md.get("weights") or {}
+            if wcfg.get("source") == "huggingface":
+                try:
+                    emit('log', "Downloading weights from Hugging Face...")
+                    iw, ie = fetch_weights_from_hf(md, se, emit)
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    emit('log', f"Hugging Face weight download failed: {e}")
+                    emit('log', "Falling back to coordinator weight stream...")
+                    iw = ie = None
+
+        if iw is None or ie is None:
+            emit('log', "Downloading weights from coordinator...")
+            md2, wb = fetch_task(srv, h, "bf16", se, emit)
+            if md2 is None:
+                return
+
+            md = md2
+            tid = md.get("taskId")
+            gs = md.get("globalStep")
+
+            if not tid:
+                emit("log", "Coordinator task metadata missing taskId.")
+                return
+
+            bbl = EXPECTED_MODEL_SIZE * 2
+            ebl = EXPECTED_ENGRAM_SIZE * 2
+            needed = bbl + ebl
+
+            if len(wb) < needed:
+                raise RuntimeError(f"Incomplete coordinator weight payload: got {len(wb)}, expected {needed}")
+
+            iw = decompress_weights(wb[:bbl], "bf16")
+            ie = decompress_weights(wb[bbl:bbl + ebl], "bf16")
+
+            del wb
+            gc.collect()
 
         emit('status', 'preparing')
         emit('log', "Preparing model...")
 
-        tid, gs = md['taskId'], md['globalStep']
-        sl = 2048
-        bbl = EXPECTED_MODEL_SIZE * 2
-        iw = decompress_weights(wb[:bbl], "bf16")
-        ie = decompress_weights(wb[bbl:], "bf16")
-        del wb; gc.collect()
-
         dc = md.get("datasetConfig", {})
         sc = md.get("shardConfig", {})
+
         ds = StreamingShardDataset(
             dc.get("repoId", DATASET_REPO_ID),
             dc.get("chunkIdx", 0),
@@ -748,7 +1205,7 @@ def run_single_round_wrapper(srv, at, se, emit):
 
                     elapsed_cal = time.time() - cs_
                     current_tps = tt / max(elapsed_cal, 1.0)
-                    
+
                     time_left_mins = 0
                     if cal_done >= 1 and micro_step > 0:
                         elapsed = time.time() - cs_
@@ -863,52 +1320,104 @@ def run_single_round_wrapper(srv, at, se, emit):
         emit('log', f"Done: {micro_step} micro-steps, loss {fl:.4f}")
         emit('status', 'uploading')
 
-        dbf = torch.from_numpy(model.get_base_weights()-iw).to(torch.bfloat16).view(torch.uint16).numpy()
-        ed = model.engram.table.weight.data.cpu()-iew
-        rn = ed.abs().sum(dim=1); k = max(1, int(len(rn)*0.10))
-        tv, ti = torch.topk(rn, k); ai = ti[tv > 1e-8]
+        dbf = torch.from_numpy(model.get_base_weights() - iw).to(torch.bfloat16).view(torch.uint16).numpy()
+        ed = model.engram.table.weight.data.cpu() - iew
+        rn = ed.abs().sum(dim=1)
+        k = max(1, int(len(rn) * 0.10))
+        tv, ti = torch.topk(rn, k)
+        ai = ti[tv > 1e-8]
         si = ai.cpu().numpy().astype(np.uint32) if len(ai) else np.array([], dtype=np.uint32)
         sv = ed[ai].to(torch.bfloat16).view(torch.uint16).numpy() if len(ai) else np.array([], dtype=np.uint16)
 
-        pl = json.dumps({"taskId": tid, "loss": fl, "localSteps": micro_step, "tokensProcessed": tt, "loraRank": 0, "isDelta": True, "weightFormat": "bf16", "hasEngram": True, "engramSparseCount": len(si)}).encode()
-        bi = struct.pack('<I', len(pl)) + pl + np.ascontiguousarray(dbf).tobytes() + np.ascontiguousarray(si).tobytes() + np.ascontiguousarray(sv).tobytes()
+        has_engram = bool(len(si) > 0)
+        engram_sparse_count = int(len(si))
+
+        pl = json.dumps({
+            "taskId": tid,
+            "loss": fl,
+            "localSteps": micro_step,
+            "tokensProcessed": tt,
+            "loraRank": 0,
+            "isDelta": True,
+            "weightFormat": "bf16",
+            "hasEngram": has_engram,
+            "engramSparseCount": engram_sparse_count,
+        }).encode()
+
+        bi = (
+            struct.pack('<I', len(pl))
+            + pl
+            + np.ascontiguousarray(dbf).tobytes()
+            + np.ascontiguousarray(si).tobytes()
+            + np.ascontiguousarray(sv).tobytes()
+        )
 
         compressed_data = gzip.compress(bi, compresslevel=2)
         upload_size_mb = len(compressed_data) / (1024 * 1024)
 
-        def stream_with_progress(data, emit_cb, total_size, stop_evt):
-            chunk_size = 128 * 1024
-            uploaded = 0
-            last_emit = 0.0
-            for i in range(0, len(data), chunk_size):
-                if stop_evt.is_set(): raise KeyboardInterrupt("Stop requested")
-                chunk = data[i:i+chunk_size]
-                uploaded += len(chunk)
-                now = time.time()
-                if now - last_emit > 0.25:
-                    emit_cb('overlay_progress', {'done': uploaded, 'total': total_size})
-                    last_emit = now
-                yield chunk
-            emit_cb('overlay_progress', {'done': total_size, 'total': total_size})
+        del dbf, ed, si, sv, pl, bi
+        gc.collect()
+
+        meta = {
+            "taskId": tid,
+            "loss": fl,
+            "localSteps": micro_step,
+            "tokensProcessed": tt,
+            "loraRank": 0,
+            "isDelta": True,
+            "weightFormat": "bf16",
+            "hasEngram": has_engram,
+            "engramSparseCount": engram_sparse_count,
+        }
 
         emit('overlay_show', {'title_key': 'uploading', 'indeterminate': False})
         emit('log', f"Uploading {upload_size_mb:.1f} MB delta to server...")
 
+        r = None
+
         try:
-            r = requests.post(
-                f"{srv}/fl/submit",
-                headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **h},
-                data=stream_with_progress(compressed_data, emit, len(compressed_data), se),
-                timeout=600
-            )
-            if r.status_code == 200: emit('log', "Submitted successfully!")
-            else: emit('log', f"Submit failed: {r.text[:100]}")
+            if len(compressed_data) <= MAX_DIRECT_UPLOAD_BYTES:
+                try:
+                    r = requests.post(
+                        f"{srv}/fl/submit",
+                        headers={
+                            "Content-Type": "application/octet-stream",
+                            "Content-Encoding": "gzip",
+                            **h,
+                        },
+                        data=stream_with_progress(compressed_data, emit, len(compressed_data), se),
+                        timeout=600,
+                    )
+
+                    if r.status_code == 413:
+                        emit("log", "Direct upload rejected by edge/proxy. Switching to chunked upload...")
+                        r = chunked_submit_delta(srv, h, compressed_data, meta, emit, se)
+
+                except Exception as e:
+                    if len(compressed_data) > 8 * 1024 * 1024:
+                        emit("log", f"Direct upload failed ({e}). Trying chunked upload...")
+                        r = chunked_submit_delta(srv, h, compressed_data, meta, emit, se)
+                    else:
+                        raise
+            else:
+                r = chunked_submit_delta(srv, h, compressed_data, meta, emit, se)
+
+            if r is not None and r.status_code == 200:
+                emit("log", "Submitted successfully!")
+            elif r is not None:
+                emit("log", f"Submit failed: {r.text[:200]}")
+
         except KeyboardInterrupt:
-            emit('log', "Upload aborted by user.")
+            emit("log", "Upload aborted by user.")
         except Exception as e:
-            emit('log', f"Upload failed: {e}")
+            emit("log", f"Upload failed: {e}")
         finally:
-            emit('overlay_hide', {})
+            emit("overlay_hide", {})
+            try:
+                del compressed_data
+            except Exception:
+                pass
+            gc.collect()
 
     finally:
         hb.stop()
@@ -1133,7 +1642,6 @@ body.dark .overlay-fill{background:linear-gradient(90deg,#15803d,#22c55e 55%,#86
 .overlay-card .overlay-actions{display:flex;gap:8px;justify-content:flex-end}
 .overlay-card .overlay-actions button{min-width:90px;justify-content:center}
 
-/* === MOTD WARNING POPUP === */
 .motd-overlay {
   position: fixed;
   top: 24px;
@@ -1191,8 +1699,8 @@ body.dark .motd-overlay {
   font-family: var(--mono);
   transition: all 0.15s;
 }
-.motd-close:hover { 
-  color: var(--text); 
+.motd-close:hover {
+  color: var(--text);
   border-color: var(--border-strong);
   background: var(--bg-softer);
 }
@@ -1356,7 +1864,6 @@ body.dark .motd-overlay {
   </div>
 </div>
 
-<!-- MOTD WARNING POPUP -->
 <div class="motd-overlay" id="motd-overlay">
   <div class="motd-header">
     <div class="motd-title">⚠️ <span data-i18n="motd_title">System Notice</span></div>
@@ -1878,17 +2385,29 @@ function updateLogo(){
 
 applyT();
 
-// Fetch Message of the Day
-fetch('https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/motd.txt')
-  .then(r => r.ok ? r.text() : '')
-  .then(text => {
-    text = text.trim();
-    if (text) {
+// Fetch Message of the Day (Once per day)
+(function(){
+  const key = 'crowdgpt_motd_last_day';
+  const today = new Date().toISOString().slice(0, 10);
+
+  let last = null;
+  try { last = localStorage.getItem(key); } catch(e) {}
+
+  if (last === today) return;
+
+  fetch('https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/motd.txt')
+    .then(r => r.ok ? r.text() : '')
+    .then(text => {
+      text = (text || '').trim();
+      if (!text) return;
+
       document.getElementById('motd-text').textContent = text;
       document.getElementById('motd-overlay').classList.add('show');
-    }
-  })
-  .catch(() => {});
+
+      try { localStorage.setItem(key, today); } catch(e) {}
+    })
+    .catch(() => {});
+})();
 
 document.getElementById('motd-close').addEventListener('click', () => {
   document.getElementById('motd-overlay').classList.remove('show');
@@ -1900,7 +2419,7 @@ class Api:
     def __init__(self):
         self.window=None; self.stop_event=threading.Event()
         self.thread=None; self.auth_token=None; self.username=None
-        self.server_url="https://server.crowdgpt.net"; self._lp=0.0
+        self.server_url=DEFAULT_SERVER; self._lp=0.0
         self.selected_backend = get_best_default_backend()
 
     def emit(self, ev, data):
