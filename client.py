@@ -5,6 +5,8 @@ CrowdGPT GUI Client — Final Unified Edition
 - 2-column responsive grid for fullscreen (no more ugly elongation)
 - Text-based prediction lines (green/red)
 - Bulletproof JSON sanitization to guarantee loss graph updates
+- Time left estimation active EVEN DURING CALIBRATION
+- MOTD (Message of the Day) warning pop-up fetched from GitHub
 """
 import os, sys, io, json, time, struct, math, gc, threading, base64, logging, tempfile, atexit, subprocess
 from pathlib import Path
@@ -746,13 +748,22 @@ def run_single_round_wrapper(srv, at, se, emit):
 
                     elapsed_cal = time.time() - cs_
                     current_tps = tt / max(elapsed_cal, 1.0)
+                    
+                    time_left_mins = 0
+                    if cal_done >= 1 and micro_step > 0:
+                        elapsed = time.time() - cs_
+                        sps_micro = elapsed / micro_step
+                        rh = max(0.1, rs.get("max_round_hours", 2.0) - rs.get("round_elapsed_hours", 0))
+                        remaining = max(60, (rh*3600) - elapsed - (UPLOAD_BUFFER_MIN*60))
+                        time_left_mins = remaining / 60.0
 
                     emit('cal_stats', {
                         'step': micro_step,
                         'total': target_micro_steps,
                         'loss': safe_float(lval * as_, 10.0),
                         'microbatch': micro_step,
-                        'tps': safe_float(current_tps)
+                        'tps': safe_float(current_tps),
+                        'time_left': safe_float(time_left_mins)
                     })
 
                     lo.backward()
@@ -920,6 +931,7 @@ HTML = """<!DOCTYPE html>
   --text:#111113; --text-dim:#3a3a40; --text-muted:#6b6b73;
   --border:#e4e4e1; --border-strong:#d0d0cb;
   --accent:#16a34a; --accent-dim:#15803d;
+  --warn:#b45309;
   --err:#dc2626; --err-soft:rgba(220,38,38,.06); --err-border:rgba(220,38,38,.28);
   --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
   --mono:'JetBrains Mono',ui-monospace,"SF Mono",Menlo,Consolas,monospace;
@@ -930,6 +942,7 @@ body.dark{
   --text:#e8e8ec; --text-dim:#b8b8be; --text-muted:#888890;
   --border:#3a3a40; --border-strong:#505058;
   --accent:#22c55e; --accent-dim:#4ade80;
+  --warn:#fbbf24;
   --err:#f87171; --err-soft:rgba(248,113,113,.08); --err-border:rgba(248,113,113,.35);
 }
 *{margin:0;padding:0;box-sizing:border-box}
@@ -1120,6 +1133,81 @@ body.dark .overlay-fill{background:linear-gradient(90deg,#15803d,#22c55e 55%,#86
 .overlay-card .overlay-actions{display:flex;gap:8px;justify-content:flex-end}
 .overlay-card .overlay-actions button{min-width:90px;justify-content:center}
 
+/* === MOTD WARNING POPUP === */
+.motd-overlay {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-20px);
+  width: min(520px, 92vw);
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--warn);
+  border-radius: 6px;
+  padding: 16px 20px;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.08);
+  z-index: 200;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.4s ease, transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+body.dark .motd-overlay {
+  box-shadow: 0 12px 32px rgba(0,0,0,0.4);
+}
+.motd-overlay.show {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(-50%) translateY(0);
+}
+.motd-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.motd-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--warn);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.motd-close {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  transition: all 0.15s;
+}
+.motd-close:hover { 
+  color: var(--text); 
+  border-color: var(--border-strong);
+  background: var(--bg-softer);
+}
+.motd-text {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
 @media (max-width:520px){
   header{height:auto;flex-wrap:wrap;padding:8px 12px}
   #user-info{display:none}
@@ -1268,6 +1356,15 @@ body.dark .overlay-fill{background:linear-gradient(90deg,#15803d,#22c55e 55%,#86
   </div>
 </div>
 
+<!-- MOTD WARNING POPUP -->
+<div class="motd-overlay" id="motd-overlay">
+  <div class="motd-header">
+    <div class="motd-title">⚠️ <span data-i18n="motd_title">System Notice</span></div>
+    <button class="motd-close" id="motd-close" data-i18n="close">Close</button>
+  </div>
+  <div class="motd-text" id="motd-text"></div>
+</div>
+
 <script>
 const I18N={
  en:{
@@ -1297,7 +1394,8 @@ const I18N={
    err_invalid_input:"Please check your input and try again.",
    err_login_failed:"Could not log in. Please try again.",
    err_register_failed:"Could not create account. Please try again.",
-   err_network:"Cannot reach the server."
+   err_network:"Cannot reach the server.",
+   motd_title:"System Notice", close:"Close"
  },
  fr:{
    login_pre:"Connexion à ",login_sub:"Bon retour parmi nous.",
@@ -1326,7 +1424,8 @@ const I18N={
    err_invalid_input:"Veuillez vérifier vos informations.",
    err_login_failed:"Connexion impossible. Réessayez.",
    err_register_failed:"Création du compte impossible. Réessayez.",
-   err_network:"Serveur injoignable."
+   err_network:"Serveur injoignable.",
+   motd_title:"Avis système", close:"Fermer"
  },
  es:{
    login_pre:"Inicia sesión en ",login_sub:"Bienvenido de vuelta al enjambre.",
@@ -1355,7 +1454,8 @@ const I18N={
    err_invalid_input:"Revisa los datos e inténtalo de nuevo.",
    err_login_failed:"No se pudo iniciar sesión. Inténtalo de nuevo.",
    err_register_failed:"No se pudo crear la cuenta. Inténtalo de nuevo.",
-   err_network:"No se puede contactar el servidor."
+   err_network:"No se puede contactar el servidor.",
+   motd_title:"Aviso del sistema", close:"Cerrar"
  },
  de:{
    login_pre:"Anmelden bei ",login_sub:"Willkommen zurück im Schwarm.",
@@ -1384,7 +1484,8 @@ const I18N={
    err_invalid_input:"Bitte Eingabe prüfen und erneut versuchen.",
    err_login_failed:"Anmeldung fehlgeschlagen. Bitte erneut versuchen.",
    err_register_failed:"Konto konnte nicht erstellt werden. Bitte erneut versuchen.",
-   err_network:"Server nicht erreichbar."
+   err_network:"Server nicht erreichbar.",
+   motd_title:"Systemmeldung", close:"Schließen"
  },
  tr:{
    login_pre:"Giriş yap: ",login_sub:"Sürüye tekrar hoş geldin.",
@@ -1413,7 +1514,8 @@ const I18N={
    err_invalid_input:"Lütfen girdinizi kontrol edip tekrar deneyin.",
    err_login_failed:"Giriş yapılamadı. Lütfen tekrar deneyin.",
    err_register_failed:"Hesap oluşturulamadı. Lütfen tekrar deneyin.",
-   err_network:"Sunucuya ulaşılamıyor."
+   err_network:"Sunucuya ulaşılamıyor.",
+   motd_title:"Sistem Uyarısı", close:"Kapat"
  }
 };
 
@@ -1775,6 +1877,22 @@ function updateLogo(){
 })();
 
 applyT();
+
+// Fetch Message of the Day
+fetch('https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/motd.txt')
+  .then(r => r.ok ? r.text() : '')
+  .then(text => {
+    text = text.trim();
+    if (text) {
+      document.getElementById('motd-text').textContent = text;
+      document.getElementById('motd-overlay').classList.add('show');
+    }
+  })
+  .catch(() => {});
+
+document.getElementById('motd-close').addEventListener('click', () => {
+  document.getElementById('motd-overlay').classList.remove('show');
+});
 </script></body></html>"""
 
 # ============ API ============
