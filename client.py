@@ -1242,7 +1242,7 @@ body.dark .motd-overlay {
       <div class="auth-screen active" id="screen-login">
         <h2><span data-i18n="login_pre"></span><span class="em">CrowdGPT</span></h2>
         <p class="login-sub" data-i18n="login_sub"></p>
-        <div class="fg"><label data-i18n="server_url"></label><input type="text" id="login-server" value="http://api.crowdgpt.net:5006"></div>
+        <div class="fg"><label data-i18n="server_url"></label><input type="text" id="login-server" value="https://server.crowdgpt.net"></div>
         <div class="fg"><label data-i18n="username"></label><input type="text" id="login-user" data-i18n-ph="ph_user" autocomplete="username"></div>
         <div class="fg"><label data-i18n="password"></label><input type="password" id="login-pass" autocomplete="current-password"></div>
         <div class="error-box" id="login-error"></div>
@@ -1260,7 +1260,7 @@ body.dark .motd-overlay {
       <div class="auth-screen" id="screen-register">
         <h2><span data-i18n="register_title_pre"></span><span class="em">CrowdGPT</span></h2>
         <p class="login-sub" data-i18n="register_sub"></p>
-        <div class="fg"><label data-i18n="server_url"></label><input type="text" id="reg-server" value="http://api.crowdgpt.net:5006"></div>
+        <div class="fg"><label data-i18n="server_url"></label><input type="text" id="reg-server" value="https://server.crowdgpt.net"></div>
         <div class="fg"><label data-i18n="username"></label><input type="text" id="reg-user" data-i18n-ph="ph_user" autocomplete="username"></div>
         <div class="fg"><label data-i18n="email"></label><input type="email" id="reg-email" autocomplete="email"></div>
         <div class="fg"><label data-i18n="password"></label><input type="password" id="reg-pass" autocomplete="new-password"></div>
@@ -1900,7 +1900,7 @@ class Api:
     def __init__(self):
         self.window=None; self.stop_event=threading.Event()
         self.thread=None; self.auth_token=None; self.username=None
-        self.server_url="http://api.crowdgpt.net:5006"; self._lp=0.0
+        self.server_url="https://server.crowdgpt.net"; self._lp=0.0
         self.selected_backend = get_best_default_backend()
 
     def emit(self, ev, data):
