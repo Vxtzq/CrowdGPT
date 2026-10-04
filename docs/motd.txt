@@ -1,0 +1,3 @@
+v0.5 summary:
+- https migration for server endpoint
+- enhanced GUI version of client
