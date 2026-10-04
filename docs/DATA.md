@@ -19,6 +19,7 @@ To ensure the swarm trains efficiently without downloading massive text files or
 
 ## 🛠️ How to contribute data
 
-Just make a pull request on 
+Just make a pull request on https://huggingface.co/datasets/Vxtzq/CrowdGPT-Pending
+and it will get added to the global dataset eventually.
 
 
