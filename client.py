@@ -2564,4 +2564,187 @@ class Api:
             clean_data = sanitize_for_json(data)
             self.window.evaluate_js(f"window.handleEvent({json.dumps(ev)}, {json.dumps(clean_data)});")
         except Exception as e:
-            log.warning(f"Emit failed for
+            log.warning(f"Emit failed for {ev}: {e}")
+
+    def get_backends(self):
+        available = get_available_backends()
+        self.emit('backends', {'available': available, 'current': self.selected_backend})
+
+    def set_backend(self, backend_name):
+        self.selected_backend = backend_name
+        if self.thread and self.thread.is_alive():
+            self.stop_event.set()
+
+    def login(self, s, u, p):
+        self.server_url = s or self.server_url
+        threading.Thread(target=self._do_login, args=(u, p), daemon=True).start()
+
+    def _do_login(self, u, p):
+        tok, err = do_login(self.server_url, u, p)
+        if tok:
+            self.auth_token, self.username = tok, u
+            self.emit('login_success', {'username': u})
+        else:
+            self.emit('login_error', {'code': err or 'login_failed'})
+
+    def register(self, s, u, email, p):
+        self.server_url = s or self.server_url
+        threading.Thread(target=self._do_register, args=(u, email, p), daemon=True).start()
+
+    def _do_register(self, u, email, p):
+        tok, err = do_register(self.server_url, u, email, p)
+        if tok:
+            self.auth_token, self.username = tok, u
+            self.emit('login_success', {'username': u})
+        else:
+            self.emit('login_error', {'code': err or 'register_failed'})
+
+    def login_anon(self):
+        self.auth_token, self.username = None, "anonymous"
+        self.emit('login_success', {'username': 'anonymous'})
+
+    def start(self):
+        if self.thread and self.thread.is_alive(): return
+        self.stop_event.clear(); self.thread=threading.Thread(target=self._rs, daemon=True); self.thread.start()
+        
+    def stop(self): self.stop_event.set()
+
+    def _check_updates_between_rounds(self):
+        """Between rounds, check for updates. If applied, restart the process."""
+        try:
+            if check_for_update():
+                self.emit('log', f"🔄 Updated to a new version — restarting...")
+                self.emit('status', 'idle')
+                time.sleep(2)
+                _restart_self()  # never returns on POSIX
+        except Exception as e:
+            log.warning(f"Update check failed: {e}")
+    
+    def _rs(self):
+        global train_device, train_backend
+        try:
+            train_device, train_backend = detect_training_backend(self.selected_backend)
+            self.emit('meta',{'backend':train_backend})
+            self.emit('log',f"Backend: {train_backend} ({train_device})")
+            auto_detect_vram_budget()
+            self.emit('log',f"VRAM: {memory_config['ram_gb']:.1f} GB")
+        except Exception as e:
+            self.emit('log',f"Error: {e}"); self.emit('status','idle'); return
+            
+        round_count = 0
+        while not self.stop_event.is_set():
+            round_count += 1
+            self.emit('log', f"{'='*40}")
+            self.emit('log', f"Starting Round Cycle #{round_count}")
+            self.emit('log', f"{'='*40}")
+            
+            try: 
+                run_single_round_wrapper(self.server_url, self.auth_token, self.stop_event, self.emit)
+            except KeyboardInterrupt:
+                self.stop_event.set()
+                break
+            except Exception as e: 
+                self.emit('log',f"Round failed: {e}")
+
+            if self.stop_event.is_set(): 
+                break
+
+            # Between rounds: safe place to apply an update and restart
+            if UPDATE_CHECK_BETWEEN_ROUNDS:
+                self._check_updates_between_rounds()
+
+            self.emit('status', 'waiting')
+            self.emit('log', "✅ Round complete. Auto-relaunching next round in 10s...")
+            for _ in range(10):
+                if self.stop_event.is_set(): break
+                time.sleep(1)
+                
+        self.emit('status','idle')
+        self.emit('log', "👋 Training stopped by user.")
+
+
+def startup():
+    try:
+        scr = webview.screens[0]
+        aw, ah = scr.width, scr.height
+        w = max(480, min(1040, int(aw * 0.80)))
+        h = max(360, min(800, int(ah * 0.80)))
+        w = min(w, aw - 16); h = min(h, ah - 48)
+        w = max(320, w); h = max(240, h)
+        window.resize(w, h)
+        window.move(max(0, (aw - w)//2), max(0, (ah - h)//2))
+    except Exception:
+        pass
+    
+    def set_window_icon():
+        try:
+            import gi
+            gi.require_version('Gtk', '3.0')
+            from gi.repository import Gtk, GdkPixbuf
+            
+            icon_path = None
+            if ICON_PATH and os.path.exists(ICON_PATH):
+                icon_path = ICON_PATH
+            elif _lp_light.exists():
+                icon_path = str(_lp_light.absolute())
+                
+            if not icon_path:
+                return
+                
+            for w in Gtk.Window.list_toplevels():
+                if w.get_title() == "CrowdGPT":
+                    pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(icon_path, 64, 64, True)
+                    w.set_icon(pixbuf)
+                    break
+        except Exception:
+            pass
+
+    threading.Timer(0.5, set_window_icon).start()
+
+
+if __name__ == "__main__":
+    # ---- Auto-update check, before any UI is created ----
+    print(f"CrowdGPT client v{CLIENT_VERSION}")
+    try:
+        if check_for_update():
+            print("Update applied. Restarting...")
+            _restart_self()
+            # If _restart_self somehow returns, continue normally
+    except Exception as e:
+        log.warning(f"Auto-update check error: {e}")
+
+    api = Api()
+    start_tokenizer_loader()
+    
+    kwargs = {
+        "js_api": api,
+        "width": 1000,
+        "height": 720,
+        "min_size": (320, 240),
+    }
+    
+    html_out = (HTML
+        .replace("__LOGO__", LOGO_URI_LIGHT)
+        .replace("__LOGO_DARK__", LOGO_URI_DARK)
+        .replace("__VERSION__", CLIENT_VERSION)
+    )
+    
+    try:
+        if ICON_PATH and os.path.exists(ICON_PATH):
+            window = webview.create_window(
+                "CrowdGPT", html=html_out,
+                icon=ICON_PATH, **kwargs
+            )
+        else:
+            window = webview.create_window(
+                "CrowdGPT", html=html_out,
+                **kwargs
+            )
+    except TypeError:
+        window = webview.create_window(
+            "CrowdGPT", html=html_out,
+            **kwargs
+        )
+    
+    api.window = window
+    webview.start(startup, debug=False)
