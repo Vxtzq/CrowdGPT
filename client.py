@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client — HF-Direct + Chunked Upload + Auto-Update Edition
+CrowdGPT GUI Client
 """
 
 import os, sys, io, json, time, struct, math, gc, threading, base64, logging, tempfile, atexit, subprocess, hashlib, shutil
