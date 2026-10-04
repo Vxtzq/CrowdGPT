@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CrowdGPT CLI Client - HF-Direct + Chunked Upload Edition
+CrowdGPT CLI Client - HF-Direct + Chunked Upload + Auto-Update Edition
 
 Features:
 - Fetches task metadata from coordinator.
@@ -10,6 +10,7 @@ Features:
 - Keeps small deltas on direct /fl/submit.
 - Adaptive gradient accumulation with OOM-safe halving.
 - Rich terminal dashboard.
+- Auto-update from GitHub on startup and between rounds.
 """
 
 import os
@@ -29,6 +30,7 @@ import threading
 import argparse
 import tempfile
 import subprocess
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -55,6 +57,138 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 console = Console()
+
+# ============ AUTO-UPDATE ============
+CLIENT_VERSION = "0.5"   # bump alongside docs/version.txt to release an update
+VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
+CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client_nogui.py"
+UPDATE_TIMEOUT_VERSION = 5     # seconds for version.txt fetch
+UPDATE_TIMEOUT_CLIENT  = 60    # seconds for client_nogui.py fetch
+UPDATE_CHECK_BETWEEN_ROUNDS = True
+
+
+def _parse_version(v):
+    """'0.5' -> (0,5), '1.2.3-beta' -> (1,2,3), garbage -> (0,)"""
+    try:
+        parts = str(v).strip().split("-")[0].split(".")
+        return tuple(int(x) for x in parts[:4])
+    except Exception:
+        return (0,)
+
+
+def _fetch_remote_version():
+    try:
+        r = requests.get(VERSION_URL, timeout=UPDATE_TIMEOUT_VERSION)
+        r.raise_for_status()
+        line = r.text.strip().splitlines()[0].strip()
+        return line or None
+    except Exception as e:
+        log.info(f"Version check skipped: {e}")
+        return None
+
+
+def _download_new_client(expected_version):
+    try:
+        r = requests.get(CLIENT_URL, timeout=UPDATE_TIMEOUT_CLIENT)
+        r.raise_for_status()
+        code = r.text
+    except Exception as e:
+        log.warning(f"client_nogui.py download failed: {e}")
+        return None
+
+    # Sanity 1: it must be valid Python
+    try:
+        compile(code, "client_nogui.py", "exec")
+    except SyntaxError as e:
+        log.warning(f"Downloaded client_nogui.py failed syntax check: {e}")
+        return None
+
+    # Sanity 2: it must declare the version we expected from version.txt
+    markers = [
+        f'CLIENT_VERSION = "{expected_version}"',
+        f"CLIENT_VERSION = '{expected_version}'",
+    ]
+    if not any(m in code for m in markers):
+        log.warning(f"Downloaded client_nogui.py does not declare version {expected_version}")
+        return None
+
+    return code
+
+
+def _apply_update(new_code):
+    """Atomically replace the running client_nogui.py. Keeps a .bak for rollback."""
+    try:
+        current = Path(__file__).resolve()
+    except Exception:
+        return False
+
+    backup = current.with_name(current.name + ".bak")
+    tmp = current.with_name(current.name + ".new")
+
+    try:
+        try:
+            shutil.copy2(str(current), str(backup))
+        except Exception:
+            pass
+
+        tmp.write_text(new_code, encoding="utf-8")
+
+        try:
+            st = current.stat()
+            os.chmod(str(tmp), st.st_mode)
+        except Exception:
+            pass
+
+        os.replace(str(tmp), str(current))  # atomic on POSIX & Windows
+        return True
+    except Exception as e:
+        log.warning(f"Failed to apply update: {e}")
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+        return False
+
+
+def check_for_update():
+    """
+    Returns:
+        True  -> update written to disk; caller should restart the process
+        False -> no update needed, or check/download failed
+    """
+    remote = _fetch_remote_version()
+    if not remote:
+        return False
+
+    if _parse_version(remote) <= _parse_version(CLIENT_VERSION):
+        return False
+
+    log.info(f"Update available: {CLIENT_VERSION} -> {remote}")
+    new_code = _download_new_client(remote)
+    if not new_code:
+        return False
+
+    if not _apply_update(new_code):
+        return False
+
+    log.info(f"client_nogui.py updated to {remote}")
+    return True
+
+
+def _restart_self():
+    """Re-exec this script with the same interpreter and args. Never returns on POSIX."""
+    python = sys.executable
+    script = str(Path(__file__).resolve())
+    args = [python, script] + sys.argv[1:]
+
+    if os.name == "nt":
+        # On Windows, detach a fresh process and exit the current one
+        subprocess.Popen(args, close_fds=True, creationflags=0x00000008)  # DETACHED_PROCESS
+        sys.exit(0)
+    else:
+        os.execv(python, args)  # never returns
+
 
 # ============ CONFIG ============
 CHECKPOINT_DIR = Path("checkpoints")
@@ -2252,11 +2386,25 @@ def run_single_round(args, auth_token=None):
 
 
 # ============ SWARM NODE LOOP ============
+def _check_updates_between_rounds(args):
+    """Between rounds, check for updates. If applied, restart the process."""
+    if getattr(args, "no_update", False):
+        return
+
+    try:
+        if check_for_update():
+            log.info("🔄 Updated to a new version — restarting...")
+            time.sleep(2)
+            _restart_self()  # never returns on POSIX
+    except Exception as e:
+        log.warning(f"Update check failed: {e}")
+
+
 def run_swarm_node(args):
     global train_device, train_backend
 
     log.info("=" * 60)
-    log.info("CrowdGPT CLI Client - HF-Direct + Chunked Upload Edition")
+    log.info(f"CrowdGPT CLI Client v{CLIENT_VERSION} - HF-Direct + Chunked Upload Edition")
     log.info("=" * 60)
 
     username = args.username or os.environ.get("CROWDGPT_USERNAME")
@@ -2309,6 +2457,10 @@ def run_swarm_node(args):
         if args.single:
             break
 
+        # Between rounds: safe place to apply an update and restart
+        if UPDATE_CHECK_BETWEEN_ROUNDS:
+            _check_updates_between_rounds(args)
+
         log.info("Waiting 10s for next round...")
         time.sleep(10)
 
@@ -2316,7 +2468,7 @@ def run_swarm_node(args):
 # ============ ENTRYPOINT ============
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="CrowdGPT CLI Client - HF-Direct + Chunked Upload Edition"
+        description="CrowdGPT CLI Client - HF-Direct + Chunked Upload + Auto-Update Edition"
     )
 
     parser.add_argument("--server", default=DEFAULT_SERVER)
@@ -2362,7 +2514,27 @@ if __name__ == "__main__":
         help="Run one round and exit.",
     )
 
+    parser.add_argument(
+        "--no-update",
+        action="store_true",
+        help="Skip auto-update checks entirely.",
+    )
+
+    args = parser.parse_args()
+
+    # ---- Auto-update check, before any heavy work ----
+    print(f"CrowdGPT CLI client v{CLIENT_VERSION}")
+
+    if not args.no_update:
+        try:
+            if check_for_update():
+                print("Update applied. Restarting...")
+                _restart_self()
+                # If _restart_self somehow returns, continue normally
+        except Exception as e:
+            log.warning(f"Auto-update check error: {e}")
+
     try:
-        run_swarm_node(parser.parse_args())
+        run_swarm_node(args)
     except KeyboardInterrupt:
         log.info("Disconnected.")
