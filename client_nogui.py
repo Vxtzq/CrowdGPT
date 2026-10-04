@@ -842,7 +842,7 @@ def run_swarm_node(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--server", default="http://api.crowdgpt.net:5006")
+    parser.add_argument("--server", default="https://server.crowdgpt.net")
     parser.add_argument("--backend", default="auto")
     parser.add_argument("--batch-size", type=int, default=0)
     parser.add_argument("--seq-len", type=int, default=0)
