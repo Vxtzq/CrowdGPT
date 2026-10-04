@@ -29,7 +29,7 @@
 # 🥳🥳🥳 CrowdGPT v0.5 released 🥳🥳🥳
 ## Key changes
 - Enhanced GUI version
-
+- Migrated to https for coordinator
 ---
 
 ## What is CrowdGPT?
