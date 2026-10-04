@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client — HF-Direct + Chunked Upload Edition (Final Fixed)
+CrowdGPT GUI Client — HF-Direct + Chunked Upload + Auto-Update Edition
 """
 
-import os, sys, io, json, time, struct, math, gc, threading, base64, logging, tempfile, atexit, subprocess, hashlib
+import os, sys, io, json, time, struct, math, gc, threading, base64, logging, tempfile, atexit, subprocess, hashlib, shutil
 from pathlib import Path
 import webview
 import numpy as np
@@ -23,6 +23,138 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
+
+# ============ AUTO-UPDATE ============
+CLIENT_VERSION = "0.5"   # bump alongside docs/version.txt to release an update
+VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
+CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
+UPDATE_TIMEOUT_VERSION = 5     # seconds for version.txt fetch
+UPDATE_TIMEOUT_CLIENT  = 60    # seconds for client.py fetch
+UPDATE_CHECK_BETWEEN_ROUNDS = True
+
+
+def _parse_version(v):
+    """'0.5' -> (0,5), '1.2.3-beta' -> (1,2,3), garbage -> (0,)"""
+    try:
+        parts = str(v).strip().split("-")[0].split(".")
+        return tuple(int(x) for x in parts[:4])
+    except Exception:
+        return (0,)
+
+
+def _fetch_remote_version():
+    try:
+        r = requests.get(VERSION_URL, timeout=UPDATE_TIMEOUT_VERSION)
+        r.raise_for_status()
+        line = r.text.strip().splitlines()[0].strip()
+        return line or None
+    except Exception as e:
+        log.info(f"Version check skipped: {e}")
+        return None
+
+
+def _download_new_client(expected_version):
+    try:
+        r = requests.get(CLIENT_URL, timeout=UPDATE_TIMEOUT_CLIENT)
+        r.raise_for_status()
+        code = r.text
+    except Exception as e:
+        log.warning(f"client.py download failed: {e}")
+        return None
+
+    # Sanity 1: it must be valid Python
+    try:
+        compile(code, "client.py", "exec")
+    except SyntaxError as e:
+        log.warning(f"Downloaded client.py failed syntax check: {e}")
+        return None
+
+    # Sanity 2: it must declare the version we expected from version.txt
+    markers = [
+        f'CLIENT_VERSION = "{expected_version}"',
+        f"CLIENT_VERSION = '{expected_version}'",
+    ]
+    if not any(m in code for m in markers):
+        log.warning(f"Downloaded client.py does not declare version {expected_version}")
+        return None
+
+    return code
+
+
+def _apply_update(new_code):
+    """Atomically replace the running client.py. Keeps a .bak for rollback."""
+    try:
+        current = Path(__file__).resolve()
+    except Exception:
+        return False
+
+    backup = current.with_name(current.name + ".bak")
+    tmp = current.with_name(current.name + ".new")
+
+    try:
+        try:
+            shutil.copy2(str(current), str(backup))
+        except Exception:
+            pass
+
+        tmp.write_text(new_code, encoding="utf-8")
+
+        try:
+            st = current.stat()
+            os.chmod(str(tmp), st.st_mode)
+        except Exception:
+            pass
+
+        os.replace(str(tmp), str(current))  # atomic on POSIX & Windows
+        return True
+    except Exception as e:
+        log.warning(f"Failed to apply update: {e}")
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+        return False
+
+
+def check_for_update():
+    """
+    Returns:
+        True  -> update written to disk; caller should restart the process
+        False -> no update needed, or check/download failed
+    """
+    remote = _fetch_remote_version()
+    if not remote:
+        return False
+
+    if _parse_version(remote) <= _parse_version(CLIENT_VERSION):
+        return False
+
+    log.info(f"Update available: {CLIENT_VERSION} -> {remote}")
+    new_code = _download_new_client(remote)
+    if not new_code:
+        return False
+
+    if not _apply_update(new_code):
+        return False
+
+    log.info(f"client.py updated to {remote}")
+    return True
+
+
+def _restart_self():
+    """Re-exec this script with the same interpreter and args. Never returns on POSIX."""
+    python = sys.executable
+    script = str(Path(__file__).resolve())
+    args = [python, script] + sys.argv[1:]
+
+    if os.name == "nt":
+        # On Windows, detach a fresh process and exit the current one
+        subprocess.Popen(args, close_fds=True, creationflags=0x00000008)  # DETACHED_PROCESS
+        sys.exit(0)
+    else:
+        os.execv(python, args)  # never returns
+
 
 # ============ CONFIG ============
 CHECKPOINT_DIR = Path("checkpoints")
@@ -1352,7 +1484,7 @@ def run_single_round_wrapper(srv, at, se, emit):
             + np.ascontiguousarray(sv).tobytes()
         )
 
-        compressed_data = gzip.compress(bi, compresslevel=2)
+        compressed_data = gzip.compress(bi, compresslevel=6)
         upload_size_mb = len(compressed_data) / (1024 * 1024)
 
         del dbf, ed, si, sv, pl, bi
@@ -1728,7 +1860,7 @@ body.dark .motd-overlay {
     <img src="__LOGO__" id="logo-img" data-light="__LOGO__" data-dark="__LOGO_DARK__" class="logo-img" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='grid';">
     <div class="logo-fallback">C</div>
     <span class="logo-text">CrowdGPT</span>
-    <span class="logo-ver">v0.5</span>
+    <span class="logo-ver">v__VERSION__</span>
   </div>
   <div class="header-right">
     <span id="user-info"></span>
@@ -2432,158 +2564,4 @@ class Api:
             clean_data = sanitize_for_json(data)
             self.window.evaluate_js(f"window.handleEvent({json.dumps(ev)}, {json.dumps(clean_data)});")
         except Exception as e:
-            log.warning(f"Emit failed for {ev}: {e}")
-
-    def get_backends(self):
-        available = get_available_backends()
-        self.emit('backends', {'available': available, 'current': self.selected_backend})
-
-    def set_backend(self, backend_name):
-        self.selected_backend = backend_name
-        if self.thread and self.thread.is_alive():
-            self.stop_event.set()
-
-    def login(self, s, u, p):
-        self.server_url = s or self.server_url
-        threading.Thread(target=self._do_login, args=(u, p), daemon=True).start()
-
-    def _do_login(self, u, p):
-        tok, err = do_login(self.server_url, u, p)
-        if tok:
-            self.auth_token, self.username = tok, u
-            self.emit('login_success', {'username': u})
-        else:
-            self.emit('login_error', {'code': err or 'login_failed'})
-
-    def register(self, s, u, email, p):
-        self.server_url = s or self.server_url
-        threading.Thread(target=self._do_register, args=(u, email, p), daemon=True).start()
-
-    def _do_register(self, u, email, p):
-        tok, err = do_register(self.server_url, u, email, p)
-        if tok:
-            self.auth_token, self.username = tok, u
-            self.emit('login_success', {'username': u})
-        else:
-            self.emit('login_error', {'code': err or 'register_failed'})
-
-    def login_anon(self):
-        self.auth_token, self.username = None, "anonymous"
-        self.emit('login_success', {'username': 'anonymous'})
-
-    def start(self):
-        if self.thread and self.thread.is_alive(): return
-        self.stop_event.clear(); self.thread=threading.Thread(target=self._rs, daemon=True); self.thread.start()
-        
-    def stop(self): self.stop_event.set()
-    
-    def _rs(self):
-        global train_device, train_backend
-        try:
-            train_device, train_backend = detect_training_backend(self.selected_backend)
-            self.emit('meta',{'backend':train_backend})
-            self.emit('log',f"Backend: {train_backend} ({train_device})")
-            auto_detect_vram_budget()
-            self.emit('log',f"VRAM: {memory_config['ram_gb']:.1f} GB")
-        except Exception as e:
-            self.emit('log',f"Error: {e}"); self.emit('status','idle'); return
-            
-        round_count = 0
-        while not self.stop_event.is_set():
-            round_count += 1
-            self.emit('log', f"{'='*40}")
-            self.emit('log', f"Starting Round Cycle #{round_count}")
-            self.emit('log', f"{'='*40}")
-            
-            try: 
-                run_single_round_wrapper(self.server_url, self.auth_token, self.stop_event, self.emit)
-            except KeyboardInterrupt:
-                self.stop_event.set()
-                break
-            except Exception as e: 
-                self.emit('log',f"Round failed: {e}")
-                
-            if self.stop_event.is_set(): 
-                break
-                
-            self.emit('status', 'waiting')
-            self.emit('log', "✅ Round complete. Auto-relaunching next round in 10s...")
-            for _ in range(10):
-                if self.stop_event.is_set(): break
-                time.sleep(1)
-                
-        self.emit('status','idle')
-        self.emit('log', "👋 Training stopped by user.")
-
-
-def startup():
-    try:
-        scr = webview.screens[0]
-        aw, ah = scr.width, scr.height
-        w = max(480, min(1040, int(aw * 0.80)))
-        h = max(360, min(800, int(ah * 0.80)))
-        w = min(w, aw - 16); h = min(h, ah - 48)
-        w = max(320, w); h = max(240, h)
-        window.resize(w, h)
-        window.move(max(0, (aw - w)//2), max(0, (ah - h)//2))
-    except Exception:
-        pass
-    
-    def set_window_icon():
-        try:
-            import gi
-            gi.require_version('Gtk', '3.0')
-            from gi.repository import Gtk, GdkPixbuf
-            
-            icon_path = None
-            if ICON_PATH and os.path.exists(ICON_PATH):
-                icon_path = ICON_PATH
-            elif _lp_light.exists():
-                icon_path = str(_lp_light.absolute())
-                
-            if not icon_path:
-                return
-                
-            for w in Gtk.Window.list_toplevels():
-                if w.get_title() == "CrowdGPT":
-                    pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(icon_path, 64, 64, True)
-                    w.set_icon(pixbuf)
-                    break
-        except Exception:
-            pass
-
-    threading.Timer(0.5, set_window_icon).start()
-
-
-if __name__ == "__main__":
-    api = Api()
-    start_tokenizer_loader()
-    
-    kwargs = {
-        "js_api": api,
-        "width": 1000,
-        "height": 720,
-        "min_size": (320, 240),
-    }
-    
-    html_out = HTML.replace("__LOGO__", LOGO_URI_LIGHT).replace("__LOGO_DARK__", LOGO_URI_DARK)
-    
-    try:
-        if ICON_PATH and os.path.exists(ICON_PATH):
-            window = webview.create_window(
-                "CrowdGPT", html=html_out,
-                icon=ICON_PATH, **kwargs
-            )
-        else:
-            window = webview.create_window(
-                "CrowdGPT", html=html_out,
-                **kwargs
-            )
-    except TypeError:
-        window = webview.create_window(
-            "CrowdGPT", html=html_out,
-            **kwargs
-        )
-    
-    api.window = window
-    webview.start(startup, debug=False)
+            log.warning(f"Emit failed for
