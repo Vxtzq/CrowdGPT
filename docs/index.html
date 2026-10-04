@@ -1047,6 +1047,75 @@ nav a.active {
   margin-bottom: 0;
 }
 
+/* ===== TINY MANUAL NOTE ===== */
+.manual-note {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  font-size: clamp(12px, 0.95vw, 13px);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.manual-note a {
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border-strong);
+  padding-bottom: 1px;
+}
+
+.manual-note a:hover {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  text-decoration: none;
+}
+
+/* ===== INSTALL EXPLAINER (numbered steps below install hero) ===== */
+.install-explainer {
+  margin-top: 8px;
+}
+
+.install-explainer h2 {
+  margin-top: 0;
+}
+
+.install-explainer ol {
+  counter-reset: step;
+  list-style: none;
+  padding-left: 0;
+  margin-bottom: 0;
+}
+
+.install-explainer ol li {
+  counter-increment: step;
+  position: relative;
+  padding-left: 38px;
+  margin-bottom: 16px;
+}
+
+.install-explainer ol li:last-child {
+  margin-bottom: 0;
+}
+
+.install-explainer ol li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 2px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
 .page-head {
   margin-bottom: 58px;
   padding-bottom: 29px;
@@ -1088,7 +1157,6 @@ nav a.active {
   max-width: 840px;
 }
 
-/* ===== HEALTH HIGHLIGHT (green note-style wrapper) ===== */
 .health-highlight {
   display: inline-flex;
   align-items: center;
@@ -1099,7 +1167,6 @@ nav a.active {
   margin-bottom: 0;
 }
 
-/* ===== HEALTH CHIP (inside the highlight) ===== */
 .health-chip {
   position: relative;
   display: inline-flex;
@@ -1135,7 +1202,6 @@ nav a.active {
   text-transform: lowercase;
 }
 
-/* Tooltip */
 .health-chip::after {
   content: attr(data-tooltip);
   position: absolute;
@@ -1757,9 +1823,13 @@ footer {
   }
 
   .terminal-body {
-    font-size: 13px;
+    font-size: 12px;
     padding: 16px;
     line-height: 1.7;
+  }
+
+  .install-explainer ol li {
+    padding-left: 34px;
   }
 
   pre {
@@ -2041,23 +2111,25 @@ footer {
     <div class="page-head">
       <div class="crumb">home / install</div>
       <h1>Install the client</h1>
-      <p>Install everything with one command. The app is a single Python script with minimal dependencies.</p>
+      <p>One command. The installer sets up everything — Python, Git, the right PyTorch build for your hardware, and launches the client.</p>
     </div>
 
     <div class="note">
-      <div class="note-title">Requirements</div>
+      <div class="note-title">What the installer handles for you</div>
       <ul>
-        <li>GPU: NVIDIA (CUDA), AMD (ROCm) or Apple Silicon (MPS). CPU runs but is very slow.</li>
-        <li>Disk: about 4 GB free for weights and checkpoints.</li>
-        <li>RAM: under 4 GB in use during training.</li>
+        <li>Detects your GPU: NVIDIA (CUDA), AMD (ROCm on Linux, DirectML on Windows), Apple Silicon (MPS), Intel Arc (XPU), or CPU fallback.</li>
+        <li>Installs the matching PyTorch wheel from the correct index — no more accidental CPU-only builds.</li>
+        <li>Installs Python and Git if they are missing.</li>
+        <li>Creates an isolated virtual environment and installs the rest of the dependencies.</li>
+        <li>Downloads the model weights and starts training.</li>
       </ul>
-      <p>The client detects your hardware and tunes batch size and sequence length automatically.</p>
+      <p>Requirements: ~4 GB free disk space, and ideally a discrete GPU. CPU works but is very slow.</p>
     </div>
 
     <div class="install-hero" id="quick-install">
-      <h3>Quick start <span class="badge">Recommended</span></h3>
-      <p>Clone the repository, install dependencies, and run the client. It will automatically detect your GPU and configure optimal settings.</p>
-      
+      <h3>One-line install <span class="badge">Recommended</span></h3>
+      <p>Copy this into your terminal. It downloads the installer, auto-detects your hardware, and starts the client.</p>
+
       <div class="os-tabs">
         <button class="os-tab active" data-os="linux">Linux</button>
         <button class="os-tab" data-os="macos">macOS</button>
@@ -2072,10 +2144,7 @@ footer {
             <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
           </div>
           <div class="terminal-body">
-            <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">git clone https://github.com/Vxtzq/CrowdGPT.git</span></span>
-            <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">cd CrowdGPT</span></span>
-            <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">pip install -r requirements.txt</span></span>
-            <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">python client.py</span></span>
+            <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">curl -sSL https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/install.sh | bash</span></span>
           </div>
         </div>
       </div>
@@ -2088,10 +2157,7 @@ footer {
             <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
           </div>
           <div class="terminal-body">
-            <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">git clone https://github.com/Vxtzq/CrowdGPT.git</span></span>
-            <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">cd CrowdGPT</span></span>
-            <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">pip3 install -r requirements.txt</span></span>
-            <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">python client.py</span></span>
+            <span class="line"><span class="t-prompt">$ </span><span class="t-cmd">curl -sSL https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/install.sh | bash</span></span>
           </div>
         </div>
       </div>
@@ -2104,13 +2170,23 @@ footer {
             <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
           </div>
           <div class="terminal-body">
-            <span class="line"><span class="t-prompt">PS&gt; </span><span class="t-cmd">git clone https://github.com/Vxtzq/CrowdGPT.git</span></span>
-            <span class="line"><span class="t-prompt">PS&gt; </span><span class="t-cmd">cd CrowdGPT</span></span>
-            <span class="line"><span class="t-prompt">PS&gt; </span><span class="t-cmd">pip install -r requirements.txt</span></span>
-            <span class="line"><span class="t-prompt">PS&gt; </span><span class="t-cmd">python client.py</span></span>
+            <span class="line"><span class="t-prompt">PS&gt; </span><span class="t-cmd">iwr -useb https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/install.bat -OutFile install.bat; .\install.bat</span></span>
           </div>
         </div>
       </div>
+
+      <div class="manual-note">
+        Prefer to install manually? <a href="https://github.com/Vxtzq/CrowdGPT#manual-installation" target="_blank" rel="noopener noreferrer">See GitHub →</a>
+      </div>
+    </div>
+
+    <div class="content install-explainer">
+      <h2>How the installer works</h2>
+      <ol>
+        <li><strong>Detect hardware.</strong> Reads your GPU driver and picks the right PyTorch index automatically — CUDA 12.4 for modern NVIDIA drivers, CUDA 11.8 for older ones, ROCm 6.1 or 5.7 on Linux AMD, XPU for Intel Arc, DirectML for AMD on Windows, and MPS on Apple Silicon.</li>
+        <li><strong>Install dependencies.</strong> Python and Git are installed if missing, then PyTorch from the correct index and the project's requirements — all inside an isolated virtual environment so nothing touches your system Python.</li>
+        <li><strong>Launch.</strong> Downloads the model weights from HuggingFace, streams a dataset chunk, and starts training. You can stop at any time and resume in the next round.</li>
+      </ol>
     </div>
   </div>
 </div>
@@ -2293,11 +2369,19 @@ footer {
       </div>
       <div class="faq-item">
         <div class="faq-q">Does it work on AMD or Apple Silicon?</div>
-        <div class="faq-a">Yes. NVIDIA GPUs via CUDA are recommended for best performance, but AMD GPUs are supported through the ROCm build of PyTorch on Linux, and Apple Silicon M1, M2 and M3 Macs work via the MPS backend. CPU-only mode is supported but very slow.</div>
+        <div class="faq-a">Yes. NVIDIA GPUs via CUDA are recommended for best performance. AMD GPUs are supported through ROCm on Linux (the installer picks the right ROCm wheel automatically), and on Windows AMD users can either use DirectML or run the Linux installer inside WSL2. Apple Silicon M1, M2 and M3 Macs work via the MPS backend, which is bundled with the standard macOS PyTorch wheel. CPU-only mode is supported but very slow.</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q">Do I need to install Python or Git first?</div>
+        <div class="faq-a">No. The installer detects whether Python and Git are present and installs them automatically if they are missing (using your system package manager on Linux, Homebrew or the official installer on macOS, and winget or the official installers on Windows). Everything is installed into an isolated virtual environment so it doesn't affect the rest of your system.</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q">Why did I used to get the CPU build of PyTorch?</div>
+        <div class="faq-a">The default PyPI wheel for <code>torch</code> is CPU-only on every platform. The previous install instructions used <code>pip install -r requirements.txt</code>, which pulled that CPU wheel even on machines with NVIDIA or AMD GPUs. The new installer explicitly picks the correct index URL (cu124, cu118, rocm6.1, xpu, or cpu) based on your detected hardware, so this can't happen anymore.</div>
       </div>
       <div class="faq-item">
         <div class="faq-q">Can I run this on a CPU?</div>
-        <div class="faq-a">Technically yes, but it will be extremely slow. The client is optimized for CUDA-enabled NVIDIA GPUs. If no GPU is detected it will fall back to CPU, but contributing meaningful compute will take significantly longer.</div>
+        <div class="faq-a">Technically yes, and the installer has a CPU fallback, but it will be extremely slow. The client is optimized for CUDA-enabled NVIDIA GPUs. If no GPU is detected it will fall back to CPU, but contributing meaningful compute will take significantly longer.</div>
       </div>
       <div class="faq-item">
         <div class="faq-q">How are malicious updates prevented?</div>
@@ -2309,7 +2393,7 @@ footer {
 
 <footer>
   <div class="footer-inner">
-    <div>CrowdGPT · MIT License · api.crowdgpt.net proudly hosted by <a href="https://xevex.dev" target="_blank" rel="noopener noreferrer">xevex</a></div>
+    <div>CrowdGPT · MIT License · server.crowdgpt.net proudly hosted by <a href="https://xevex.dev" target="_blank" rel="noopener noreferrer">xevex</a></div>
     <div class="footer-links">
       <a href="https://github.com/Vxtzq/CrowdGPT" target="_blank" rel="noopener noreferrer">GitHub</a>
       <a href="https://github.com/Vxtzq/CrowdGPT/tree/main/docs" target="_blank" rel="noopener noreferrer">Docs</a>
@@ -2321,7 +2405,7 @@ footer {
 <script>
 const HF_STATUS_URL = 'https://huggingface.co/Vxtzq/Crowd-v1/resolve/main/status.json';
 const HF_LEADERBOARD_URL = 'https://huggingface.co/Vxtzq/Crowd-v1/resolve/main/leaderboard.json';
-const API_BASE = 'https://app.crowdgpt.net';
+const API_BASE = 'https://server.crowdgpt.net';
 
 function fmtNum(n) {
   if (n == null || isNaN(n)) return '—';
@@ -2448,7 +2532,7 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// ===== HEALTH CHIP (with hysteresis + mobile tap-to-reveal) =====
+// ===== HEALTH CHIP =====
 const healthState = {
   display: 'pending',
   consecutiveOk: 0,
@@ -2464,7 +2548,6 @@ const DOWN_THRESHOLD = 2;
 const healthChip = document.getElementById('health-chip');
 let chipTooltipOpen = false;
 
-// Tap-to-reveal tooltip (mobile friendly)
 if (healthChip) {
   healthChip.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -2506,7 +2589,7 @@ function renderHealth() {
     : '—';
 
   healthChip.setAttribute('data-tooltip',
-    `endpoint    api.crowdgpt.net:5006\nlatency     ${latency}\nlast check  ${time}`
+    `endpoint    server.crowdgpt.net\nlatency     ${latency}\nlast check  ${time}`
   );
 }
 
@@ -2683,14 +2766,16 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ===== OS TABS =====
-document.querySelectorAll('.os-tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    const os = tab.dataset.os;
-    const hero = tab.closest('.install-hero');
-    hero.querySelectorAll('.os-tab').forEach(t => t.classList.remove('active'));
-    hero.querySelectorAll('.os-panel').forEach(p => p.classList.remove('active'));
-    tab.classList.add('active');
-    hero.querySelector(`.os-panel[data-os="${os}"]`).classList.add('active');
+document.querySelectorAll('.os-tabs').forEach(group => {
+  group.querySelectorAll('.os-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      const os = tab.dataset.os;
+      const container = group.parentElement;
+      container.querySelectorAll(':scope > .os-tabs > .os-tab').forEach(t => t.classList.remove('active'));
+      container.querySelectorAll(':scope > .os-panel').forEach(p => p.classList.remove('active'));
+      tab.classList.add('active');
+      container.querySelector(`:scope > .os-panel[data-os="${os}"]`).classList.add('active');
+    });
   });
 });
 
