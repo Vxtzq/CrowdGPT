@@ -1060,17 +1060,119 @@ nav a.active {
   margin-bottom: 14px;
 }
 
+.page-head-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.page-head-row h1 {
+  font-size: clamp(30px, 5vw, 43px);
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 0;
+}
+
 .page-head h1 {
   font-size: clamp(30px, 5vw, 43px);
   font-weight: 600;
-  margin-bottom: 14px;
   color: var(--text);
+  margin-bottom: 14px;
 }
 
 .page-head p {
   font-size: clamp(16px, 2.1vw, 20px);
   color: var(--text-dim);
   max-width: 840px;
+}
+
+/* ===== HEALTH HIGHLIGHT (green note-style wrapper) ===== */
+.health-highlight {
+  display: inline-flex;
+  align-items: center;
+  background: var(--note-bg);
+  border: 1px solid var(--note-border);
+  border-radius: var(--radius);
+  padding: 7px 14px;
+  margin-bottom: 0;
+}
+
+/* ===== HEALTH CHIP (inside the highlight) ===== */
+.health-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: var(--mono);
+  font-size: clamp(12px, 0.9vw, 14px);
+  font-weight: 500;
+  color: var(--text);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+.health-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  transition: background-color 0.3s ease;
+}
+
+.health-dot.offline { background: #ef4444; }
+.health-dot.online  { background: #22c55e; }
+.health-dot.pending { background: var(--text-muted); }
+
+.health-chip .health-label {
+  text-transform: lowercase;
+}
+
+/* Tooltip */
+.health-chip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  background: var(--bg-softer);
+  border: 1px solid var(--border);
+  padding: 9px 12px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  white-space: pre;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition: opacity 0.15s, transform 0.15s;
+  z-index: 50;
+}
+
+@media (hover: hover) {
+  .health-chip:hover::after {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.health-chip.chip-active::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (max-width: 720px) {
+  .health-chip::after {
+    left: auto;
+    right: 0;
+    font-size: 10px;
+  }
 }
 
 .content h2 {
@@ -1624,6 +1726,10 @@ footer {
     font-size: 32px;
   }
 
+  .page-head-row h1 {
+    font-size: 32px;
+  }
+
   .page-head p {
     font-size: 17px;
   }
@@ -2067,7 +2173,15 @@ footer {
   <div class="container page-pad">
     <div class="page-head">
       <div class="crumb">home / status</div>
-      <h1>Network Status</h1>
+      <div class="page-head-row">
+        <h1>Network Status</h1>
+        <div class="health-highlight">
+          <div class="health-chip" id="health-chip" data-tooltip="checking…">
+            <span class="health-dot pending" id="health-dot"></span>
+            <span class="health-label" id="health-label">checking</span>
+          </div>
+        </div>
+      </div>
       <p>Real-time metrics of the CrowdGPT federated training network.</p>
     </div>
 
@@ -2333,6 +2447,112 @@ function renderLeaderboard(tbody, users) {
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+
+// ===== HEALTH CHIP (with hysteresis + mobile tap-to-reveal) =====
+const healthState = {
+  display: 'pending',
+  consecutiveOk: 0,
+  consecutiveFail: 0,
+  lastLatency: null,
+  lastError: null,
+  lastCheck: null
+};
+
+const UP_THRESHOLD = 2;
+const DOWN_THRESHOLD = 2;
+
+const healthChip = document.getElementById('health-chip');
+let chipTooltipOpen = false;
+
+// Tap-to-reveal tooltip (mobile friendly)
+if (healthChip) {
+  healthChip.addEventListener('click', (e) => {
+    e.stopPropagation();
+    chipTooltipOpen = !chipTooltipOpen;
+    healthChip.classList.toggle('chip-active', chipTooltipOpen);
+  });
+
+  document.addEventListener('click', () => {
+    if (chipTooltipOpen) {
+      chipTooltipOpen = false;
+      healthChip.classList.remove('chip-active');
+    }
+  });
+
+  healthChip.addEventListener('touchstart', (e) => {
+    e.stopPropagation();
+  }, { passive: true });
+}
+
+function renderHealth() {
+  const dot = document.getElementById('health-dot');
+  const label = document.getElementById('health-label');
+  if (!healthChip || !dot || !label) return;
+
+  dot.className = 'health-dot ' + healthState.display;
+
+  const labelMap = { pending: 'checking', online: 'online', offline: 'offline' };
+  label.textContent = labelMap[healthState.display] || 'checking';
+
+  const latency = healthState.lastLatency != null
+    ? healthState.lastLatency + ' ms'
+    : (healthState.lastError || '—');
+  const time = healthState.lastCheck
+    ? healthState.lastCheck.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      })
+    : '—';
+
+  healthChip.setAttribute('data-tooltip',
+    `endpoint    api.crowdgpt.net:5006\nlatency     ${latency}\nlast check  ${time}`
+  );
+}
+
+async function checkHealth() {
+  healthState.lastCheck = new Date();
+
+  const start = performance.now();
+  let ok = false;
+  try {
+    const r = await fetch(`${API_BASE}/api/stats`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(8000)
+    });
+    healthState.lastLatency = Math.round(performance.now() - start);
+    healthState.lastError = null;
+    ok = r.ok;
+  } catch (e) {
+    healthState.lastLatency = null;
+    healthState.lastError = 'timeout';
+    ok = false;
+  }
+
+  if (ok) {
+    healthState.consecutiveOk++;
+    healthState.consecutiveFail = 0;
+    if (healthState.display !== 'online' && healthState.consecutiveOk >= UP_THRESHOLD) {
+      healthState.display = 'online';
+    } else if (healthState.display === 'pending' && healthState.consecutiveOk >= 1) {
+      healthState.display = 'online';
+    }
+  } else {
+    healthState.consecutiveFail++;
+    healthState.consecutiveOk = 0;
+    if (healthState.display !== 'offline' && healthState.consecutiveFail >= DOWN_THRESHOLD) {
+      healthState.display = 'offline';
+    } else if (healthState.display === 'pending' && healthState.consecutiveFail >= 2) {
+      healthState.display = 'offline';
+    }
+  }
+
+  renderHealth();
+}
+
+renderHealth();
+checkHealth();
+setInterval(checkHealth, 30000);
 
 function updateThemeAssets() {
   const logoImgs = Array.from(document.querySelectorAll('.logo-img')).filter(img => !img.closest('.header-measure'));
