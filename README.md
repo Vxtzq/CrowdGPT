@@ -45,7 +45,7 @@ Instead of one datacenter doing all the work, CrowdGPT distributes training acro
 
 See [ARCHITECTURE.md](https://github.com/Vxtzq/CrowdGPT/blob/main/docs/ARCHITECTURE.md)
 
-## ⚡ Installation
+## ⚡ Legacy installation
 
 ```bash
 git clone https://github.com/Vxtzq/CrowdGPT.git
@@ -74,7 +74,7 @@ Then:
 python client.py
 ```
 
-For the automatic installer, see [`docs/easy_install.md`](./docs/easy_install.md).
+For the **automatic installer**, see [`docs/easy_install.md`](./docs/easy_install.md).
 
 ---
 
