@@ -6,6 +6,7 @@ torch>=2.0.0
 torch-directml
 numpy>=1.24.0
 requests>=2.28.0
+safetensors
 sentencepiece
 tiktoken
 transformers
