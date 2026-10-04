@@ -30,6 +30,7 @@
 ## Key changes
 - Enhanced GUI version
 - Migrated to https for coordinator
+- Easy install
 ---
 
 ## What is CrowdGPT?
