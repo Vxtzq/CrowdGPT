@@ -45,7 +45,7 @@ Instead of one datacenter doing all the work, CrowdGPT distributes training acro
 
 See [ARCHITECTURE.md](https://github.com/Vxtzq/CrowdGPT/blob/main/docs/ARCHITECTURE.md)
 
-## ⚡ Quick Start
+## ⚡ Installation
 
 ```bash
 git clone https://github.com/Vxtzq/CrowdGPT.git
