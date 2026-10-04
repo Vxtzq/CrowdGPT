@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""
-CrowdGPT CLI Client - HF-Direct + Chunked Upload + Auto-Update Edition
-
-Features:
-- Fetches task metadata from coordinator.
-- Downloads model/engram weights directly from Hugging Face when available.
-- Falls back to coordinator binary weight stream if HF is unavailable.
-- Uploads large deltas in chunks to avoid Cloudflare/proxy body limits.
-- Keeps small deltas on direct /fl/submit.
-- Adaptive gradient accumulation with OOM-safe halving.
-- Rich terminal dashboard.
-- Auto-update from GitHub on startup and between rounds.
-"""
-
 import os
 os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
 
