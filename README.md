@@ -44,8 +44,21 @@ Instead of one datacenter doing all the work, CrowdGPT distributes training acro
 ### How it works
 
 See [ARCHITECTURE.md](https://github.com/Vxtzq/CrowdGPT/blob/main/docs/ARCHITECTURE.md)
+## ⚡ Quick instalation (one command)
 
-## ⚡ Legacy installation
+For Linux/MacOS
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/install.sh | bash
+```
+
+For Windows
+
+```bash
+iwr -useb https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/install.bat -OutFile install.bat; .\install.bat
+```
+
+## Legacy installation (deprecated)
 
 ```bash
 git clone https://github.com/Vxtzq/CrowdGPT.git
