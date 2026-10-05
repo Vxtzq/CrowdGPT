@@ -23,8 +23,8 @@
   --info: #60a5fa;
   --warn: #fbbf24;
 
-  --note-bg: rgba(34, 197, 94, 0.05);
-  --note-border: rgba(34, 197, 94, 0.28);
+  --note-bg: rgba(34, 197, 94, 0.06);
+  --note-border: rgba(34, 197, 94, 0.22);
 
   --serif: 'Fraunces', 'Times New Roman', serif;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
@@ -74,8 +74,8 @@
     --info: #2563eb;
     --warn: #b45309;
 
-    --note-bg: rgba(22, 163, 74, 0.05);
-    --note-border: rgba(22, 163, 74, 0.3);
+    --note-bg: rgba(22, 163, 74, 0.055);
+    --note-border: rgba(22, 163, 74, 0.22);
 
     --term-bg: #1a1a1e;
     --term-bar-bg: #0f0f12;
@@ -682,38 +682,28 @@ nav a.active {
   color: var(--text-muted);
 }
 
+/* ===== NOTE (green background, modern list, no squares) ===== */
 .note {
   background: var(--note-bg);
   border: 1px solid var(--note-border);
-  border-radius: var(--radius);
-  padding: clamp(18px, 2vw, 24px) clamp(18px, 2.2vw, 26px);
+  border-radius: 10px;
+  padding: clamp(22px, 2.4vw, 28px) clamp(22px, 2.6vw, 32px);
   margin-bottom: 29px;
 }
 
 .note-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
   font-size: clamp(15px, 1.1vw, 16px);
   font-weight: 600;
   color: var(--text);
-  margin-bottom: 10px;
-}
-
-.note-title::before {
-  content: '';
-  width: 8px;
-  height: 8px;
-  background: var(--accent);
-  border-radius: 2px;
-  flex-shrink: 0;
+  margin-bottom: 14px;
+  letter-spacing: -0.005em;
 }
 
 .note p {
   font-size: clamp(14px, 1.05vw, 15px);
   color: var(--text-dim);
-  line-height: 1.6;
-  margin-bottom: 8px;
+  line-height: 1.7;
+  margin-bottom: 10px;
 }
 
 .note p:last-child {
@@ -723,26 +713,30 @@ nav a.active {
 .note ul {
   list-style: none;
   padding: 0;
-  margin: 0 0 8px;
+  margin: 0 0 12px;
 }
 
 .note li {
   font-size: clamp(14px, 1.05vw, 15px);
   color: var(--text-dim);
-  line-height: 1.6;
-  padding: 3px 0 3px 18px;
+  line-height: 1.7;
+  padding: 5px 0 5px 22px;
   position: relative;
 }
 
 .note li::before {
   content: '';
   position: absolute;
-  left: 0;
-  top: 12px;
-  width: 5px;
-  height: 5px;
+  left: 4px;
+  top: 16px;
+  width: 8px;
+  height: 1px;
   background: var(--accent);
-  border-radius: 1px;
+  opacity: 0.55;
+}
+
+.note li:last-child {
+  margin-bottom: 0;
 }
 
 .product-side {
@@ -1132,7 +1126,8 @@ nav a.active {
 .page-head-row {
   display: flex;
   align-items: center;
-  gap: 14px;
+  column-gap: 12px;
+  row-gap: 10px;
   flex-wrap: wrap;
   margin-bottom: 14px;
 }
@@ -1142,6 +1137,9 @@ nav a.active {
   font-weight: 600;
   color: var(--text);
   margin-bottom: 0;
+  line-height: 1.05;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .page-head h1 {
@@ -1157,14 +1155,19 @@ nav a.active {
   max-width: 840px;
 }
 
+/* ===== HEALTH HIGHLIGHT ===== */
 .health-highlight {
   display: inline-flex;
   align-items: center;
   background: var(--note-bg);
   border: 1px solid var(--note-border);
   border-radius: var(--radius);
-  padding: 7px 14px;
+  padding: 6px 12px;
   margin-bottom: 0;
+  flex: 0 0 auto;
+  align-self: center;
+  position: relative;
+  top: -2px;
 }
 
 .health-chip {
@@ -1184,6 +1187,7 @@ nav a.active {
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   user-select: none;
+  line-height: 1;
 }
 
 .health-dot {
