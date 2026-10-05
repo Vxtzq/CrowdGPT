@@ -58,7 +58,7 @@ For Windows
 iwr -useb https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/install.bat -OutFile install.bat; .\install.bat
 ```
 
-## Legacy installation (deprecated)
+## ⏳ Legacy installation (deprecated)
 
 ```bash
 git clone https://github.com/Vxtzq/CrowdGPT.git
