@@ -2187,9 +2187,9 @@ footer {
     <div class="content install-explainer">
       <h2>How the installer works</h2>
       <ol>
-        <li><strong>Detect hardware.</strong> Reads your GPU driver and picks the right PyTorch index automatically — CUDA 12.4 for modern NVIDIA drivers, CUDA 11.8 for older ones, ROCm 6.1 or 5.7 on Linux AMD, XPU for Intel Arc, DirectML for AMD on Windows, and MPS on Apple Silicon.</li>
-        <li><strong>Install dependencies.</strong> Python and Git are installed if missing, then PyTorch from the correct index and the project's requirements — all inside an isolated virtual environment so nothing touches your system Python.</li>
-        <li><strong>Launch.</strong> Downloads the model weights from HuggingFace, streams a dataset chunk, and starts training. You can stop at any time and resume in the next round.</li>
+        <li><strong>Detect hardware.</strong> Installs the right dependencies for your Graphics Card.</li>
+        <li><strong>Install dependencies.</strong> Python and Git are installed if missing, then PyTorch from the correct index and the project's requirements; everything is inside an isolated virtual environment so nothing touches your system Python.</li>
+        <li><strong>Launch.</strong> Downloads the model weights from HuggingFace, streams a dataset chunk, and starts training. You can stop at any time.</li>
       </ol>
     </div>
   </div>
