@@ -54,7 +54,7 @@ curl -sSL https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/install.sh | bas
 
 For Windows
 
-```bash
+```
 iwr -useb https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/install.bat -OutFile install.bat; .\install.bat
 ```
 
