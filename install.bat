@@ -2,14 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 REM ============================================================
-REM CrowdGPT Universal Installer for Windows
-REM Detects Python + Git + GPU backend, installs the matching
-REM PyTorch wheel, sets up a `crowdgpt` command and a Start Menu
-REM shortcut, then launches client.py.
-REM
-REM Usage:
-REM   install.bat [--backend nvidia|amd|intel|cpu]
-REM               [--dir PATH] [--no-launch] [--no-integrate]
+REM CrowdGPT Universal Installer for Windows (v2 - parens fixed)
 REM ============================================================
 
 set "REPO_URL=https://github.com/Vxtzq/CrowdGPT.git"
@@ -54,13 +47,13 @@ exit /b 1
 
 :show_help
 echo.
-echo CrowdGPT installer (Windows)
+echo CrowdGPT installer - Windows
 echo.
 echo Options:
 echo   --backend ^<name^>   Force backend: nvidia ^| amd ^| intel ^| cpu
-echo   --dir ^<path^>       Directory to clone into (default: .\CrowdGPT)
+echo   --dir ^<path^>       Directory to clone into. Default: .\CrowdGPT
 echo   --no-launch        Install only, don't launch client.py
-echo   --no-integrate     Skip Start Menu ^& PATH integration
+echo   --no-integrate     Skip Start Menu and PATH integration
 echo   --help             Show this message
 echo.
 exit /b 0
@@ -74,7 +67,7 @@ echo ============================================================
 echo.
 
 REM ------------------------------------------------------------
-REM 1. Install uv (Python package manager)
+REM 1. Install uv
 REM ------------------------------------------------------------
 where uv >nul 2>nul
 if errorlevel 1 (
@@ -221,9 +214,10 @@ REM ------------------------------------------------------------
 set "APP_DIR=%LOCALAPPDATA%\CrowdGPT"
 set "BIN_DIR=%APP_DIR%"
 set "START_MENU=%APPDATA%\Microsoft\Windows\Start Menu\Programs"
+set "APP_PY=!APP_DIR!\.venv\Scripts\python.exe"
 
 REM ------------------------------------------------------------
-REM 6. Build venv using uv (forces Python 3.11)
+REM 6. Build venv with Python 3.11 via uv
 REM ------------------------------------------------------------
 set "BUILD_VENV=%CD%\.venv"
 
@@ -247,7 +241,7 @@ echo [INFO] Upgrading pip...
 if errorlevel 1 goto :fatal
 
 REM ------------------------------------------------------------
-REM 7. Install PyTorch with robust fallback chain
+REM 7. Install PyTorch - GOTO-BASED, NO PARENS IN ECHOES
 REM ------------------------------------------------------------
 echo.
 echo ============================================================
@@ -256,42 +250,43 @@ echo ============================================================
 
 "%BUILD_PY%" -m pip uninstall -y torch torchvision torchaudio torch-directml >nul 2>nul
 
-set "TORCH_SUCCESS=0"
+if /I "!BACKEND!"=="nvidia" goto :pytorch_nvidia
+if /I "!BACKEND!"=="amd" goto :pytorch_amd
+if /I "!BACKEND!"=="intel" goto :pytorch_intel
+goto :pytorch_cpu
 
-if /I "!BACKEND!"=="nvidia" (
-    echo [INFO] Trying PyTorch CUDA 12.1 (cu121)...
-    "%BUILD_PY%" -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-    if not errorlevel 1 set "TORCH_SUCCESS=1"
-    
-    if "!TORCH_SUCCESS!"=="0" (
-        echo [WARN] cu121 failed. Trying CUDA 11.8 (cu118)...
-        "%BUILD_PY%" -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-        if not errorlevel 1 set "TORCH_SUCCESS=1"
-    )
-)
+:pytorch_nvidia
+echo [INFO] Trying PyTorch CUDA 12.1 cu121...
+"%BUILD_PY%" -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+if not errorlevel 1 goto :pytorch_done
+echo.
+echo [WARN] cu121 failed. Trying CUDA 11.8 cu118...
+"%BUILD_PY%" -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+if not errorlevel 1 goto :pytorch_done
+goto :pytorch_cpu
 
-if /I "!BACKEND!"=="amd" (
-    echo [INFO] Trying PyTorch DirectML...
-    "%BUILD_PY%" -m pip install torch-directml
-    if not errorlevel 1 set "TORCH_SUCCESS=1"
-)
+:pytorch_amd
+echo [INFO] Trying PyTorch DirectML...
+"%BUILD_PY%" -m pip install torch-directml
+if not errorlevel 1 goto :pytorch_done
+goto :pytorch_cpu
 
-if /I "!BACKEND!"=="intel" (
-    echo [INFO] Trying PyTorch XPU...
-    "%BUILD_PY%" -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/xpu --extra-index-url https://pypi.org/simple
-    if not errorlevel 1 set "TORCH_SUCCESS=1"
-)
+:pytorch_intel
+echo [INFO] Trying PyTorch XPU...
+"%BUILD_PY%" -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/xpu --extra-index-url https://pypi.org/simple
+if not errorlevel 1 goto :pytorch_done
+goto :pytorch_cpu
 
-if "!TORCH_SUCCESS!"=="0" (
-    echo.
-    echo [WARN] PyTorch installation failed for all GPU backends.
-    echo        Falling back to CPU-only PyTorch. Training will be very slow.
-    "%BUILD_PY%" -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-    if errorlevel 1 goto :fatal
-)
+:pytorch_cpu
+echo.
+echo [WARN] Installing CPU-only PyTorch. Training will be very slow.
+"%BUILD_PY%" -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+if errorlevel 1 goto :fatal
+
+:pytorch_done
 
 REM ------------------------------------------------------------
-REM 8. Install project requirements (torch lines stripped)
+REM 8. Install project requirements
 REM ------------------------------------------------------------
 if exist "requirements.txt" (
     echo.
@@ -316,11 +311,11 @@ if exist "requirements.txt" (
 )
 
 REM ------------------------------------------------------------
-REM 9. GUI backend check (WebView2 runtime on Windows)
+REM 9. GUI backend check - WebView2
 REM ------------------------------------------------------------
 echo.
 echo ============================================================
-echo           GUI backend for pywebview (WebView2)
+echo           GUI backend for pywebview - WebView2
 echo ============================================================
 
 reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" >nul 2>nul
@@ -352,121 +347,11 @@ if errorlevel 1 echo [WARN] Verification failed, but install may still work.
 if errorlevel 1 echo [WARN] pywebview import failed.
 
 REM ------------------------------------------------------------
-REM 11. Desktop + command integration
+REM 11. Desktop integration - moved into a subroutine
 REM ------------------------------------------------------------
 if "!INTEGRATE!"=="1" (
-    echo.
-    echo ============================================================
-    echo                Installing desktop integration
-    echo ============================================================
-    echo [INFO] Install location: !APP_DIR!
-
-    if not exist "!APP_DIR!" mkdir "!APP_DIR!"
-
-    REM Copy repo (skip .git, venv, caches)
-    echo [INFO] Copying app files...
-    robocopy "%CD%" "!APP_DIR!" /E /XD .git .venv __pycache__ checkpoints pending_uploads /NFL /NDL /NJH /NJS /NC /NS >nul
-    if errorlevel 8 (
-        echo [ERROR] Failed to copy files to !APP_DIR!
-        goto :fatal
-    )
-
-    REM Move build venv into app dir
-    if exist "!APP_DIR!\.venv" rmdir /s /q "!APP_DIR!\.venv" >nul 2>nul
-    move "!BUILD_VENV!" "!APP_DIR!\.venv" >nul
-    if errorlevel 1 (
-        echo [ERROR] Failed to move venv into app dir.
-        goto :fatal
-    )
-
-    set "APP_PY=!APP_DIR!\.venv\Scripts\python.exe"
-    if not exist "!APP_PY!" (
-        echo [ERROR] Installed venv Python missing at !APP_PY!
-        goto :fatal
-    )
-
-    REM Rewrite shebangs/paths that still point at the old venv location
-    echo [INFO] Rewriting venv paths...
-    > "%TEMP%\crowdgpt_path.ps1" echo $old = '%CD%\.venv'.Replace('\','\\')
-    >> "%TEMP%\crowdgpt_path.ps1" echo $new = '!APP_DIR!\.venv'.Replace('\','\\')
-    >> "%TEMP%\crowdgpt_path.ps1" echo $root = '!APP_DIR!\.venv'
-    >> "%TEMP%\crowdgpt_path.ps1" echo Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue ^| ForEach-Object {
-    >> "%TEMP%\crowdgpt_path.ps1" echo   if ($_.Length -gt 200000) { return }
-    >> "%TEMP%\crowdgpt_path.ps1" echo   try { $c = [System.IO.File]::ReadAllText($_.FullName) } catch { return }
-    >> "%TEMP%\crowdgpt_path.ps1" echo   if ($c -like ('*' + $old + '*')) {
-    >> "%TEMP%\crowdgpt_path.ps1" echo     $c = $c.Replace($old, $new)
-    >> "%TEMP%\crowdgpt_path.ps1" echo     try { [System.IO.File]::WriteAllText($_.FullName, $c) } catch {}
-    >> "%TEMP%\crowdgpt_path.ps1" echo   }
-    >> "%TEMP%\crowdgpt_path.ps1" echo }
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\crowdgpt_path.ps1"
-    del "%TEMP%\crowdgpt_path.ps1" >nul 2>nul
-
-    REM ---- CMD shim ----
-    > "!BIN_DIR!\crowdgpt.cmd" echo @echo off
-    >>"!BIN_DIR!\crowdgpt.cmd" echo "!APP_PY!" "!APP_DIR!\client.py" %%*
-
-    REM ---- GUI launcher (no console window) ----
-    > "!BIN_DIR!\crowdgpt-gui.vbs" echo Set WshShell = CreateObject("WScript.Shell")
-    >>"!BIN_DIR!\crowdgpt-gui.vbs" echo WshShell.Run """!APP_PY!"" ""!APP_DIR!\client.py""", 0, False
-
-    REM ---- Add to user PATH (HKCU, via PowerShell, no setx truncation) ----
-    > "%TEMP%\crowdgpt_env.ps1" echo $p = [Environment]::GetEnvironmentVariable('Path', 'User')
-    >> "%TEMP%\crowdgpt_env.ps1" echo if ($null -eq $p) { $p = '' }
-    >> "%TEMP%\crowdgpt_env.ps1" echo if ($p -notlike '*!BIN_DIR!*') {
-    >> "%TEMP%\crowdgpt_env.ps1" echo   $new = if ($p) { $p + ';!BIN_DIR!' } else { '!BIN_DIR!' }
-    >> "%TEMP%\crowdgpt_env.ps1" echo   [Environment]::SetEnvironmentVariable('Path', $new, 'User')
-    >> "%TEMP%\crowdgpt_env.ps1" echo   Write-Host 'Added to user PATH'
-    >> "%TEMP%\crowdgpt_env.ps1" echo }
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\crowdgpt_env.ps1"
-    del "%TEMP%\crowdgpt_env.ps1" >nul 2>nul
-
-    REM ---- Icon path ----
-    set "APP_ICON="
-    if exist "!APP_DIR!\docs\logo-app.ico" set "APP_ICON=!APP_DIR!\docs\logo-app.ico"
-    if not defined APP_ICON if exist "!APP_DIR!\docs\logo-app.svg" set "APP_ICON=!APP_DIR!\docs\logo-app.svg"
-
-    REM ---- Start Menu shortcut ----
-    > "%TEMP%\crowdgpt_shortcut.ps1" echo $ws = New-Object -ComObject WScript.Shell
-    >> "%TEMP%\crowdgpt_shortcut.ps1" echo $sc = $ws.CreateShortcut('!START_MENU!\CrowdGPT.lnk')
-    >> "%TEMP%\crowdgpt_shortcut.ps1" echo $sc.TargetPath = '!APP_DIR!\crowdgpt-gui.vbs'
-    >> "%TEMP%\crowdgpt_shortcut.ps1" echo $sc.WorkingDirectory = '!APP_DIR!'
-    >> "%TEMP%\crowdgpt_shortcut.ps1" echo if ('!APP_ICON!') { $sc.IconLocation = '!APP_ICON!' }
-    >> "%TEMP%\crowdgpt_shortcut.ps1" echo $sc.Description = 'Decentralized AI Training Client'
-    >> "%TEMP%\crowdgpt_shortcut.ps1" echo $sc.Save()
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\crowdgpt_shortcut.ps1"
-    del "%TEMP%\crowdgpt_shortcut.ps1" >nul 2>nul
-
-    REM ---- Add/Remove Programs registry entry ----
-    > "%TEMP%\crowdgpt_reg.ps1" echo $k = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\CrowdGPT'
-    >> "%TEMP%\crowdgpt_reg.ps1" echo New-Item -Path $k -Force ^| Out-Null
-    >> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'DisplayName' -Value 'CrowdGPT'
-    >> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'DisplayVersion' -Value '0.5'
-    >> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'Publisher' -Value 'CrowdGPT Project'
-    >> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'InstallLocation' -Value '!APP_DIR!'
-    >> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'UninstallString' -Value ('\"' + '!APP_DIR!\uninstall.bat' + '\"')
-    >> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'NoModify' -Value 1 -Type DWord
-    >> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'NoRepair' -Value 1 -Type DWord
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\crowdgpt_reg.ps1"
-    del "%TEMP%\crowdgpt_reg.ps1" >nul 2>nul
-
-    REM ---- Uninstaller ----
-    > "!APP_DIR!\uninstall.bat" echo @echo off
-    >>"!APP_DIR!\uninstall.bat" echo setlocal
-    >>"!APP_DIR!\uninstall.bat" echo echo Uninstalling CrowdGPT...
-    >>"!APP_DIR!\uninstall.bat" echo del /q "!START_MENU!\CrowdGPT.lnk" 2^>nul
-    >>"!APP_DIR!\uninstall.bat" echo reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\CrowdGPT" /f ^>nul 2^>nul
-    >>"!APP_DIR!\uninstall.bat" echo powershell -NoProfile -Command "$p = [Environment]::GetEnvironmentVariable('Path','User'); if ($p) { $p = ($p -split ';' ^| Where-Object { $_ -ne '!BIN_DIR!' }) -join ';'; [Environment]::SetEnvironmentVariable('Path', $p, 'User') }"
-    >>"!APP_DIR!\uninstall.bat" echo cd /d "%%TEMP%%"
-    >>"!APP_DIR!\uninstall.bat" echo rmdir /s /q "!APP_DIR!"
-    >>"!APP_DIR!\uninstall.bat" echo echo Done. Log out and back in for PATH changes to take effect.
-    >>"!APP_DIR!\uninstall.bat" echo pause
-
-    echo.
-    echo [OK] Installed command: crowdgpt
-    echo [OK] Start Menu shortcut: CrowdGPT
-    echo [OK] Uninstall via: Settings ^> Apps ^> CrowdGPT
-    echo.
-    echo [NOTE] A new terminal is required for the "crowdgpt" command to work.
+    call :do_integration
+    if errorlevel 1 goto :fatal
 )
 
 REM ------------------------------------------------------------
@@ -495,11 +380,125 @@ if "!LAUNCH!"=="1" (
 )
 
 REM ============================================================
+REM Subroutine: do_integration
+REM At top level here, so parens in echoes are safe.
+REM ============================================================
+:do_integration
+echo.
+echo ============================================================
+echo                Installing desktop integration
+echo ============================================================
+echo [INFO] Install location: !APP_DIR!
+
+if not exist "!APP_DIR!" mkdir "!APP_DIR!"
+
+echo [INFO] Copying app files...
+robocopy "%CD%" "!APP_DIR!" /E /XD .git .venv __pycache__ checkpoints pending_uploads /NFL /NDL /NJH /NJS /NC /NS >nul
+if errorlevel 8 (
+    echo [ERROR] Failed to copy files to !APP_DIR!
+    exit /b 1
+)
+
+if exist "!APP_DIR!\.venv" rmdir /s /q "!APP_DIR!\.venv" >nul 2>nul
+move "!BUILD_VENV!" "!APP_DIR!\.venv" >nul
+if errorlevel 1 (
+    echo [ERROR] Failed to move venv into app dir.
+    exit /b 1
+)
+
+if not exist "!APP_PY!" (
+    echo [ERROR] Installed venv Python missing at !APP_PY!
+    exit /b 1
+)
+
+echo [INFO] Rewriting venv paths...
+> "%TEMP%\crowdgpt_path.ps1" echo $old = '%CD%\.venv'.Replace('\','\\')
+>> "%TEMP%\crowdgpt_path.ps1" echo $new = '!APP_DIR!\.venv'.Replace('\','\\')
+>> "%TEMP%\crowdgpt_path.ps1" echo $root = '!APP_DIR!\.venv'
+>> "%TEMP%\crowdgpt_path.ps1" echo Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue ^| ForEach-Object {
+>> "%TEMP%\crowdgpt_path.ps1" echo   if ($_.Length -gt 200000) { return }
+>> "%TEMP%\crowdgpt_path.ps1" echo   try { $c = [System.IO.File]::ReadAllText($_.FullName) } catch { return }
+>> "%TEMP%\crowdgpt_path.ps1" echo   if ($c -like ('*' + $old + '*')) {
+>> "%TEMP%\crowdgpt_path.ps1" echo     $c = $c.Replace($old, $new)
+>> "%TEMP%\crowdgpt_path.ps1" echo     try { [System.IO.File]::WriteAllText($_.FullName, $c) } catch {}
+>> "%TEMP%\crowdgpt_path.ps1" echo   }
+>> "%TEMP%\crowdgpt_path.ps1" echo }
+powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\crowdgpt_path.ps1"
+del "%TEMP%\crowdgpt_path.ps1" >nul 2>nul
+
+REM ---- CMD shim ----
+> "!BIN_DIR!\crowdgpt.cmd" echo @echo off
+>>"!BIN_DIR!\crowdgpt.cmd" echo "!APP_PY!" "!APP_DIR!\client.py" %%*
+
+REM ---- GUI launcher - no console window ----
+> "!BIN_DIR!\crowdgpt-gui.vbs" echo Set WshShell = CreateObject("WScript.Shell")
+>>"!BIN_DIR!\crowdgpt-gui.vbs" echo WshShell.Run """!APP_PY!"" ""!APP_DIR!\client.py""", 0, False
+
+REM ---- Add to user PATH ----
+> "%TEMP%\crowdgpt_env.ps1" echo $p = [Environment]::GetEnvironmentVariable('Path', 'User')
+>> "%TEMP%\crowdgpt_env.ps1" echo if ($null -eq $p) { $p = '' }
+>> "%TEMP%\crowdgpt_env.ps1" echo if ($p -notlike '*!BIN_DIR!*') {
+>> "%TEMP%\crowdgpt_env.ps1" echo   $new = if ($p) { $p + ';!BIN_DIR!' } else { '!BIN_DIR!' }
+>> "%TEMP%\crowdgpt_env.ps1" echo   [Environment]::SetEnvironmentVariable('Path', $new, 'User')
+>> "%TEMP%\crowdgpt_env.ps1" echo   Write-Host 'Added to user PATH'
+>> "%TEMP%\crowdgpt_env.ps1" echo }
+powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\crowdgpt_env.ps1"
+del "%TEMP%\crowdgpt_env.ps1" >nul 2>nul
+
+REM ---- Icon path ----
+set "APP_ICON="
+if exist "!APP_DIR!\docs\logo-app.ico" set "APP_ICON=!APP_DIR!\docs\logo-app.ico"
+if not defined APP_ICON if exist "!APP_DIR!\docs\logo-app.svg" set "APP_ICON=!APP_DIR!\docs\logo-app.svg"
+
+REM ---- Start Menu shortcut ----
+> "%TEMP%\crowdgpt_shortcut.ps1" echo $ws = New-Object -ComObject WScript.Shell
+>> "%TEMP%\crowdgpt_shortcut.ps1" echo $sc = $ws.CreateShortcut('!START_MENU!\CrowdGPT.lnk')
+>> "%TEMP%\crowdgpt_shortcut.ps1" echo $sc.TargetPath = '!APP_DIR!\crowdgpt-gui.vbs'
+>> "%TEMP%\crowdgpt_shortcut.ps1" echo $sc.WorkingDirectory = '!APP_DIR!'
+>> "%TEMP%\crowdgpt_shortcut.ps1" echo if ('!APP_ICON!') { $sc.IconLocation = '!APP_ICON!' }
+>> "%TEMP%\crowdgpt_shortcut.ps1" echo $sc.Description = 'Decentralized AI Training Client'
+>> "%TEMP%\crowdgpt_shortcut.ps1" echo $sc.Save()
+powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\crowdgpt_shortcut.ps1"
+del "%TEMP%\crowdgpt_shortcut.ps1" >nul 2>nul
+
+REM ---- Add/Remove Programs registry entry ----
+> "%TEMP%\crowdgpt_reg.ps1" echo $k = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\CrowdGPT'
+>> "%TEMP%\crowdgpt_reg.ps1" echo New-Item -Path $k -Force ^| Out-Null
+>> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'DisplayName' -Value 'CrowdGPT'
+>> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'DisplayVersion' -Value '0.5'
+>> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'Publisher' -Value 'CrowdGPT Project'
+>> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'InstallLocation' -Value '!APP_DIR!'
+>> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'UninstallString' -Value ('\"' + '!APP_DIR!\uninstall.bat' + '\"')
+>> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'NoModify' -Value 1 -Type DWord
+>> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'NoRepair' -Value 1 -Type DWord
+powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\crowdgpt_reg.ps1"
+del "%TEMP%\crowdgpt_reg.ps1" >nul 2>nul
+
+REM ---- Uninstaller ----
+> "!APP_DIR!\uninstall.bat" echo @echo off
+>>"!APP_DIR!\uninstall.bat" echo setlocal
+>>"!APP_DIR!\uninstall.bat" echo echo Uninstalling CrowdGPT...
+>>"!APP_DIR!\uninstall.bat" echo del /q "!START_MENU!\CrowdGPT.lnk" 2^>nul
+>>"!APP_DIR!\uninstall.bat" echo reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\CrowdGPT" /f ^>nul 2^>nul
+>>"!APP_DIR!\uninstall.bat" echo powershell -NoProfile -Command "$p = [Environment]::GetEnvironmentVariable('Path','User'); if ($p) { $p = ($p -split ';' ^| Where-Object { $_ -ne '!BIN_DIR!' }) -join ';'; [Environment]::SetEnvironmentVariable('Path', $p, 'User') }"
+>>"!APP_DIR!\uninstall.bat" echo cd /d "%%TEMP%%"
+>>"!APP_DIR!\uninstall.bat" echo rmdir /s /q "!APP_DIR!"
+>>"!APP_DIR!\uninstall.bat" echo echo Done. Log out and back in for PATH changes to take effect.
+>>"!APP_DIR!\uninstall.bat" echo pause
+
+echo.
+echo [OK] Installed command: crowdgpt
+echo [OK] Start Menu shortcut: CrowdGPT
+echo [OK] Uninstall via: Settings ^> Apps ^> CrowdGPT
+echo.
+echo [NOTE] A new terminal is required for the "crowdgpt" command to work.
+exit /b 0
+
+REM ============================================================
 REM Subroutine: detect_backend
 REM ============================================================
 :detect_backend
 
-REM --- NVIDIA first ---
 where nvidia-smi >nul 2>nul
 if not errorlevel 1 (
     set "NVIDIA_DRIVER="
@@ -534,7 +533,7 @@ if not errorlevel 1 (
     ) else if !DRIVER_MAJOR! GEQ 470 (
         set "BACKEND=nvidia"
         set "TORCH_INDEX=https://download.pytorch.org/whl/cu118"
-        set "WHEEL_NOTE=NVIDIA driver !NVIDIA_DRIVER! -^> CUDA 11.8 wheel (older driver)"
+        set "WHEEL_NOTE=NVIDIA driver !NVIDIA_DRIVER! -^> CUDA 11.8 wheel - older driver"
     ) else (
         echo [ERROR] NVIDIA driver !NVIDIA_DRIVER! is too old for any PyTorch wheel.
         echo         Update your GPU driver and rerun.
@@ -543,7 +542,6 @@ if not errorlevel 1 (
     exit /b 0
 )
 
-REM --- Intel Arc / XPU ---
 powershell -NoProfile -Command "try { $g = Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name; if ($g -match 'Intel.*Arc') { exit 0 } else { exit 1 } } catch { exit 1 }"
 if not errorlevel 1 (
     set "BACKEND=intel"
@@ -553,21 +551,19 @@ if not errorlevel 1 (
     exit /b 0
 )
 
-REM --- AMD discrete GPU -> DirectML ---
 powershell -NoProfile -Command "try { $g = Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty AdapterCompatibility; if ($g -match 'AMD|Advanced Micro Devices') { exit 0 } else { exit 1 } } catch { exit 1 }"
 if not errorlevel 1 (
     set "BACKEND=amd"
     set "TORCH_INDEX="
     set "TORCH_EXTRA="
-    set "WHEEL_NOTE=AMD GPU detected -^> DirectML (torch-directml). ROCm is Linux-only; use WSL2 for the ROCm path."
+    set "WHEEL_NOTE=AMD GPU detected -^> DirectML torch-directml. ROCm is Linux-only; use WSL2 for the ROCm path."
     exit /b 0
 )
 
-REM --- CPU fallback ---
 set "BACKEND=cpu"
 set "TORCH_INDEX=https://download.pytorch.org/whl/cpu"
 set "TORCH_EXTRA="
-set "WHEEL_NOTE=No usable GPU detected -^> CPU wheel (training will be very slow)"
+set "WHEEL_NOTE=No usable GPU detected -^> CPU wheel - training will be very slow"
 exit /b 0
 
 :fatal
