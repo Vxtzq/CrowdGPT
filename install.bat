@@ -2,7 +2,8 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 REM ============================================================
-REM CrowdGPT Universal Installer for Windows (v2 - parens fixed)
+REM CrowdGPT Universal Installer for Windows
+REM v3 - uv --seed fix (pip in venv)
 REM ============================================================
 
 set "REPO_URL=https://github.com/Vxtzq/CrowdGPT.git"
@@ -217,14 +218,15 @@ set "START_MENU=%APPDATA%\Microsoft\Windows\Start Menu\Programs"
 set "APP_PY=!APP_DIR!\.venv\Scripts\python.exe"
 
 REM ------------------------------------------------------------
-REM 6. Build venv with Python 3.11 via uv
+REM 6. Build venv with Python 3.11 via uv (SEEDED with pip)
 REM ------------------------------------------------------------
 set "BUILD_VENV=%CD%\.venv"
 
 echo [INFO] Creating build venv with Python 3.11...
 if exist "%BUILD_VENV%" rmdir /s /q "%BUILD_VENV%" >nul 2>nul
 
-uv venv --python 3.11 "%BUILD_VENV%"
+REM --seed forces uv to install pip + setuptools + wheel into the venv.
+uv venv --python 3.11 --seed "%BUILD_VENV%"
 if errorlevel 1 (
     echo [ERROR] Failed to create venv with uv.
     goto :fatal
@@ -236,9 +238,20 @@ if not exist "%BUILD_PY%" (
     goto :fatal
 )
 
+REM Verify pip is present. If uv --seed was somehow ignored, bootstrap it.
+"%BUILD_PY%" -m pip --version >nul 2>nul
+if errorlevel 1 (
+    echo [WARN] pip missing from venv, bootstrapping with ensurepip...
+    "%BUILD_PY%" -m ensurepip --upgrade >nul 2>nul
+    "%BUILD_PY%" -m pip --version >nul 2>nul
+    if errorlevel 1 (
+        echo [ERROR] Could not bootstrap pip into the venv.
+        goto :fatal
+    )
+)
+
 echo [INFO] Upgrading pip...
-"%BUILD_PY%" -m pip install --upgrade pip >nul
-if errorlevel 1 goto :fatal
+"%BUILD_PY%" -m pip install --upgrade pip >nul 2>nul
 
 REM ------------------------------------------------------------
 REM 7. Install PyTorch - GOTO-BASED, NO PARENS IN ECHOES
@@ -347,7 +360,7 @@ if errorlevel 1 echo [WARN] Verification failed, but install may still work.
 if errorlevel 1 echo [WARN] pywebview import failed.
 
 REM ------------------------------------------------------------
-REM 11. Desktop integration - moved into a subroutine
+REM 11. Desktop integration
 REM ------------------------------------------------------------
 if "!INTEGRATE!"=="1" (
     call :do_integration
@@ -381,7 +394,6 @@ if "!LAUNCH!"=="1" (
 
 REM ============================================================
 REM Subroutine: do_integration
-REM At top level here, so parens in echoes are safe.
 REM ============================================================
 :do_integration
 echo.
