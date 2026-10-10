@@ -3,7 +3,7 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 REM ============================================================
 REM CrowdGPT Universal Installer for Windows
-REM v3 - uv --seed fix (pip in venv)
+REM v4 - Fixed PowerShell path rewrite, added AMD warning
 REM ============================================================
 
 set "REPO_URL=https://github.com/Vxtzq/CrowdGPT.git"
@@ -225,7 +225,6 @@ set "BUILD_VENV=%CD%\.venv"
 echo [INFO] Creating build venv with Python 3.11...
 if exist "%BUILD_VENV%" rmdir /s /q "%BUILD_VENV%" >nul 2>nul
 
-REM --seed forces uv to install pip + setuptools + wheel into the venv.
 uv venv --python 3.11 --seed "%BUILD_VENV%"
 if errorlevel 1 (
     echo [ERROR] Failed to create venv with uv.
@@ -238,7 +237,6 @@ if not exist "%BUILD_PY%" (
     goto :fatal
 )
 
-REM Verify pip is present. If uv --seed was somehow ignored, bootstrap it.
 "%BUILD_PY%" -m pip --version >nul 2>nul
 if errorlevel 1 (
     echo [WARN] pip missing from venv, bootstrapping with ensurepip...
@@ -281,7 +279,12 @@ goto :pytorch_cpu
 :pytorch_amd
 echo [INFO] Trying PyTorch DirectML...
 "%BUILD_PY%" -m pip install torch-directml
-if not errorlevel 1 goto :pytorch_done
+if not errorlevel 1 (
+    echo [WARN] torch-directml is based on PyTorch 2.4.x.
+    echo        Newer versions of transformers may disable PyTorch.
+    echo        If the client runs on CPU, consider using the CPU backend instead.
+    goto :pytorch_done
+)
 goto :pytorch_cpu
 
 :pytorch_intel
@@ -424,8 +427,8 @@ if not exist "!APP_PY!" (
 )
 
 echo [INFO] Rewriting venv paths...
-> "%TEMP%\crowdgpt_path.ps1" echo $old = '%CD%\.venv'.Replace('\','\\')
->> "%TEMP%\crowdgpt_path.ps1" echo $new = '!APP_DIR!\.venv'.Replace('\','\\')
+> "%TEMP%\crowdgpt_path.ps1" echo $old = '%CD%\.venv'
+>> "%TEMP%\crowdgpt_path.ps1" echo $new = '!APP_DIR!\.venv'
 >> "%TEMP%\crowdgpt_path.ps1" echo $root = '!APP_DIR!\.venv'
 >> "%TEMP%\crowdgpt_path.ps1" echo Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue ^| ForEach-Object {
 >> "%TEMP%\crowdgpt_path.ps1" echo   if ($_.Length -gt 200000) { return }
