@@ -3,7 +3,7 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 REM ============================================================
 REM CrowdGPT Universal Installer for Windows
-REM v4 - Fixed PowerShell path rewrite, added AMD warning
+REM v5 - ROCm on Windows + DirectML fallback + transformers override
 REM ============================================================
 
 set "REPO_URL=https://github.com/Vxtzq/CrowdGPT.git"
@@ -16,6 +16,8 @@ set "WHEEL_NOTE="
 set "LAUNCH=1"
 set "INTEGRATE=1"
 set "BACKEND_OVERRIDE="
+set "AMD_GPU_NAME="
+set "AMD_ROCM_ELIGIBLE=0"
 
 REM ---------- arg parsing ----------
 :parse_args
@@ -51,7 +53,7 @@ echo.
 echo CrowdGPT installer - Windows
 echo.
 echo Options:
-echo   --backend ^<name^>   Force backend: nvidia ^| amd ^| intel ^| cpu
+echo   --backend ^<name^>   Force backend: nvidia ^| amd ^| amd-rocm ^| intel ^| cpu
 echo   --dir ^<path^>       Directory to clone into. Default: .\CrowdGPT
 echo   --no-launch        Install only, don't launch client.py
 echo   --no-integrate     Skip Start Menu and PATH integration
@@ -182,6 +184,11 @@ if not "!BACKEND_OVERRIDE!"=="" (
         set "TORCH_INDEX="
         set "TORCH_EXTRA="
         set "WHEEL_NOTE=forced: amd/directml"
+    ) else if /I "!BACKEND_OVERRIDE!"=="amd-rocm" (
+        set "BACKEND=amd-rocm"
+        set "TORCH_INDEX="
+        set "TORCH_EXTRA="
+        set "WHEEL_NOTE=forced: amd/rocm"
     ) else if /I "!BACKEND_OVERRIDE!"=="intel" (
         set "BACKEND=intel"
         set "TORCH_INDEX=https://download.pytorch.org/whl/xpu"
@@ -193,7 +200,7 @@ if not "!BACKEND_OVERRIDE!"=="" (
         set "TORCH_EXTRA="
         set "WHEEL_NOTE=forced: cpu"
     ) else (
-        echo [ERROR] --backend must be one of: nvidia ^| amd ^| intel ^| cpu
+        echo [ERROR] --backend must be one of: nvidia ^| amd ^| amd-rocm ^| intel ^| cpu
         goto :fatal
     )
 )
@@ -263,6 +270,7 @@ echo ============================================================
 
 if /I "!BACKEND!"=="nvidia" goto :pytorch_nvidia
 if /I "!BACKEND!"=="amd" goto :pytorch_amd
+if /I "!BACKEND!"=="amd-rocm" goto :pytorch_amd_rocm
 if /I "!BACKEND!"=="intel" goto :pytorch_intel
 goto :pytorch_cpu
 
@@ -279,12 +287,26 @@ goto :pytorch_cpu
 :pytorch_amd
 echo [INFO] Trying PyTorch DirectML...
 "%BUILD_PY%" -m pip install torch-directml
-if not errorlevel 1 (
-    echo [WARN] torch-directml is based on PyTorch 2.4.x.
-    echo        Newer versions of transformers may disable PyTorch.
-    echo        If the client runs on CPU, consider using the CPU backend instead.
-    goto :pytorch_done
-)
+if not errorlevel 1 goto :pytorch_amd_directml_done
+goto :pytorch_amd_rocm
+
+:pytorch_amd_directml_done
+echo [WARN] torch-directml is based on PyTorch 2.4.x.
+echo        Setting TRANSFORMERS_DISABLE_TORCH_CHECK=1 to prevent
+echo        transformers from disabling PyTorch at import time.
+REM ---- Persistent env var for the installed app ----
+set "TRANSFORMERS_DISABLE_TORCH_CHECK=1"
+setx TRANSFORMERS_DISABLE_TORCH_CHECK 1 >nul 2>nul
+goto :pytorch_done
+
+:pytorch_amd_rocm
+echo [INFO] Trying official AMD ROCm PyTorch for Windows...
+echo        Requires Radeon RX 7000/9000 series or Ryzen AI APU.
+"%BUILD_PY%" -m pip install torch torchvision torchaudio --index-url https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/
+if not errorlevel 1 goto :pytorch_done
+echo.
+echo [WARN] ROCm PyTorch install failed. Falling back to CPU PyTorch.
+echo        Update your AMD GPU driver and rerun for ROCm support.
 goto :pytorch_cpu
 
 :pytorch_intel
@@ -460,6 +482,11 @@ REM ---- Add to user PATH ----
 powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\crowdgpt_env.ps1"
 del "%TEMP%\crowdgpt_env.ps1" >nul 2>nul
 
+REM ---- Set TRANSFORMERS_DISABLE_TORCH_CHECK for AMD DirectML users ----
+if /I "!BACKEND!"=="amd" (
+    setx TRANSFORMERS_DISABLE_TORCH_CHECK 1 >nul 2>nul
+)
+
 REM ---- Icon path ----
 set "APP_ICON="
 if exist "!APP_DIR!\docs\logo-app.ico" set "APP_ICON=!APP_DIR!\docs\logo-app.ico"
@@ -480,7 +507,7 @@ REM ---- Add/Remove Programs registry entry ----
 > "%TEMP%\crowdgpt_reg.ps1" echo $k = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\CrowdGPT'
 >> "%TEMP%\crowdgpt_reg.ps1" echo New-Item -Path $k -Force ^| Out-Null
 >> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'DisplayName' -Value 'CrowdGPT'
->> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'DisplayVersion' -Value '0.5'
+>> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'DisplayVersion' -Value '0.6'
 >> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'Publisher' -Value 'CrowdGPT Project'
 >> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'InstallLocation' -Value '!APP_DIR!'
 >> "%TEMP%\crowdgpt_reg.ps1" echo Set-ItemProperty -Path $k -Name 'UninstallString' -Value ('\"' + '!APP_DIR!\uninstall.bat' + '\"')
@@ -496,6 +523,7 @@ REM ---- Uninstaller ----
 >>"!APP_DIR!\uninstall.bat" echo del /q "!START_MENU!\CrowdGPT.lnk" 2^>nul
 >>"!APP_DIR!\uninstall.bat" echo reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\CrowdGPT" /f ^>nul 2^>nul
 >>"!APP_DIR!\uninstall.bat" echo powershell -NoProfile -Command "$p = [Environment]::GetEnvironmentVariable('Path','User'); if ($p) { $p = ($p -split ';' ^| Where-Object { $_ -ne '!BIN_DIR!' }) -join ';'; [Environment]::SetEnvironmentVariable('Path', $p, 'User') }"
+>>"!APP_DIR!\uninstall.bat" echo reg delete "HKCU\Environment" /v TRANSFORMERS_DISABLE_TORCH_CHECK /f ^>nul 2^>nul
 >>"!APP_DIR!\uninstall.bat" echo cd /d "%%TEMP%%"
 >>"!APP_DIR!\uninstall.bat" echo rmdir /s /q "!APP_DIR!"
 >>"!APP_DIR!\uninstall.bat" echo echo Done. Log out and back in for PATH changes to take effect.
@@ -506,6 +534,10 @@ echo [OK] Installed command: crowdgpt
 echo [OK] Start Menu shortcut: CrowdGPT
 echo [OK] Uninstall via: Settings ^> Apps ^> CrowdGPT
 echo.
+if /I "!BACKEND!"=="amd" (
+    echo [NOTE] TRANSFORMERS_DISABLE_TORCH_CHECK=1 has been set persistently.
+    echo        This is required for torch-directml to work with newer transformers.
+)
 echo [NOTE] A new terminal is required for the "crowdgpt" command to work.
 exit /b 0
 
@@ -566,12 +598,26 @@ if not errorlevel 1 (
     exit /b 0
 )
 
-powershell -NoProfile -Command "try { $g = Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty AdapterCompatibility; if ($g -match 'AMD|Advanced Micro Devices') { exit 0 } else { exit 1 } } catch { exit 1 }"
-if not errorlevel 1 (
+REM --- AMD detection: check if ROCm-eligible ---
+powershell -NoProfile -Command "try { $g = Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name; if ($g -match 'AMD|Radeon') { Write-Output $g } else { exit 1 } } catch { exit 1 }" > "%TEMP%\amd_gpu.txt" 2>nul
+set /p AMD_GPU_NAME=<"%TEMP%\amd_gpu.txt"
+del "%TEMP%\amd_gpu.txt" >nul 2>nul
+
+if defined AMD_GPU_NAME (
+    REM Check if it's a Radeon RX 7000/9000 series or Ryzen AI APU
+    echo !AMD_GPU_NAME! | findstr /I "RX 7 RX 9 7900 7800 7700 7600 9070 9060 9000 Ryzen AI" >nul
+    if not errorlevel 1 (
+        set "BACKEND=amd-rocm"
+        set "TORCH_INDEX=https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/"
+        set "TORCH_EXTRA="
+        set "WHEEL_NOTE=AMD !AMD_GPU_NAME! -^> ROCm 6.4.4 wheel for Windows"
+        exit /b 0
+    )
+    REM Not ROCm-eligible, use DirectML
     set "BACKEND=amd"
     set "TORCH_INDEX="
     set "TORCH_EXTRA="
-    set "WHEEL_NOTE=AMD GPU detected -^> DirectML torch-directml. ROCm is Linux-only; use WSL2 for the ROCm path."
+    set "WHEEL_NOTE=AMD !AMD_GPU_NAME! detected -^> DirectML torch-directml. Not in ROCm Windows support list."
     exit /b 0
 )
 
