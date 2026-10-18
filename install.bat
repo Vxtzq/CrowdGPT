@@ -50,6 +50,7 @@ set "INTEGRATE=1"
 set "BACKEND_OVERRIDE="
 set "LOCAL_INSTALLER_DIR=%~dp0"
 set "AMD_GPU_NAME="
+set "ROCM_GFX="
 set "FRESH=1"
 set "PY_VER=3.11"
 
@@ -100,8 +101,8 @@ echo   --no-fresh         Keep existing install (default: wipe and reinstall)
 echo   --help             Show this message
 echo.
 echo Notes:
-echo   - AMD automatic selection uses DirectML.
-echo   - Experimental Windows ROCm: --backend rocm (RX 7800 XT/gfx1101).
+echo   - AMD automatic selection: recognized GPU -> ROCm; otherwise DirectML.
+echo   - Experimental ROCm: --backend rocm (requires recognized AMD GPU).
 echo   - Requires a compatible AMD driver and TheRock PyTorch wheels.
 echo   - Intel Arc uses the XPU wheel. NVIDIA uses CUDA.
 echo.
@@ -130,11 +131,11 @@ if "!INTEGRATE!"=="1" (
 )
 
 REM ------------------------------------------------------------
-REM 0a. For experimental ROCm, validate target before deleting any install.
+REM 0a. Explicit ROCm: validate BEFORE the previous install is removed.
 if /I "!BACKEND_OVERRIDE!"=="rocm" (
-    powershell -NoProfile -Command "$g=Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'Radeon RX 7800 XT' }; if ($g) { exit 0 } else { exit 1 }"
-    if errorlevel 1 (
-        echo [ERROR] This experimental ROCm profile is restricted to RX 7800 XT.
+    call :choose_rocm_gpu
+    if not defined ROCM_GFX (
+        echo [ERROR] No recognized AMD GPU target for Windows ROCm.
         echo [ERROR] Existing installation was not modified.
         exit /b 1
     )
@@ -260,9 +261,9 @@ echo.
 
 if /I "!BACKEND!"=="amd" call :note_amd
 if /I "!BACKEND!"=="rocm" (
-    echo [NOTE] Experimental Windows ROCm via TheRock, gfx1101.
-    echo [NOTE] This is NOT the regular Windows PyTorch ROCm support channel.
-    echo [NOTE] RX 7800 XT training functionality must be tested.
+    echo [NOTE] Experimental Windows ROCm via TheRock, !ROCM_GFX!.
+    echo [NOTE] This is NOT a guarantee that CrowdGPT training will work.
+    echo [NOTE] Failed ROCm install / GPU smoke test switches to DirectML.
     if exist "!LOCAL_INSTALLER_DIR!client_rocm.py" (
         echo [INFO] Applying bundled ROCm client overlay.
         copy /Y "!LOCAL_INSTALLER_DIR!client_rocm.py" "!SRC_DIR!\client.py" >nul
@@ -323,21 +324,39 @@ if /I "!BACKEND!"=="rocm"   goto :pytorch_rocm
 if /I "!BACKEND!"=="intel"  goto :pytorch_intel
 goto :pytorch_cpu
 
-REM TheRock PyTorch Windows gfx1101 (AMD Radeon RX 7800 XT).
+REM Install only the architecture selected by detect_amd_gpu.ps1.
 :pytorch_rocm
 echo [INFO] Installing native Windows PyTorch ROCm through AMD TheRock...
-echo [INFO] ROCm 10.1.0 stable, GPU target gfx1101.
-"!APP_PY!" -m pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ "torch[device-gfx1101]==2.13.0+rocm10.1.0"
+echo [INFO] ROCm 10.1.0 stable, GPU target !ROCM_GFX!.
+"!APP_PY!" -m pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ "torch[device-!ROCM_GFX!]==2.13.0+rocm10.1.0"
 if errorlevel 1 (
-    echo [ERROR] ROCm wheel installation failed. Check Python, drivers, and wheel availability.
-    goto :fatal
+    echo [WARN] ROCm wheel installation failed.
+    goto :rocm_to_directml
 )
-"!APP_PY!" -c "import torch; assert torch.version.hip, 'not a HIP build'; assert torch.cuda.is_available(), 'ROCm GPU unavailable'; print('  ROCm GPU:',torch.cuda.get_device_name(0)); x=torch.ones((256,256),device='cuda'); y=x@x; torch.cuda.synchronize(); print('  ROCm matrix test OK:', float(y[0,0].cpu()))"
+REM Verify HIP runtime, discover discrete Radeon among devices, then launch a kernel.
+"!APP_PY!" -c "import torch; assert torch.version.hip, 'Not a HIP build'; assert torch.cuda.is_available(), 'No HIP devices'; gs=[(i, torch.cuda.get_device_name(i), int(torch.cuda.get_device_properties(i).total_memory)) for i in range(torch.cuda.device_count())]; ds=[g for g in gs if 'radeon rx' in g[1].lower()]; assert ds, 'No discrete Radeon RX visible via HIP'; g=max(ds, key=lambda v:v[2]); torch.cuda.set_device(g[0]); print('  ROCm GPU:',g[1]); x=torch.ones((256,256),device='cuda:'+str(g[0])); y=x@x; torch.cuda.synchronize(g[0]); assert float(y[0,0].cpu())==256.0, 'Wrong matrix result'; print('  ROCm matrix test OK:',float(y[0,0].cpu()))"
 if errorlevel 1 (
-    echo [ERROR] PyTorch ROCm could not run the gfx1101 GPU matrix test.
-    goto :fatal
+    echo [WARN] ROCm runtime test failed on the detected AMD card.
+    goto :rocm_to_directml
 )
 goto :pytorch_done
+
+:rocm_to_directml
+echo.
+echo [WARN] Switching from experimental ROCm to AMD DirectML.
+REM Recreate the isolated venv to remove incompatible/partially installed ROCm.
+if exist "!VENV_DIR!" rmdir /s /q "!VENV_DIR!" >nul 2>nul
+if exist "!VENV_DIR!" (
+    echo [ERROR] Could not remove failed ROCm environment.
+    goto :fatal
+)
+uv venv --python !PY_VER! --seed "!VENV_DIR!"
+if errorlevel 1 goto :fatal
+if not exist "!APP_PY!" goto :fatal
+set "BACKEND=amd"
+set "TORCH_INDEX="
+set "WHEEL_NOTE=ROCm failed; DirectML fallback"
+goto :pytorch_amd
 
 :pytorch_nvidia
 echo [INFO] Trying PyTorch CUDA 12.6 cu126...
@@ -690,7 +709,7 @@ if errorlevel 1 (
     echo [WARN] Could not enumerate DirectML devices.
     exit /b 0
 )
-"!APP_PY!" -c "import torch; import torch_directml as d; assert d.is_available(), 'no DirectML device'; dev = d.device(0); a = torch.randn(64, 64).to(dev); b = torch.randn(64, 64).to(dev); c = (a @ b).sum().cpu().item(); print('  DirectML[0] matmul OK, sum =', round(c, 4))" 2>nul
+"!APP_PY!" -c "import torch; import torch_directml as d; assert d.is_available(), 'no DirectML device'; ds=[(i,str(d.device_name(i))) for i in range(d.device_count())]; rx=[g for g in ds if 'radeon rx' in g[1].lower()]; i=(rx[0] if rx else ds[0])[0]; dev=d.device(i); a=torch.randn(64,64).to(dev); b=torch.randn(64,64).to(dev); c=(a@b).sum().cpu().item(); print('  DirectML['+str(i)+'] matmul OK, sum =',round(c,4))" 2>nul
 if errorlevel 1 echo [WARN] DirectML device present but matmul failed. Some ops may be unsupported.
 exit /b 0
 
@@ -805,9 +824,11 @@ if /I "!BACKEND_OVERRIDE!"=="nvidia" (
     exit /b 0
 )
 if /I "!BACKEND_OVERRIDE!"=="rocm" (
+    if not defined ROCM_GFX call :choose_rocm_gpu
+    if not defined ROCM_GFX exit /b 1
     set "BACKEND=rocm"
     set "TORCH_INDEX=https://stable.repo.amd.com/rocm/whl-next/"
-    set "WHEEL_NOTE=forced: Windows ROCm via TheRock gfx1101"
+    set "WHEEL_NOTE=forced: Windows ROCm via TheRock !ROCM_GFX!"
     exit /b 0
 )
 if /I "!BACKEND_OVERRIDE!"=="amd" (
@@ -830,6 +851,28 @@ if /I "!BACKEND_OVERRIDE!"=="cpu" (
 )
 echo [ERROR] --backend must be one of: nvidia, amd, rocm, intel, cpu
 exit /b 1
+
+REM ============================================================
+REM Subroutine: choose_rocm_gpu
+REM The PowerShell helper emits ONLY a gfx target string for a recognized
+REM discrete AMD card. Integrated GPUs are not promoted automatically.
+REM ============================================================
+:choose_rocm_gpu
+set "ROCM_GFX="
+if not exist "!LOCAL_INSTALLER_DIR!detect_amd_gpu.ps1" (
+    echo [WARN] detect_amd_gpu.ps1 missing; AMD will use DirectML.
+    exit /b 0
+)
+for /f "usebackq delims=" %%G in (`powershell -NoProfile -ExecutionPolicy Bypass -File "!LOCAL_INSTALLER_DIR!detect_amd_gpu.ps1" 2^>nul`) do (
+    if not defined ROCM_GFX set "ROCM_GFX=%%G"
+)
+REM Defense in depth: never use unexpected text in pip extras.
+set "ROCM_GFX_OK="
+for %%G in (gfx1200 gfx1201 gfx1100 gfx1101 gfx1102 gfx1030 gfx1031 gfx1032 gfx1034 gfx1010) do (
+    if /I "!ROCM_GFX!"=="%%G" set "ROCM_GFX_OK=1"
+)
+if not defined ROCM_GFX_OK set "ROCM_GFX="
+exit /b 0
 
 REM ============================================================
 REM Subroutine: detect_backend
@@ -892,7 +935,7 @@ if not errorlevel 1 (
     exit /b 0
 )
 
-REM --- AMD (DirectML on Windows) ---
+REM --- AMD (auto ROCm if mapped, DirectML otherwise) ---
 set "AMD_GPU_NAME="
 set "AMD_GPU_TMP=%TEMP%\crowdgpt-amd-%RANDOM%.txt"
 powershell -NoProfile -Command "((Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'AMD|Radeon' } | Select-Object -ExpandProperty Name) -replace '\s+', ' ') -join ' / '" > "%AMD_GPU_TMP%" 2>nul
@@ -904,6 +947,16 @@ if exist "%AMD_GPU_TMP%" (
 )
 
 if not defined AMD_GPU_NAME goto :detect_cpu
+
+REM Only a known discrete AMD model is eligible for the experimental ROCm build.
+REM The source names may also include an integrated AMD GPU.
+call :choose_rocm_gpu
+if defined ROCM_GFX (
+    set "BACKEND=rocm"
+    set "TORCH_INDEX=https://stable.repo.amd.com/rocm/whl-next/"
+    set "WHEEL_NOTE=AMD dGPU !ROCM_GFX! -> ROCm TheRock (experimental)"
+    exit /b 0
+)
 
 set "BACKEND=amd"
 set "TORCH_INDEX="
