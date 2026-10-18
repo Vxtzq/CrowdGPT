@@ -745,14 +745,14 @@ def get_available_backends():
 
 def get_best_default_backend():
     avail = get_available_backends()
-    for bk in ['cuda', 'rocm', 'mps', 'xpu', 'cpu']:
+    for bk in ['cuda', 'rocm', 'mps', 'xpu', 'directml', 'cpu']:
         if avail.get(bk):
             return bk
     return 'cpu'
 
 
 def _pick_rocm_device():
-    """Prefer the discrete RX 7800 XT, not an integrated AMD GPU."""
+    """Prefer a discrete Radeon RX, not an integrated AMD graphics device."""
     candidates = []
     for idx in range(torch.cuda.device_count()):
         try:
@@ -763,12 +763,25 @@ def _pick_rocm_device():
             log.warning(f"[ROCM-FIX] GPU {idx} unavailable: {exc}")
     if not candidates:
         raise RuntimeError("ROCm reports no usable GPU")
-    preferred = [g for g in candidates if "7800" in g[1].lower() and "xt" in g[1].lower()]
-    selected = preferred[0] if preferred else max(candidates, key=lambda g: g[2])
-    idx, name, total = selected
+    preferred = [g for g in candidates if "radeon rx" in g[1].lower()]
+    idx, name, total = max(preferred or candidates, key=lambda g: g[2])
     torch.cuda.set_device(idx)
     log.info(f"[ROCM-FIX] Selected cuda:{idx}: {name} ({total / 1024**3:.1f} GB VRAM)")
     return torch.device(f"cuda:{idx}")
+
+
+def _pick_directml_device(dml):
+    """Prefer a discrete Radeon RX; retain device(0) if enumeration is unavailable."""
+    try:
+        devices = [(i, str(dml.device_name(i))) for i in range(dml.device_count())]
+        if devices:
+            preferred = [g for g in devices if "radeon rx" in g[1].lower()]
+            idx, name = (preferred or devices)[0]
+            log.info(f"[AMD-AUTO] DirectML device {idx}: {name}")
+            return dml.device(idx)
+    except Exception as exc:
+        log.warning(f"[AMD-AUTO] DirectML enumeration failed: {exc}; using device 0")
+    return dml.device(0)
 
 
 def detect_training_backend(force=None):
@@ -776,7 +789,7 @@ def detect_training_backend(force=None):
         n = force.lower()
         if n == "cpu":
             return torch.device('cpu'), "CPU"
-        if n == "cuda" and torch.cuda.is_available():
+        if n == "cuda" and torch.cuda.is_available() and not getattr(torch.version, 'hip', None):
             return torch.device('cuda'), "CUDA"
         if n == "rocm" and hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available():
             return _pick_rocm_device(), "ROCM"
@@ -793,7 +806,7 @@ def detect_training_backend(force=None):
             try:
                 import torch_directml
                 if torch_directml.is_available():
-                    return torch_directml.device(0), "DIRECTML"
+                    return _pick_directml_device(torch_directml), "DIRECTML"
             except ImportError:
                 pass
     if torch.cuda.is_available() and not (hasattr(torch.version, 'hip') and torch.version.hip):
@@ -811,7 +824,7 @@ def detect_training_backend(force=None):
     try:
         import torch_directml
         if torch_directml.is_available():
-            return torch_directml.device(0), "DIRECTML"
+            return _pick_directml_device(torch_directml), "DIRECTML"
     except ImportError:
         pass
     return torch.device('cpu'), "CPU"
@@ -993,6 +1006,46 @@ def _plan_gpu_layers(device, backend_name, budget_gb, bs=1, sl=MAX_SEQ_LEN,
              f"reserve={ALLOCATOR_RESERVE_GB:.2f}GB per_blk={per_block_total/1024**2:.1f}MB "
              f"ckpt={use_ckpt} bs={bs} u8={u8} → {n}/{N_LAYERS} blocks on GPU")
     return n
+
+
+def _plan_placement(device, backend_name, budget_gb, bs=1, sl=MAX_SEQ_LEN, u8=False):
+    """Plan GPU-resident weights for the streamed-block SotaGPT implementation.
+
+    Return (head_on_gpu, resident_block_count). CPU-resident weights are streamed
+    by SotaGPT when needed. Memory estimates are conservative approximations;
+    the existing DegradeLadder handles actual allocation failures.
+    """
+    if device is None or device.type == "cpu":
+        return False, 0
+
+    state_bytes = 2 if u8 else 8
+    bytes_per_param = 4 + 4 + state_bytes  # fp32 master, grads, optimizer state
+    reserve = int(ALLOCATOR_RESERVE_GB * 1024**3)
+    # Loss-chunk logits and basic workspace need room independently of the model.
+    loss_workspace = bs * min(sl, LOSS_CHUNK) * VOCAB_SIZE * 4
+    usable = max(0, int(max(0.0, budget_gb) * 1024**3)
+                 - reserve - loss_workspace)
+    # With gradient checkpointing, activation cost is approximated per block.
+    block_bytes = (_bytes_per_block_params() * bytes_per_param
+                   + bs * sl * DIM * 4)
+    head_bytes = VOCAB_SIZE * DIM * bytes_per_param  # tied embedding/lm_head
+
+    without_head = min(N_LAYERS, usable // max(1, block_bytes))
+    with_head = min(N_LAYERS, max(0, usable - head_bytes) // max(1, block_bytes))
+
+    if backend_name == "DIRECTML":
+        # Keep the old, cautious DirectML policy. The head streams from CPU.
+        head_on_gpu, resident_blocks = False, min(2, without_head)
+    elif with_head >= 1:
+        # Prefer the large tied head on GPU, to avoid transferring it each step.
+        head_on_gpu, resident_blocks = True, with_head
+    else:
+        head_on_gpu, resident_blocks = False, without_head
+
+    log.info(f"[PLACEMENT] {backend_name}: budget={budget_gb:.2f}GB "
+             f"head={'GPU' if head_on_gpu else 'CPU'} "
+             f"resident_blocks={resident_blocks}/{N_LAYERS} bs={bs}")
+    return bool(head_on_gpu), int(resident_blocks)
 
 
 def precompute_freqs(dim, sl, dev):
@@ -2950,7 +3003,9 @@ class Api:
                 saved = json.loads(self._backend_file.read_text()).get("backend")
         except Exception:
             saved = None
-        self.selected_backend = saved or get_best_default_backend()
+        available = get_available_backends()
+        self.selected_backend = (saved if saved and available.get(saved, False)
+                                 else get_best_default_backend())
         log.info(f"[CLIENT] Selected backend: {self.selected_backend}")
 
     def emit(self, ev, data):
