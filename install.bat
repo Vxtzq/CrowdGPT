@@ -264,15 +264,10 @@ if /I "!BACKEND!"=="rocm" (
     echo [NOTE] Experimental Windows ROCm via TheRock, !ROCM_GFX!.
     echo [NOTE] This is NOT a guarantee that CrowdGPT training will work.
     echo [NOTE] Failed ROCm install / GPU smoke test switches to DirectML.
-    REM Never overwrite a newer repository client.py with an old local overlay by default.
-    if /I "!CROWDGPT_USE_LEGACY_ROCM_OVERLAY!"=="1" (
-        if exist "!LOCAL_INSTALLER_DIR!client_rocm.py" (
-            echo [WARN] Applying explicitly enabled legacy client_rocm.py overlay.
-            copy /Y "!LOCAL_INSTALLER_DIR!client_rocm.py" "!SRC_DIR!\client.py" >nul
-            if errorlevel 1 goto :fatal
-        ) else (
-            echo [INFO] Legacy overlay requested but client_rocm.py was not found.
-        )
+    if exist "!LOCAL_INSTALLER_DIR!client_rocm.py" (
+        echo [INFO] Applying bundled ROCm client overlay.
+        copy /Y "!LOCAL_INSTALLER_DIR!client_rocm.py" "!SRC_DIR!\client.py" >nul
+        if errorlevel 1 goto :fatal
     ) else (
         echo [INFO] Using repository client.py; legacy ROCm overlay disabled by default.
     )
@@ -349,8 +344,6 @@ goto :pytorch_done
 :rocm_to_directml
 echo.
 echo [WARN] Switching from experimental ROCm to AMD DirectML.
-echo [WARN] The final Python environment will not be a HIP build, so ROCm will appear disabled in the GUI.
-echo [WARN] See the ROCm wheel-install or GPU smoke-test error above to learn why ROCm was rejected.
 REM Recreate the isolated venv to remove incompatible/partially installed ROCm.
 if exist "!VENV_DIR!" rmdir /s /q "!VENV_DIR!" >nul 2>nul
 if exist "!VENV_DIR!" (

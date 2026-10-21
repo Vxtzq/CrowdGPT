@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# CrowdGPT universal installer — Linux + macOS  (v8)
+# CrowdGPT universal installer — Linux + macOS  (v9)
 #
 #  - venv created at FINAL path (no relocation, no rewrites)
 #  - AMD ROCm: torch version detected, transformers pinned
@@ -11,6 +11,24 @@
 #  - Python >= 3.10 enforced
 #  - v8: verify step no longer dies from `set -e` before
 #        printing the actionable error message
+#  - v9: repo is ALWAYS synced to origin/<branch> (reset --hard)
+#        before install — stale local checkouts can no longer be
+#        silently installed (the v8 `pull --ff-only || warn`
+#        fall-through was the culprit behind "0.5 installed
+#        from the latest installer").
+#  - v9: branch is honoured even inside an existing checkout, and
+#        falls back to origin's default branch if it's gone.
+#  - v9: origin URL is enforced back to $REPO_URL (defends against
+#        a retargeted clone).
+#  - v9: installed tree is stamped with commit + timestamp at
+#        $APP_DIR/.installed-version, and its commit is printed
+#        in the summary — the installed copy is auditable.
+#  - v9: icons — SVG variants tried first with aspect preserved;
+#        monochrome fallbacks are announced; SVGs go to
+#        hicolor/scalable/apps (not hicolor/256x256); failed
+#        conversions warn instead of silently leaving no icon.
+#  - v9: sanity-check that the installed client.py matches source
+#        after copy_tree (guards against a botched rsync).
 # ============================================================
 set -Eeuo pipefail
 
@@ -60,7 +78,7 @@ done
 
 echo
 echo "============================================================"
-echo "                 CrowdGPT Installer  (v8)"
+echo "                 CrowdGPT Installer  (v9)"
 echo "============================================================"
 echo
 
@@ -122,9 +140,12 @@ copy_tree() {
             --exclude='*.pyc' \
             --exclude='checkpoints' \
             --exclude='pending_uploads' \
+            --exclude='.installed-version' \
             "$src"/ "$dst"/
     else
-        find "$dst" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} + 2>/dev/null || true
+        find "$dst" -mindepth 1 -maxdepth 1 \
+            ! -name '.git' ! -name '.venv' ! -name '.installed-version' \
+            -exec rm -rf {} + 2>/dev/null || true
         ( cd "$src" && tar cf - \
             --exclude='.git' \
             --exclude='.venv' \
@@ -132,6 +153,7 @@ copy_tree() {
             --exclude='*.pyc' \
             --exclude='checkpoints' \
             --exclude='pending_uploads' \
+            --exclude='.installed-version' \
             . ) | ( cd "$dst" && tar xf - )
     fi
 }
@@ -168,21 +190,68 @@ fi
 ok "Git: $(git --version)"
 
 # ============================================================
-# 3. Clone / update repo
+# 3. Clone / update repo  — ALWAYS sync to origin/<branch>
 # ============================================================
 if [[ -f "client.py" && -d ".git" ]]; then
     REPO_DIR="."
 elif [[ -d "$REPO_DIR/.git" ]]; then
-    log "Updating existing checkout..."
-    git -C "$REPO_DIR" pull --ff-only || warn "git pull failed; continuing."
+    :
 else
     [[ -e "$REPO_DIR" ]] && die "$REPO_DIR exists but is not a git repo."
     log "Cloning CrowdGPT..."
     git clone "$REPO_URL" "$REPO_DIR"
 fi
 cd "$REPO_DIR"
-[[ -f client.py ]] || die "client.py not found after checkout."
+git rev-parse --git-dir >/dev/null 2>&1 || die "$PWD is not a git repository."
+
+# Enforce origin URL — defends against a clone that was retargeted.
+if git remote get-url origin >/dev/null 2>&1; then
+    git remote set-url origin "$REPO_URL"
+else
+    git remote add origin "$REPO_URL"
+fi
+
+# Honour the current branch; if we're detached or the branch no longer
+# exists upstream, fall back to origin's default branch.
+BRANCH="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+if [[ -z "$BRANCH" ]]; then
+    BRANCH="$(git ls-remote --symref origin HEAD 2>/dev/null \
+              | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2; exit}')"
+    [[ -n "$BRANCH" ]] || BRANCH="main"
+fi
+
+log "Fetching latest from $REPO_URL (branch: $BRANCH)..."
+git fetch --all --prune --tags \
+    || die "git fetch failed. Check network / credentials and rerun."
+
+if ! git rev-parse --verify --quiet "origin/$BRANCH" >/dev/null; then
+    DEFAULT_BRANCH="$(git ls-remote --symref origin HEAD 2>/dev/null \
+                     | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2; exit}')"
+    if [[ -n "$DEFAULT_BRANCH" ]] && git rev-parse --verify --quiet "origin/$DEFAULT_BRANCH" >/dev/null; then
+        warn "Branch '$BRANCH' not found on origin; using default '$DEFAULT_BRANCH'."
+        BRANCH="$DEFAULT_BRANCH"
+    else
+        die "No usable upstream branch found on $REPO_URL.
+    Heads available:
+$(git ls-remote --heads origin | awk '{print "      " $2}')"
+    fi
+fi
+
+if ! git diff --quiet || ! git diff --cached --quiet; then
+    warn "Discarding local modifications in $PWD to sync to origin/$BRANCH:"
+    git diff --stat | sed 's/^/      /' >&2 || true
+fi
+
+git reset --hard "origin/$BRANCH" \
+    || die "Could not reset $PWD to origin/$BRANCH.
+    If untracked files are in the way, run:
+        git -C '$PWD' status
+        git -C '$PWD' clean -fd        # remove untracked files
+    Then rerun this installer."
+
+[[ -f client.py ]] || die "client.py not found after sync."
 SRC_DIR="$PWD"
+ok "Synced to $(git log -1 --format='%h %ci %s')"
 
 # ============================================================
 # 4. Hardware detection
@@ -315,6 +384,7 @@ else
     BIN_DIR="$HOME/.local/bin"
     DESKTOP_DIR="$HOME/.local/share/applications"
     ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
+    ICON_DIR_SCALABLE="$HOME/.local/share/icons/hicolor/scalable/apps"
 fi
 
 if [[ "$INTEGRATE" -eq 1 ]]; then
@@ -460,8 +530,6 @@ except Exception:
     pass
 PYEOF
 
-# >>> FIX v8: use `if ! ...` so `set -e` doesn't exit before the
-#             actionable error message is printed.
 if ! "$APP_PY" - <<'PYEOF'
 import transformers, torch
 assert transformers.utils.is_torch_available(), (
@@ -486,13 +554,31 @@ if [[ "$INTEGRATE" -eq 1 ]]; then
     if [[ "$OS" == "Darwin" ]]; then
         mkdir -p "$APPS_DIR"
     else
-        mkdir -p "$BIN_DIR" "$DESKTOP_DIR" "$ICON_DIR"
+        mkdir -p "$BIN_DIR" "$DESKTOP_DIR" "$ICON_DIR" "$ICON_DIR_SCALABLE"
     fi
 
     log "Copying app files (venv excluded; already in place)..."
     copy_tree "$SRC_DIR" "$APP_DIR"
 
     [[ -x "$APP_PY" ]] || die "Installed venv Python missing at $APP_PY"
+
+    # Sanity: the installed copy must match the source we synced.
+    if [[ -f "$SRC_DIR/client.py" ]] && ! cmp -s "$SRC_DIR/client.py" "$APP_DIR/client.py"; then
+        die "Installed client.py does not match source — copy_tree failed.
+    Source:    $SRC_DIR/client.py
+    Installed: $APP_DIR/client.py
+    Delete $APP_DIR and rerun this installer."
+    fi
+
+    # Stamp provenance so the installed tree is auditable forever.
+    {
+        echo "commit: $(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+        echo "branch: $(git -C "$SRC_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+        echo "date:   $(git -C "$SRC_DIR" log -1 --format=%cI 2>/dev/null || echo unknown)"
+        echo "subject:$(git -C "$SRC_DIR" log -1 --format=' %s' 2>/dev/null || echo ' unknown')"
+        echo "built:  $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    } > "$APP_DIR/.installed-version"
+    ok "Installed from $(git -C "$SRC_DIR" log -1 --format='%h %ci %s' 2>/dev/null || echo 'unknown commit')"
 
     # ---------- Linux ----------
     if [[ "$OS" != "Darwin" ]]; then
@@ -502,21 +588,66 @@ exec "$APP_PY" "$APP_DIR/client.py" "\$@"
 EOF
         chmod +x "$BIN_DIR/crowdgpt"
 
+        # ---- Icon ----
+        # Prefer the full-colour app icon; only fall back to the
+        # monochrome logo-*.svg variants if the app icon is missing,
+        # and announce it when that happens.
         ICON_SRC=""
-        for c in "$APP_DIR/docs/logo-app.svg" "$APP_DIR/docs/logo-black.svg" "$APP_DIR/docs/logo-white.svg"; do
+        ICON_NOTE=""
+        for c in "$APP_DIR/docs/logo-app.svg" "$APP_DIR/docs/logo-app.png"; do
             [[ -f "$c" ]] && ICON_SRC="$c" && break
         done
+        if [[ -z "$ICON_SRC" ]]; then
+            for c in "$APP_DIR/docs/logo-black.svg" "$APP_DIR/docs/logo-white.svg"; do
+                if [[ -f "$c" ]]; then
+                    ICON_SRC="$c"
+                    ICON_NOTE=" (monochrome fallback: $(basename "$c") — will look wrong on some backgrounds)"
+                    warn "logo-app.* not found; using $(basename "$c"). Provide docs/logo-app.svg for a proper icon."
+                    break
+                fi
+            done
+        fi
 
         ICON_NAME="crowdgpt"
+        ICON_PNG="$ICON_DIR/crowdgpt.png"
+        ICON_SVG_SCALABLE="$ICON_DIR_SCALABLE/crowdgpt.svg"
+
+        # Never leave a previous install's icon behind.
+        rm -f "$ICON_PNG" "$ICON_SVG_SCALABLE" "$ICON_DIR/crowdgpt.svg"
+
         if [[ -n "$ICON_SRC" ]]; then
+            # rsvg-convert, preserving aspect (-a).
             if command -v rsvg-convert >/dev/null 2>&1; then
-                rsvg-convert -w 256 -h 256 "$ICON_SRC" -o "$ICON_DIR/crowdgpt.png" 2>/dev/null || true
-            elif "$APP_PY" -c "import cairosvg" 2>/dev/null; then
-                "$APP_PY" -c "import cairosvg; cairosvg.svg2png(url='$ICON_SRC', write_to='$ICON_DIR/crowdgpt.png', output_width=256, output_height=256)" 2>/dev/null || true
+                if rsvg-convert -a -w 256 -h 256 "$ICON_SRC" -o "$ICON_PNG" 2>/dev/null \
+                   && [[ -s "$ICON_PNG" ]]; then
+                    ok "Icon: $(basename "$ICON_SRC") -> $ICON_PNG${ICON_NOTE}"
+                else
+                    warn "rsvg-convert failed on $ICON_SRC; trying cairosvg..."
+                fi
             fi
-            if [[ ! -f "$ICON_DIR/crowdgpt.png" ]]; then
-                cp "$ICON_SRC" "$ICON_DIR/crowdgpt.svg" 2>/dev/null || true
+            # cairosvg, preserving aspect (only output_width given).
+            if [[ ! -s "$ICON_PNG" ]] && "$APP_PY" -c "import cairosvg" >/dev/null 2>&1; then
+                if "$APP_PY" - <<PYEOF 2>/dev/null
+import cairosvg
+cairosvg.svg2png(url=r"$ICON_SRC", write_to=r"$ICON_PNG", output_width=256)
+PYEOF
+                then
+                    [[ -s "$ICON_PNG" ]] && ok "Icon: $(basename "$ICON_SRC") -> $ICON_PNG${ICON_NOTE}"
+                else
+                    warn "cairosvg failed on $ICON_SRC; falling back to SVG copy."
+                fi
             fi
+            # SVG fallback belongs in hicolor/scalable/apps, NOT 256x256.
+            if [[ ! -s "$ICON_PNG" ]]; then
+                if cp "$ICON_SRC" "$ICON_SVG_SCALABLE" 2>/dev/null && [[ -s "$ICON_SVG_SCALABLE" ]]; then
+                    ok "Icon: $(basename "$ICON_SRC") -> $ICON_SVG_SCALABLE (SVG)${ICON_NOTE}"
+                else
+                    warn "Could not install icon from $ICON_SRC — desktop entry will show a generic icon."
+                fi
+            fi
+        else
+            warn "No icon found under $APP_DIR/docs/ — the desktop entry will show a generic icon."
+            warn "Expected one of: logo-app.svg, logo-app.png (or the monochrome logo-*.svg variants)."
         fi
 
         cat > "$DESKTOP_DIR/crowdgpt.desktop" <<EOF
@@ -548,8 +679,9 @@ echo "Uninstalling CrowdGPT..."
 rm -rf "$APP_DIR"
 rm -f "$BIN_DIR/crowdgpt" "$BIN_DIR/crowdgpt-uninstall"
 rm -f "$DESKTOP_DIR/crowdgpt.desktop"
-rm -f "$ICON_DIR/crowdgpt.png" "$ICON_DIR/crowdgpt.svg"
+rm -f "$ICON_DIR/crowdgpt.png" "$ICON_DIR/crowdgpt.svg" "$ICON_DIR_SCALABLE/crowdgpt.svg"
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
+command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" >/dev/null 2>&1 || true
 echo "Done."
 EOF
         chmod +x "$BIN_DIR/crowdgpt-uninstall"
@@ -593,8 +725,8 @@ EOF
     <key>CFBundleName</key><string>CrowdGPT</string>
     <key>CFBundleDisplayName</key><string>CrowdGPT</string>
     <key>CFBundleIdentifier</key><string>net.crowdgpt.client</string>
-    <key>CFBundleVersion</key><string>0.8.0</string>
-    <key>CFBundleShortVersionString</key><string>0.8</string>
+    <key>CFBundleVersion</key><string>0.9.0</string>
+    <key>CFBundleShortVersionString</key><string>0.9</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleExecutable</key><string>launcher</string>
     <key>CFBundleIconFile</key><string>icon.icns</string>
@@ -611,19 +743,52 @@ exec "$APP_PY" "$APP_DIR/client.py"
 EOF
         chmod +x "$APP_BUNDLE/Contents/MacOS/launcher"
 
+        # ---- Icon ----
         ICON_SRC=""
-        for c in "$APP_DIR/docs/logo-app.svg" "$APP_DIR/docs/logo-black.svg"; do
+        ICON_NOTE=""
+        for c in "$APP_DIR/docs/logo-app.svg" "$APP_DIR/docs/logo-app.png"; do
             [[ -f "$c" ]] && ICON_SRC="$c" && break
         done
-        if [[ -n "$ICON_SRC" ]] && command -v rsvg-convert >/dev/null 2>&1; then
-            TMP_ICONSET="$(mktemp -d)/crowdgpt.iconset"
-            mkdir -p "$TMP_ICONSET"
-            for size in 16 32 64 128 256 512; do
-                rsvg-convert -w $size -h $size "$ICON_SRC" -o "$TMP_ICONSET/icon_${size}x${size}.png" 2>/dev/null || true
-                rsvg-convert -w $((size*2)) -h $((size*2)) "$ICON_SRC" -o "$TMP_ICONSET/icon_${size}x${size}@2x.png" 2>/dev/null || true
+        if [[ -z "$ICON_SRC" ]]; then
+            for c in "$APP_DIR/docs/logo-black.svg" "$APP_DIR/docs/logo-white.svg"; do
+                if [[ -f "$c" ]]; then
+                    ICON_SRC="$c"
+                    ICON_NOTE=" (monochrome fallback: $(basename "$c"))"
+                    warn "logo-app.* not found; using $(basename "$c") for the .app icon."
+                    break
+                fi
             done
-            iconutil -c icns "$TMP_ICONSET" -o "$APP_BUNDLE/Contents/Resources/icon.icns" 2>/dev/null || true
-            rm -rf "$TMP_ICONSET"
+        fi
+
+        if [[ -n "$ICON_SRC" ]]; then
+            if command -v rsvg-convert >/dev/null 2>&1; then
+                TMP_ICONSET="$(mktemp -d)/crowdgpt.iconset"
+                mkdir -p "$TMP_ICONSET"
+                ICON_OK=1
+                # Standard macOS iconset sizes: 16 32 128 256 512 (each @1x/@2x).
+                for size in 16 32 128 256 512; do
+                    if ! rsvg-convert -a -w "$size" -h "$size" "$ICON_SRC" \
+                            -o "$TMP_ICONSET/icon_${size}x${size}.png" 2>/dev/null; then
+                        ICON_OK=0; break
+                    fi
+                    if ! rsvg-convert -a -w "$((size*2))" -h "$((size*2))" "$ICON_SRC" \
+                            -o "$TMP_ICONSET/icon_${size}x${size}@2x.png" 2>/dev/null; then
+                        ICON_OK=0; break
+                    fi
+                done
+                if [[ "$ICON_OK" -eq 1 ]] && \
+                   iconutil -c icns "$TMP_ICONSET" -o "$APP_BUNDLE/Contents/Resources/icon.icns" 2>/dev/null; then
+                    ok "Icon: $(basename "$ICON_SRC") -> icon.icns${ICON_NOTE}"
+                else
+                    warn "Could not build icon.icns from $ICON_SRC — the .app will use the default icon."
+                fi
+                rm -rf "$TMP_ICONSET"
+            else
+                warn "rsvg-convert not installed — cannot generate icon.icns from $ICON_SRC."
+                warn "Install with: brew install librsvg"
+            fi
+        else
+            warn "No icon found under $APP_DIR/docs/ — the .app will use the default icon."
         fi
 
         if [[ -w "$BIN_DIR" ]]; then
@@ -665,6 +830,8 @@ EOF
     echo "============================================================"
     echo "  Backend: $BACKEND"
     echo "  Torch:   $TORCH_VER"
+    echo "  Source:  $(git -C "$SRC_DIR" log -1 --format='%h %ci %s' 2>/dev/null || echo 'unknown')"
+    echo "  Stamp:   $APP_DIR/.installed-version"
     echo
     echo "  Launch from terminal:  crowdgpt"
     if [[ "$OS" == "Darwin" ]]; then

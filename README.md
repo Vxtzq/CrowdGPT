@@ -55,7 +55,7 @@ curl -sSL https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/install.sh | bas
 For Windows
 
 ```
-iwr -useb https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/install.bat -OutFile install.bat; .\install.bat
+cmd /c "curl.exe -fsSL -o install.bat https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/install.bat && install.bat"
 ```
 
 ## ⏳ Legacy installation (deprecated)

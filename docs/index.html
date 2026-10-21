@@ -2186,11 +2186,11 @@ footer {
                 <p data-i18n="home.feature.privacy.body">Your GPU trains on 10MB data chunks streamed from the public CrowdGPT dataset on HuggingFace; a dataset anyone can inspect or contribute to. No personal files, browser history, or local data are ever accessed or transmitted.</p>
               </div>
             </div>
-            <div class="feature-item">
+                        <div class="feature-item">
               <div class="feature-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24">
                   <path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.78 10-10 10Z"/>
-                  <path d="M2 21c0-3 1.85-5.36 5.08-6"/>
+                  <path d="M2 21 C 4 15, 8.5 12, 13 10"/>
                 </svg>
               </div>
               <div>
@@ -2297,7 +2297,7 @@ footer {
             <button class="terminal-copy" onclick="copyTerminal(this)">copy</button>
           </div>
           <div class="terminal-body">
-            <span class="line"><span class="t-prompt">PS&gt; </span><span class="t-cmd">iwr -useb https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/install.bat -OutFile install.bat; .\install.bat</span></span>
+            <span class="line"><span class="t-prompt">PS&gt; </span><span class="t-cmd">cmd /c "curl.exe -fsSL -o install.bat https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/install.bat && install.bat"</span></span>
           </div>
         </div>
       </div>
