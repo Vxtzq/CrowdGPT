@@ -269,7 +269,7 @@ if /I "!BACKEND!"=="rocm" (
         copy /Y "!LOCAL_INSTALLER_DIR!client_rocm.py" "!SRC_DIR!\client.py" >nul
         if errorlevel 1 goto :fatal
     ) else (
-        echo [INFO] No client_rocm.py supplied; using repository client.py.
+        echo [INFO] Using repository client.py; legacy ROCm overlay disabled by default.
     )
 )
 
@@ -517,7 +517,7 @@ if errorlevel 1 (
 
 if /I "!BACKEND!"=="amd" call :verify_directml
 if /I "!BACKEND!"=="rocm" (
-    "!APP_PY!" -c "import torch; assert torch.version.hip and torch.cuda.is_available(), 'ROCm unavailable after requirements'; print('  HIP:',torch.version.hip); print('  Device:',torch.cuda.get_device_name(0))"
+    "!APP_PY!" -c "import torch; assert torch.version.hip and torch.cuda.is_available(), 'ROCm unavailable after requirements'; gs=[(i,torch.cuda.get_device_name(i),int(torch.cuda.get_device_properties(i).total_memory)) for i in range(torch.cuda.device_count())]; ds=[g for g in gs if 'radeon rx' in g[1].lower()]; g=max(ds or gs,key=lambda x:x[2]); print('  HIP:',torch.version.hip); print('  ROCm GPU:',g[1]); assert ds, 'No discrete Radeon RX visible after requirements'"
     if errorlevel 1 (
         echo [ERROR] ROCm unavailable after dependencies installation.
         goto :fatal
