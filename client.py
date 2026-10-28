@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v1.8
+CrowdGPT GUI Client v1.9
 
 v1.8 changes:
   - Engram training ENABLED by default (CROWDGPT_ENGRAM=0 to disable)
@@ -46,7 +46,7 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='repla
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
 
-CLIENT_VERSION = "1.8"
+CLIENT_VERSION = "1.9"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
