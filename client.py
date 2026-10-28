@@ -2,13 +2,14 @@
 """
 CrowdGPT GUI Client v1.9
 
-v1.8 changes:
+v1.9 changes:
   - Engram training ENABLED by default (CROWDGPT_ENGRAM=0 to disable)
   - Engram wired into forward pass (x = x + self.engram(idx))
   - Reports X-Client-Autocast and X-Client-Optim to the coordinator
   - Honors targetAutocast=fp32 from the pool (disables AMP)
   - CPU batch-size capped at 2 (prevents "bs=128 on CPU" advertisement)
   - Reports X-Client-Engram for forward-compat server matching
+  - Fix a freeze on certain computers on startup
 """
 
 import os
