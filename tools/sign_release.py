@@ -67,8 +67,19 @@ def _load(path):
 
 
 def _embedded_keys(src):
-    return re.findall(r'^\s*"([A-Za-z0-9+/=]{44})",', src[src.index("UPDATE_PUBKEYS"):src.index("# --- minimal pure-Python")], re.M)
-
+    try:
+        start = src.index("UPDATE_PUBKEYS")
+    except ValueError:
+        sys.exit("ERROR: 'UPDATE_PUBKEYS' marker not found in client.py — "
+                 "update tools/sign_release.py to match the client.")
+    try:
+        lb = src.index("[", start)
+        rb = src.index("]", lb)
+    except ValueError:
+        sys.exit("ERROR: could not find UPDATE_PUBKEYS list boundaries in client.py")
+    body = src[lb + 1:rb]
+    # tolerate a missing trailing comma on the last entry
+    return set(re.findall(r'"([A-Za-z0-9+/=]{44})",?', body))
 
 def cmd_release(a):
     code = _client_bytes()
