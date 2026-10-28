@@ -27,12 +27,12 @@
   <strong>The best 0$ AI.</strong>
 </p>
 
-# ⚠️ CrowdGPT v1.8 Changelog ⚠️
+# 🆕 CrowdGPT v1.9 Changelog 🆕
 - Revert back from broken weights (7 steps back on server)
 - UI fixes
 - client.py cryptographical signing
 - Engram training enabled by default
-- Tiered matchmaking (precision & optimizer aware)
+- Fix freeze at startup on certain devices
 
 ## What is CrowdGPT?
 
