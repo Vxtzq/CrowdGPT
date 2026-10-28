@@ -1232,6 +1232,68 @@ def _load_safetensors_flat(path, expected_numel, label="weights"):
     if t.numel() != int(expected_numel): raise RuntimeError(f"{label} size mismatch: got {t.numel()}, expected {expected_numel}.")
     return t
 
+def fetch_task(srv, h, prec, se, emit):
+    while not se.is_set():
+        try:
+            emit('status', 'downloading')
+            emit('overlay_show', {'title_key': 'dl_weights', 'indeterminate': False})
+            req_headers = {**(h or {}), **_hardware_headers()}
+            r = requests.get(f"{srv}/fl/task?format={prec}", headers=req_headers, timeout=(15, 3600), stream=True)
+            if r.status_code in (401, 403):
+                r.close()
+                emit('log', f"⚠️ auth rejected ({r.status_code}) — clearing session")
+                try: AUTH_TOKEN_FILE.unlink(missing_ok=True)
+                except Exception: pass
+                emit('login_error', {'code': 'session_expired'})
+                raise AuthRejected(f"auth rejected: HTTP {r.status_code}")
+            if r.status_code != 200:
+                r.close(); emit('overlay_hide', {}); emit('log', f"/fl/task HTTP {r.status_code}")
+                time.sleep(10); continue
+            if r.headers.get("X-Status") == "wait":
+                pool_fill = r.headers.get("X-Pool-Fill")
+                pool_size_hdr = r.headers.get("X-Pool-Size")
+                r.close(); emit('overlay_hide', {})
+                if pool_fill:
+                    msg = f"⏳ Pool matchmaking {pool_fill}"
+                    if pool_size_hdr: msg += f"/{pool_size_hdr}"
+                    emit('log', msg + " (waiting for peers)")
+                for _ in range(10):
+                    if se.is_set(): return None, None
+                    time.sleep(1)
+                continue
+            cl_total = int(r.headers.get('content-length', 0) or 0)
+            total = cl_total if cl_total > 0 else EXPECTED_WEIGHT_BYTES
+            chunks = []; done = 0; last = 0.0
+            for chunk in r.iter_content(chunk_size=512 * 1024):
+                if not chunk: continue
+                chunks.append(chunk); done += len(chunk)
+                now = time.time()
+                if now - last > 0.25:
+                    emit('overlay_progress', {'done': done, 'total': total}); last = now
+            r.close()
+            emit('overlay_progress', {'done': done, 'total': total}); emit('overlay_hide', {}); emit('status', 'preparing')
+            raw = b"".join(chunks); del chunks
+            if len(raw) < 4:
+                emit('log', f"/fl/task returned only {len(raw)} bytes; retrying"); time.sleep(5); continue
+            ml = struct.unpack('<I', raw[:4])[0]
+            if 4 + ml > len(raw):
+                emit('log', f"Truncated header; retrying"); time.sleep(5); continue
+            md = json.loads(raw[4:4 + ml].decode()); wb = raw[4 + ml:]
+            emit('log', f"/fl/task inline: metadata OK, weights={len(wb):,} bytes")
+            if len(wb) < EXPECTED_WEIGHT_BYTES:
+                emit('log', f"⚠️ inline truncated at {len(wb):,}; retrying"); time.sleep(10); continue
+            return md, wb
+        except AuthRejected:
+            raise
+        except Exception as e:
+            emit('overlay_hide', {})
+            if se.is_set(): return None, None
+            emit('log', f"Task fetch failed: {e}")
+            time.sleep(15)
+
+
+# =================== LOSS / TRAINING ===================
+
 def fetch_weights_from_hf(md, se, emit):
     wcfg = md.get("weights") or {}
     if wcfg.get("source") != "huggingface": raise RuntimeError("Task metadata does not advertise Hugging Face weights.")
@@ -1549,13 +1611,16 @@ def run_single_round_wrapper(srv, at, se, emit):
                     emit('log', f"Hugging Face weight download failed: {e}"); emit('log', "Falling back to coordinator weight stream..."); iw = ie = None
         if iw is None or (ENGRAM_ACTIVE and ie is None):
             emit('log', "Downloading weights from coordinator...")
-            r = requests.get(f"{srv}/fl/task?format=bf16", headers={**(h or {}), **_hardware_headers()}, timeout=(15, 3600), stream=True)
-            if r.status_code != 200: raise RuntimeError(f"HTTP {r.status_code}")
-            raw = r.content; r.close()
-            ml = struct.unpack('<I', raw[:4])[0]; md = json.loads(raw[4:4 + ml].decode()); wb = raw[4 + ml:]
+            md, wb = fetch_task(srv, h, "bf16", se, emit)
+            if md is None: return
+            tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast = _parse_task_meta(md, emit)
+            hb.tid = tid
+            if not tid: emit('log', "Coordinator task metadata missing taskId."); return
             bbl = EXPECTED_MODEL_SIZE * 2; ebl = EXPECTED_ENGRAM_SIZE * 2
+            needed = bbl + (ebl if ENGRAM_ACTIVE else 0)
+            if len(wb) < needed: raise RuntimeError(f"Incomplete coordinator payload: got {len(wb)}, expected {needed}")
             iw = _bf16_from_bytes(wb, 0, bbl); ie = _bf16_from_bytes(wb, bbl, ebl) if ENGRAM_ACTIVE else None
-            del wb, raw; gc.collect()
+            del wb; gc.collect()
 
         emit('status', 'preparing'); emit('log', "Preparing model...")
         dc = md.get("datasetConfig", {}); sc = md.get("shardConfig", {}); slot = sc.get("slot", 0)
@@ -1665,8 +1730,10 @@ def run_single_round_wrapper(srv, at, se, emit):
             if hb.should_stop() or se.is_set() or accum_count == 0: break
             torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 1.0); ob.step(); ob.zero_grad(set_to_none=True)
 
-        if se.is_set() or hb.should_stop(): return
-        if cohort_mode and int(micro_step) != int(cc_steps): return
+        if se.is_set(): emit('log', "Stopped by user. Skipping upload."); return
+        if hb.should_stop(): emit('log', f"Stopped mid-training (round {cr} ended or task gone); discarding partial delta, no upload."); return
+        hb.tid = None
+        if cohort_mode and int(micro_step) != int(cc_steps): emit('log', f"[COHORT] only completed {micro_step}/{cc_steps} steps; aborting upload"); return
         fl = float(lval) if lval else 10.0; emit('log', f"Done: {micro_step} micro-steps, loss {fl:.4f}"); emit('status', 'uploading')
         for _o in (ob, oe):
             try: _o.zero_grad(set_to_none=True)
