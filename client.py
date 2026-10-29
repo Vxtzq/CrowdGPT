@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v2.0
+CrowdGPT GUI Client v2.1
+
+v2.1 changes
+  - fix UI button bugs
 
 v2.0 changes (dynamic optimizer adaptation):
   - Reports optimizer capabilities to server: X-Client-Optim-Can-Fp32, X-Client-Optim-Can-8bit
@@ -56,7 +59,7 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='repla
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
 
-CLIENT_VERSION = "2.0"
+CLIENT_VERSION = "2.1"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
