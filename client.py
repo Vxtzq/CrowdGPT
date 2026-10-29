@@ -1336,8 +1336,8 @@ def wait_for_round(srv, h, se, emit):
         except Exception: time.sleep(10)
     hide(); return None
 
-def fetch_task_metadata(srv, h, se, emit):
-    while not se.is_set():
+def fetch_task_metadata(srv, h, se, emit, hb=None):
+    while not se.is_set() and (not hb or not hb.should_stop()):
         try:
             r = requests.get(f"{srv}/fl/task?format=bf16&skip_weights=true", headers={**(h or {}), **_hardware_headers()}, timeout=30)
             if r.status_code in (401, 403):
@@ -1354,7 +1354,7 @@ def fetch_task_metadata(srv, h, se, emit):
                 try: r.close()
                 except Exception: pass
                 for _ in range(10):
-                    if se.is_set(): return None
+                    if se.is_set() or (hb and hb.should_stop()): return None
                     time.sleep(1)
                 continue
             if r.status_code == 200:
@@ -1366,7 +1366,7 @@ def fetch_task_metadata(srv, h, se, emit):
                         if fill and total: emit('log', f"⏳ Pool matchmaking {fill}/{total} (waiting for peers)")
                         elif md.get("message"): emit('log', f"⏳ {md.get('message')}")
                         for _ in range(10):
-                            if se.is_set(): return None
+                            if se.is_set() or (hb and hb.should_stop()): return None
                             time.sleep(1)
                         continue
                     return md
@@ -1379,7 +1379,7 @@ def fetch_task_metadata(srv, h, se, emit):
             time.sleep(5)
         except AuthRejected: raise
         except Exception as e:
-            if se.is_set(): return None
+            if se.is_set() or (hb and hb.should_stop()): return None
             emit('log', f"Task metadata fetch failed: {e}"); time.sleep(10)
     return None
 
@@ -1445,8 +1445,8 @@ def _load_safetensors_flat(path, expected_numel, label="weights"):
     if t.numel() != int(expected_numel): raise RuntimeError(f"{label} size mismatch: got {t.numel()}, expected {expected_numel}.")
     return t
 
-def fetch_task(srv, h, prec, se, emit):
-    while not se.is_set():
+def fetch_task(srv, h, prec, se, emit, hb=None):
+    while not se.is_set() and (not hb or not hb.should_stop()):
         try:
             emit('status', 'downloading')
             emit('overlay_show', {'title_key': 'dl_weights', 'indeterminate': False})
@@ -1471,7 +1471,7 @@ def fetch_task(srv, h, prec, se, emit):
                     if pool_size_hdr: msg += f"/{pool_size_hdr}"
                     emit('log', msg + " (waiting for peers)")
                 for _ in range(10):
-                    if se.is_set(): return None, None
+                    if se.is_set() or (hb and hb.should_stop()): return None, None
                     time.sleep(1)
                 continue
             cl_total = int(r.headers.get('content-length', 0) or 0)
@@ -1479,6 +1479,9 @@ def fetch_task(srv, h, prec, se, emit):
             chunks = []; done = 0; last = 0.0
             for chunk in r.iter_content(chunk_size=512 * 1024):
                 if not chunk: continue
+                if se.is_set() or (hb and hb.should_stop()):
+                    r.close()
+                    raise KeyboardInterrupt("Stop requested")
                 chunks.append(chunk); done += len(chunk)
                 now = time.time()
                 if now - last > 0.25:
@@ -1498,9 +1501,11 @@ def fetch_task(srv, h, prec, se, emit):
             return md, wb
         except AuthRejected:
             raise
+        except KeyboardInterrupt:
+            raise
         except Exception as e:
             emit('overlay_hide', {})
-            if se.is_set(): return None, None
+            if se.is_set() or (hb and hb.should_stop()): return None, None
             emit('log', f"Task fetch failed: {e}")
             time.sleep(15)
 
@@ -1814,7 +1819,7 @@ def run_single_round_wrapper(srv, at, se, emit):
     cohort_mode = False; cc_seed = cc_steps = cc_bs = cc_accum = cc_autocast = None; cc_optim = "any"
     optim_mode = None
     try:
-        emit('log', "Fetching task metadata..."); md = fetch_task_metadata(srv, h, se, emit)
+        emit('log', "Fetching task metadata..."); md = fetch_task_metadata(srv, h, se, emit, hb=hb)
         if md is None: return
         tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim = _parse_task_meta(md, emit)
         if not tid: return
@@ -1837,7 +1842,7 @@ def run_single_round_wrapper(srv, at, se, emit):
                     emit('log', f"Hugging Face weight download failed: {e}"); emit('log', "Falling back to coordinator weight stream..."); iw = ie = None
         if iw is None or (ENGRAM_ACTIVE and ie is None):
             emit('log', "Downloading weights from coordinator...")
-            md, wb = fetch_task(srv, h, "bf16", se, emit)
+            md, wb = fetch_task(srv, h, "bf16", se, emit, hb=hb)
             if md is None: return
             tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim = _parse_task_meta(md, emit)
             hb.tid = tid
@@ -2188,9 +2193,14 @@ class Api:
 
     def start(self):
         if self.thread and self.thread.is_alive(): return
-        self.stop_event.clear(); self.thread = threading.Thread(target=self._rs, daemon=True); self.thread.start()
-
-    def stop(self): self.stop_event.set()
+        self.stop_event.clear()
+        self.thread = threading.Thread(target=self._rs, daemon=True)
+        self.thread.start()
+        self.emit('started')
+      
+    def stop(self):
+        self.stop_event.set()
+        self.emit('stopped')
     def _check_updates_between_rounds(self): _check_updates_between_rounds(self.emit)
 
     def _rs(self):
