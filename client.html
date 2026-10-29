@@ -242,8 +242,25 @@ document.getElementById('backend-select').addEventListener('change',e=>{const nb
 document.getElementById('btn-login').addEventListener('click',()=>{const srv=document.getElementById('login-server').value.trim();const u=document.getElementById('login-user').value.trim();const p=document.getElementById('login-pass').value;if(!u||!p){showLoginError('err_invalid_credentials');return}document.getElementById('login-error').classList.remove('show');document.getElementById('btn-login').disabled=true;callApi('login',srv,u,p)});
 document.getElementById('btn-register').addEventListener('click',()=>{const srv=document.getElementById('reg-server').value.trim();const u=document.getElementById('reg-user').value.trim();const email=document.getElementById('reg-email').value.trim();const p=document.getElementById('reg-pass').value;if(!u||!email||!p){showRegError('err_invalid_input');return}document.getElementById('reg-error').classList.remove('show');document.getElementById('btn-register').disabled=true;callApi('register',srv,u,email,p)});
 document.getElementById('btn-anon').addEventListener('click',e=>{e.preventDefault();callApi('login_anon')});
-document.getElementById('btn-start').addEventListener('click',()=>{if(callApi('start')){document.getElementById('btn-start').disabled=true;document.getElementById('btn-stop').disabled=false}});
-document.getElementById('btn-stop').addEventListener('click',()=>{callApi('stop');document.getElementById('btn-start').disabled=false;document.getElementById('btn-stop').disabled=true});
+// v2.1 button state machine — prevents lost clicks during teardown
+let _trainState = 'idle';  // 'idle' | 'starting' | 'running' | 'stopping'
+document.getElementById('btn-start').addEventListener('click',()=>{
+    if(_trainState !== 'idle') return;
+    _trainState = 'starting';
+    document.getElementById('btn-start').disabled = true;
+    document.getElementById('btn-stop').disabled = false;
+    if(!callApi('start')){
+        _trainState = 'idle';
+        document.getElementById('btn-start').disabled = false;
+        document.getElementById('btn-stop').disabled = true;
+    }
+});
+document.getElementById('btn-stop').addEventListener('click',()=>{
+    if(_trainState !== 'starting' && _trainState !== 'running') return;
+    _trainState = 'stopping';
+    document.getElementById('btn-stop').disabled = true;
+    callApi('stop');
+});
 function showLoginError(code){const el=document.getElementById('login-error');el.textContent=t(code);el.classList.add('show');document.getElementById('btn-login').disabled=false}
 function showRegError(code){const el=document.getElementById('reg-error');el.textContent=t(code);el.classList.add('show');document.getElementById('btn-register').disabled=false}
 function mb(b){return (b/1048576).toFixed(1)}
@@ -262,7 +279,18 @@ else if(ev==='overlay_progress'){const bar=document.getElementById('overlay-bar'
 else if(ev==='overlay_hide'){overlayHide()}
 else if(ev==='cal_stats'||ev==='stats'){const loss=Number(data.loss);const tps=Number(data.tps);const step=Number(data.step);const target=ev==='cal_stats'?Number(data.total):Number(data.target);const tl=Number(data.time_left);if(isFinite(loss)){document.getElementById('stat-loss').textContent=loss.toFixed(4);document.getElementById('graph-last').textContent=loss.toFixed(4);if(loss>0){lossHistory.push(loss);if(lossHistory.length>MAXP*2)lossHistory.splice(0,lossHistory.length-MAXP*2)}}if(isFinite(tps))document.getElementById('stat-tps').textContent=Math.round(tps);if(isFinite(tl))document.getElementById('stat-time').textContent=Math.round(tl)+'m';document.getElementById('stat-round').textContent=ev==='cal_stats'?'—':(data.round!=null?data.round:'—');document.getElementById('stat-step-cur').textContent=isFinite(step)?step:0;document.getElementById('stat-step-tot').textContent=isFinite(target)?target:0;const pct=(isFinite(step)&&isFinite(target)&&target>0)?Math.min(100,(step/target)*100):0;document.getElementById('progress-bar').style.width=pct+'%';document.getElementById('progress-text').textContent=pct.toFixed(1)+'%';requestAnimationFrame(drawGraph)}
 else if(ev==='model_preview'){const container=document.getElementById('model-preview');const stepEl=document.getElementById('preview-step');if(!container||!stepEl)return;stepEl.textContent='Step '+data.step;let html='';if(data.cards&&data.cards.length>0){data.cards.forEach(card=>{const cls=card.match?'good':'bad';const badge=card.match?'✓':'✗';const prob=(typeof card.prob==='number'&&isFinite(card.prob))?(card.prob*100).toFixed(1)+'%':'';html+='<div class="pred-line '+cls+'"><div class="pred-main"><span class="pred-text">'+escapeHtml(card.context)+'</span><span class="pred-token">'+escapeHtml(card.pred)+'</span></div><div class="pred-side"><span class="pred-badge">'+badge+'</span><span>target: '+escapeHtml(card.target)+'</span><span>'+prob+'</span></div></div>'})}else{html='<div class="preview-empty">'+escapeHtml(t('waiting_preview'))+'</div>'}container.innerHTML=html}
-else if(ev==='status'){statusKey=data;document.getElementById('status-indicator').textContent=t(statusKey);if(data==='training'||data==='idle'||data==='calibrating'||data==='preparing')overlayHide();if(data==='idle'){document.getElementById('btn-start').disabled=false;document.getElementById('btn-stop').disabled=true}}
+else if(ev==='status'){
+    statusKey=data;
+    document.getElementById('status-indicator').textContent=t(statusKey);
+    if(data==='training'||data==='idle'||data==='calibrating'||data==='preparing')overlayHide();
+    if(data==='idle'){
+        _trainState = 'idle';
+        document.getElementById('btn-start').disabled = false;
+        document.getElementById('btn-stop').disabled = true;
+    } else if(_trainState === 'starting' || _trainState === 'running'){
+        _trainState = 'running';
+    }
+}
 };
 function escapeHtml(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 window.addEventListener('resize',()=>requestAnimationFrame(drawGraph));
