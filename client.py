@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v2.2
+CrowdGPT GUI Client v2.3
 
-v2.2 changes
+v2.3 changes
   - fix UI button bugs
   - Same user on multiple devices
+  - Fixed missing import
 v2.0 changes (dynamic optimizer adaptation):
   - Reports optimizer capabilities to server: X-Client-Optim-Can-Fp32, X-Client-Optim-Can-8bit
   - Honors crossCheck.targetOptimizer from the pool (asymmetric: fp32 accepts any, 8bit requires native)
@@ -30,7 +31,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("PYTORCH_HIP_ALLOC_CONF", "expandable_segments:False")
 os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
-import sys, io, json, time, struct, math, gc, threading, queue, base64, logging, tempfile, atexit, subprocess, hashlib, shutil, ctypes, signal, argparse, datetime
+import sys, io, json, time, struct, math, gc, threading, queue, base64, logging, tempfile, atexit, subprocess, hashlib, shutil, ctypes, signal, argparse, datetime, uuid
 from pathlib import Path
 
 try:
@@ -59,7 +60,7 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='repla
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
 
-CLIENT_VERSION = "2.2"
+CLIENT_VERSION = "2.3"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
