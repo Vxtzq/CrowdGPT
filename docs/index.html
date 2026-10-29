@@ -187,6 +187,30 @@ header {
   width: 100%;
 }
 
+.power-shield {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin-left: 6px;
+  color: var(--accent);
+  position: relative;
+  top: -1px;
+  cursor: help;
+}
+
+.power-shield svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+  filter: drop-shadow(0 0 3px rgba(34, 197, 94, 0.55));
+  transition: filter 0.15s, transform 0.15s;
+}
+
+.power-shield:hover svg {
+  filter: drop-shadow(0 0 6px rgba(34, 197, 94, 0.9));
+  transform: scale(1.08);
+}
+  
 .header-inner {
   max-width: 1440px;
   margin: 0 auto;
@@ -3325,7 +3349,7 @@ const TRANSLATIONS = {
     'install.step2.body': "Python and Git are installed if missing, then PyTorch from the correct index and the project's requirements; everything is inside an isolated virtual environment so nothing touches your system Python.",
     'install.step3.title': 'Launch.',
     'install.step3.body': 'Downloads the model weights from HuggingFace, streams a dataset chunk, and starts training. You can stop at any time.',
-
+    'contrib.power.tooltip': 'Admin',
     'about.crumb': 'home / about',
     'about.h1': 'About - How it works',
     'about.sub': 'How CrowdGPT coordinates thousands of independent GPUs to train a single, cohesive language model without insane infrastructure.',
@@ -3480,7 +3504,7 @@ const TRANSLATIONS = {
     'home.cta.body': "Chaque contribution, même la plus petite, rend le modèle meilleur. Lancez un client, mettez une étoile au dépôt, ou ouvrez une issue.",
     'home.cta.install': "Guide d'installation",
     'home.cta.star': 'Star sur GitHub',
-
+     
     'install.crumb': 'accueil / installer',
     'install.h1': 'Installer le client',
     'install.sub': "Tout s'installe avec une seule commande. Même si vous n'avez pas python/git d'installé.",
@@ -3501,7 +3525,7 @@ const TRANSLATIONS = {
     'install.step2.body': "Python et Git sont installés s'ils manquent, puis PyTorch depuis le bon index et les dépendances du projet ; tout est dans un environnement virtuel isolé, donc rien ne touche votre Python système.",
     'install.step3.title': 'Lancer.',
     'install.step3.body': "Télécharge les poids du modèle depuis HuggingFace, diffuse un bloc de données et commence l'entraînement. Vous pouvez arrêter à tout moment.",
-
+    'contrib.power.tooltip': 'Admin',
     'about.crumb': 'accueil / à propos',
     'about.h1': 'À propos - Comment ça marche',
     'about.sub': "Comment CrowdGPT coordonne des milliers de GPU indépendants pour entraîner un seul modèle de langage cohérent sans infrastructure démesurée.",
@@ -3677,7 +3701,7 @@ const TRANSLATIONS = {
     'install.step2.body': 'Python und Git werden installiert, falls sie fehlen, dann PyTorch vom richtigen Index und die Projektanforderungen; alles befindet sich in einer isolierten virtuellen Umgebung, sodass Ihr System-Python unangetastet bleibt.',
     'install.step3.title': 'Starten.',
     'install.step3.body': 'Lädt die Modellgewichte von HuggingFace, streamt einen Datenblock und startet das Training. Sie können jederzeit stoppen.',
-
+    'contrib.power.tooltip': 'Admin',
     'about.crumb': 'start / über',
     'about.h1': 'Über - Wie es funktioniert',
     'about.sub': 'Wie CrowdGPT Tausende unabhängige GPUs koordiniert, um ein einziges, zusammenhängendes Sprachmodell ohne verrückte Infrastruktur zu trainieren.',
@@ -3853,7 +3877,7 @@ const TRANSLATIONS = {
     'install.step2.body': 'Python y Git se instalan si faltan, luego PyTorch desde el índice correcto y los requisitos del proyecto; todo dentro de un entorno virtual aislado para que no toque tu Python del sistema.',
     'install.step3.title': 'Lanzar.',
     'install.step3.body': 'Descarga los pesos del modelo desde HuggingFace, transmite un bloque de datos y empieza el entrenamiento. Puedes detenerlo en cualquier momento.',
-
+    'contrib.power.tooltip': 'Admin',
     'about.crumb': 'inicio / acerca de',
     'about.h1': 'Acerca de - Cómo funciona',
     'about.sub': 'Cómo CrowdGPT coordina miles de GPUs independientes para entrenar un único modelo de lenguaje cohesionado sin infraestructura desmesurada.',
@@ -4029,7 +4053,7 @@ const TRANSLATIONS = {
     'install.step2.body': "Python ve Git eksikse kurulur, ardından PyTorch doğru dizinden ve proje gereksinimleri; her şey izole bir sanal ortamda, böylece sistem Python'unuza dokunulmaz.",
     'install.step3.title': 'Başlat.',
     'install.step3.body': "Model ağırlıklarını HuggingFace'den indirir, bir veri parçası akıtır ve eğitime başlar. İstediğiniz zaman durdurabilirsiniz.",
-
+    'contrib.power.tooltip': 'Admin',
     'about.crumb': 'ana sayfa / hakkında',
     'about.h1': 'Hakkında - Nasıl çalışır',
     'about.sub': "CrowdGPT'nin binlerce bağımsız GPU'yu tek bir tutarlı dil modeli eğitmek için nasıl koordine ettiği.",
@@ -4289,9 +4313,16 @@ function escapeHtml(s) {
 function renderLeaderboardRow(u, rank) {
   const trust = (u.trustScore != null) ? u.trustScore : 0;
   const trustPct = Math.max(0, Math.min(100, Math.round(trust * 100)));
+  const tip = escapeHtml(t('contrib.power.tooltip'));
+  const shield = u.power
+    ? `<span class="power-shield" title="${tip}" aria-label="${tip}">`
+      + `<svg viewBox="0 0 24 24" aria-hidden="true">`
+      + `<path d="M12 2 4 5v6c0 5 3.5 9.7 8 11 4.5-1.3 8-6 8-11V5l-8-3z"/>`
+      + `</svg></span>`
+    : '';
   return `<tr>
     <td>${rank}</td>
-    <td><code>${escapeHtml(u.username || 'anon')}</code></td>
+    <td><code>${escapeHtml(u.username || 'anon')}</code>${shield}</td>
     <td class="mono">${fmtNum(u.totalTokens)}</td>
     <td class="mono">${(u.totalSteps || 0).toLocaleString()}</td>
     <td><div class="trust-bar"><div class="trust-track"><div class="trust-fill" style="width:${trustPct}%"></div></div><span class="trust-val">${trust.toFixed(2)}</span></div></td>
