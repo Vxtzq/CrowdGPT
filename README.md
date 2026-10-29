@@ -17,8 +17,8 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white">
-  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge">
-  <img src="https://img.shields.io/badge/Version-v1.8-green?style=for-the-badge">
+  <img src="https://img.shields.io/badge/License-GPL--3.0-green?style=for-the-badge">
+  <img src="https://img.shields.io/badge/Version-v1.9-green?style=for-the-badge">
   <a href="https://discord.gg/2Shwqj3Xpx"><img src="https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
   <img src="https://img.shields.io/endpoint?style=for-the-badge&url=https%3A%2F%2Fhuggingface.co%2FVxtzq%2FCrowd-v1%2Fraw%2Fmain%2Fbadge_tokens.json" alt="Tokens Processed">
 </p>
@@ -44,7 +44,24 @@ Instead of one datacenter doing all the work, CrowdGPT distributes training acro
 
 ### How it works
 
-See [ARCHITECTURE.md](https://github.com/Vxtzq/CrowdGPT/blob/main/docs/ARCHITECTURE.md)
+1. The client asks the server for a task and is placed in a pool of 3 volunteers with compatible hardware.
+2. It downloads the current weights from Hugging Face and trains on its shard of the dataset. All members of a pool get the same shard, seed and step count.
+3. It uploads the weight delta. The server compares the 3 deltas of each pool, drops outliers, and merges the rest into the global model at the end of the round.
+4. The new weights are published to [Vxtzq/Crowd-v1](https://huggingface.co/Vxtzq/Crowd-v1) and the next round starts.
+
+The current model, Crowd-v1, is a 658M-parameter decoder (24 layers, 2048-token context, Qwen3 tokenizer) with an engram lookup table. The client runs no code from the server: it only receives weights and data. More in [ARCHITECTURE.md](./docs/ARCHITECTURE.md).
+
+## 💻 Supported hardware
+
+| Hardware | Backend | Notes |
+|---|---|---|
+| NVIDIA | CUDA | GTX 10xx and older need the cu126 PyTorch build. 8-bit optimizer via `bitsandbytes` |
+| AMD | ROCm or DirectML | ROCm on Linux. On Windows, ROCm for supported GPUs and DirectML for the rest |
+| Intel Arc | XPU | |
+| Apple Silicon | MPS | |
+| Anything else | CPU | Works, but slow |
+
+The installer detects the hardware and installs the matching PyTorch build. Small GPUs work too: layers that don't fit in VRAM are kept in RAM and streamed in. Training the engram table adds about 1.4 GB of RAM (`CROWDGPT_ENGRAM=0` turns it off).
 
 ## ⚡ Quick installation (one command)
 
@@ -74,7 +91,17 @@ crowdgpt --headless --anon               # train without an account
 crowdgpt --headless --rounds 5           # stop after 5 rounds
 ```
 
-`crowdgpt --help` lists all options.
+`crowdgpt --help` lists all options. A few settings can also be set through environment variables:
+
+| Variable | Description |
+|---|---|
+| `CROWDGPT_TOKEN` / `CROWDGPT_PASSWORD` | Credentials for headless runs |
+| `CROWDGPT_VRAM_GB` | Same as `--vram-gb` |
+| `CROWDGPT_ENGRAM=0` | Don't train the engram table (same as `--no-engram`) |
+
+### Updates
+
+The client checks for updates on start and between rounds. An update is only installed if its manifest is signed with the maintainer's key, so a compromised repository or account can't push code to clients. `--no-update` skips the check. Details in [SECURITY.md](./SECURITY.md).
 
 
 ## 🔧 Troubleshooting
@@ -114,16 +141,19 @@ Then:
 python client.py
 ```
 
-For the **automatic installer**, see [`docs/easy_install.md`](./docs/easy_install.md).
-
 ---
 
 
 ## 🧠 Contribute
 
-Training data is curated through pull requests.
+- **Training data** is curated through pull requests. See [`docs/DATA.md`](./docs/DATA.md).
+- **Code**: pull requests are welcome. CI checks that the Python files compile and that `install.sh` parses.
+- **Bugs**: open an issue with the bug report template, and include the client version and the log.
+- **Server**: the coordinator lives in [Vxtzq/CrowdGPT-Server](https://github.com/Vxtzq/CrowdGPT-Server).
 
-See [`docs/DATA.md`](./docs/DATA.md) to contribute.
+## 📄 License
+
+GPL-3.0. See [LICENSE](./LICENSE).
 
 ---
 
