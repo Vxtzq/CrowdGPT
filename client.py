@@ -1497,7 +1497,10 @@ def _write_delta_file(path, header_bytes, model, iw_bf16, engram_arrays, level=6
 def _pick_autocast(backend):
     if backend in ("DIRECTML", "CPU"): return False, None
     try:
-        if backend in ("CUDA", "ROCM") and torch.cuda.is_available() and torch.cuda.is_bf16_supported(): return True, torch.bfloat16
+        if backend in ("CUDA", "ROCM") and torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+            # Before Ampere (sm_80), NVIDIA GPUs only emulate bf16, which drifts from native bf16 in a cohort.
+            if backend == "CUDA" and torch.cuda.get_device_capability(0)[0] < 8: return False, None
+            return True, torch.bfloat16
         if backend == "XPU" and hasattr(torch, "xpu") and torch.xpu.is_bf16_supported(): return True, torch.bfloat16
     except Exception: pass
     return False, None
