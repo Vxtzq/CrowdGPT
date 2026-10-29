@@ -1,5 +1,5 @@
-CrowdGPT v1.9 important notice:
-- Rolled back a broken model weight
-- Fixed the aggregation logic server-side
-- Engrams of the model are actually used now
+CrowdGPT v2.0 changelog:
+- Better server security
+- Less false-flagging of clients
+- Added GPU selection on app
 Check GitHub for more infos
