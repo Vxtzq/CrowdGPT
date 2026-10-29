@@ -3,7 +3,12 @@
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/logo-dark2.png">
       <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/logo-light2.png">
-      <img src="https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/res/logo-light.png" alt="CrowdGPT" width="100%" style="max-width: 800px; border-radius: 12px;">
+      <img
+        src="https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/res/logo-light.png"
+        alt="CrowdGPT"
+        width="100%"
+        style="width: 100%; max-width: 100%; height: auto; display: block; border-radius: 12px;"
+      >
     </picture>
   </a>
 </p>
