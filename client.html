@@ -20,7 +20,7 @@ header{flex:0 0 auto;height:54px;border-bottom:1px solid var(--border);display:f
 .theme-toggle .icon-sun{display:none}
 body.dark .theme-toggle .icon-sun{display:inline}
 body.dark .theme-toggle .icon-moon{display:none}
-body:not(.dashboard-active) #backend-select,body:not(.dashboard-active) #vram-select{display:none}
+body:not(.dashboard-active) #backend-select,body:not(.dashboard-active) #vram-select,body:not(.dashboard-active) #gpu-select{display:none}
 .backend-select,.lang-select{font-family:var(--sans);font-size:12px;background-color:var(--bg-soft);color:var(--text);border:1px solid var(--border);padding:5px 8px;border-radius:4px;cursor:pointer;outline:none;-webkit-appearance:none;appearance:none}
 .backend-select:hover,.lang-select:hover{border-color:var(--border-strong)}
 .backend-select:disabled{opacity:.5;cursor:not-allowed}
@@ -132,6 +132,8 @@ body.dark .overlay{background:rgba(26,26,30,.86)}
     <select class="backend-select" id="vram-select" title="Max VRAM to use. Lower = less VRAM, more streaming from RAM (slower). Applies from the next round.">
       <option value="0">VRAM: Auto</option><option value="3">VRAM ≤ 3 GB</option><option value="4">VRAM ≤ 4 GB</option><option value="5">VRAM ≤ 5 GB</option><option value="6">VRAM ≤ 6 GB</option><option value="8">VRAM ≤ 8 GB</option><option value="10">VRAM ≤ 10 GB</option><option value="12">VRAM ≤ 12 GB</option>
     </select>
+    <!-- v2.1 GPU SELECTOR -->
+    <select class="backend-select" id="gpu-select" title="GPU to use for training. Multiple GPUs detected; applies from the next round." style="display:none;"></select>
     <select class="lang-select" id="lang-select">
       <option value="en">🇬🇧 English</option>
       <option value="fr">🇫🇷 Français</option>
@@ -234,6 +236,8 @@ document.getElementById('go-to-login').addEventListener('click',e=>{e.preventDef
 function callApi(n,...a){if(window.pywebview&&window.pywebview.api&&window.pywebview.api[n]){window.pywebview.api[n](...a);return true}return false}
 window.addEventListener('pywebviewready',()=>callApi('get_backends'));
 document.getElementById('vram-select').addEventListener('change',e=>{callApi('set_vram',parseFloat(e.target.value)||0)});
+// v2.1 GPU SELECTOR
+document.getElementById('gpu-select').addEventListener('change',e=>{const v=parseInt(e.target.value,10);if(!isNaN(v))callApi('set_gpu',v)});
 document.getElementById('backend-select').addEventListener('change',e=>{const nb=e.target.value;if(nb===window._currentBackend)return;callApi('set_backend',nb);});
 document.getElementById('btn-login').addEventListener('click',()=>{const srv=document.getElementById('login-server').value.trim();const u=document.getElementById('login-user').value.trim();const p=document.getElementById('login-pass').value;if(!u||!p){showLoginError('err_invalid_credentials');return}document.getElementById('login-error').classList.remove('show');document.getElementById('btn-login').disabled=true;callApi('login',srv,u,p)});
 document.getElementById('btn-register').addEventListener('click',()=>{const srv=document.getElementById('reg-server').value.trim();const u=document.getElementById('reg-user').value.trim();const email=document.getElementById('reg-email').value.trim();const p=document.getElementById('reg-pass').value;if(!u||!email||!p){showRegError('err_invalid_input');return}document.getElementById('reg-error').classList.remove('show');document.getElementById('btn-register').disabled=true;callApi('register',srv,u,email,p)});
@@ -252,6 +256,7 @@ else if(ev==='login_error'){const code=data.code||'err_invalid_credentials';cons
 else if(ev==='log'){document.getElementById('status-event').textContent=data}
 else if(ev==='backends'){const sel=document.getElementById('backend-select');sel.innerHTML='';window._currentBackend=data.current;const order=[{key:'cuda',label:'CUDA (NVIDIA)'},{key:'rocm',label:'ROCm (AMD)'},{key:'mps',label:'MPS (Apple)'},{key:'xpu',label:'XPU (Intel)'},{key:'directml',label:'DirectML (Windows)'},{key:'cpu',label:'CPU'}];order.forEach(bk=>{const opt=document.createElement('option');opt.value=bk.key;opt.textContent=bk.label;opt.disabled=!data.available[bk.key];if(bk.key===data.current)opt.selected=true;sel.appendChild(opt)});sel.disabled=false}
 else if(ev==='vram'){const vs=document.getElementById('vram-select');if(vs){const vv=String(Math.round(data.current||0));vs.value=[...vs.options].some(o=>o.value===vv)?vv:'0'}}
+else if(ev==='gpus'){const sel=document.getElementById('gpu-select');if(!sel)return;const gpus=(data&&data.list)||[];if(gpus.length<=1){sel.style.display='none';return}sel.style.display='';sel.innerHTML='';gpus.forEach(g=>{const opt=document.createElement('option');opt.value=String(g.idx);const warn=g.arch_ok?'':'⚠️ ';opt.textContent=`${warn}GPU ${g.idx}: ${g.name} (${g.vram_gb} GB)`;if(g.idx===data.current)opt.selected=true;if(!g.arch_ok)opt.style.color='var(--warn)';sel.appendChild(opt)})}
 else if(ev==='overlay_show'){overlayShow(data)}
 else if(ev==='overlay_progress'){const bar=document.getElementById('overlay-bar');if(data.total>0){bar.classList.remove('indet');const pct=Math.min(100,data.done/data.total*100);document.getElementById('overlay-fill').style.width=pct+'%';document.getElementById('overlay-pct').textContent=pct.toFixed(1)+'%';document.getElementById('overlay-mb').textContent=mb(data.done)+' / '+mb(data.total)+' MB'}}
 else if(ev==='overlay_hide'){overlayHide()}
