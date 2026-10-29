@@ -1572,10 +1572,13 @@ def run_single_round_wrapper(srv, at, se, emit):
                     except Exception: pass
                 gc.collect(); model = _build_model(train_backend, train_device, iw, ie, emit, bs=bs, sl=sl); break
             except RuntimeError as e:
-                if _is_oom(e):
-                    if model: del model; model = None
-                    _clear_accel_cache(train_device); bs = max(1, bs // 2); emit('log', f"Model build OOM → bs={bs}")
-                else: raise
+                if not _is_oom(e): raise
+                if model: del model; model = None
+                _clear_accel_cache(train_device)
+                # Halving can't go below 1, and in a cohort a smaller batch is aborted anyway.
+                if bs == 1 or (cohort_mode and cc_bs and bs <= int(cc_bs)):
+                    emit('log', f"Model build OOM at bs={bs}; skipping this round (try a lower --vram-gb)"); break
+                bs = max(1, bs // 2); emit('log', f"Model build OOM → bs={bs}")
         if model is None: return
         if cohort_mode and cc_bs and bs < int(cc_bs): emit('log', f"[COHORT] OOM at target bs={cc_bs}; aborting round"); return
 
