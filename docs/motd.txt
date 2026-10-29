@@ -1,5 +1,5 @@
-CrowdGPT v2.0 changelog:
+CrowdGPT v2.2 changelog:
 - Better server security
-- Less false-flagging of clients
+- Multiple devices for the same user
 - Added GPU selection on app
 Check GitHub for more infos
