@@ -4417,14 +4417,14 @@ function renderLeaderboardRow(u, rank) {
   const trustPct = Math.max(0, Math.min(100, Math.round(trust * 100)));
   const tip = escapeHtml(t('contrib.power.tooltip'));
   const shield = u.power
-    ? `<span class="power-shield" title="${tip}" aria-label="${tip}">`
+    ? `<span class="power-shield" data-power-tooltip="${tip}" aria-label="${tip}" tabindex="0" role="img">`
       + `<svg viewBox="0 0 24 24" aria-hidden="true">`
       + `<path d="M12 2 4 5v6c0 5 3.5 9.7 8 11 4.5-1.3 8-6 8-11V5l-8-3z"/>`
       + `</svg></span>`
     : '';
   return `<tr>
     <td>${rank}</td>
-    <td><code>${escapeHtml(u.username || 'anon')}</code>${shield}</td>
+    <td><span class="user-cell"><code>${escapeHtml(u.username || 'anon')}</code>${shield}</span></td>
     <td class="mono">${fmtNum(u.totalTokens)}</td>
     <td class="mono">${(u.totalSteps || 0).toLocaleString()}</td>
     <td><div class="trust-bar"><div class="trust-track"><div class="trust-fill" style="width:${trustPct}%"></div></div><span class="trust-val">${trust.toFixed(2)}</span></div></td>
@@ -4532,7 +4532,83 @@ function renderLeaderboardTable() {
     });
   }
 })();
+/* ===== POWER-SHIELD TOOLTIP (singleton, document-delegated) ===== */
+(function initPowerTooltip() {
+  const tip = document.createElement('div');
+  tip.className = 'power-tooltip';
+  tip.setAttribute('role', 'tooltip');
+  document.body.appendChild(tip);
 
+  let active = null;
+
+  function show(el) {
+    const text = el.getAttribute('data-power-tooltip') || '';
+    if (!text) return;
+    tip.textContent = text;
+    tip.style.display = 'block';
+
+    const r = el.getBoundingClientRect();
+    const tRect = tip.getBoundingClientRect();
+
+    let left = r.left + r.width / 2 - tRect.width / 2;
+    let top = r.top - tRect.height - 9;
+    let placement = 'top';
+
+    if (top < 8) {
+      top = r.bottom + 9;
+      placement = 'bottom';
+    }
+    const maxLeft = window.innerWidth - tRect.width - 8;
+    if (left < 8) left = 8;
+    if (left > maxLeft) left = maxLeft;
+
+    tip.dataset.placement = placement;
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
+    active = el;
+  }
+
+  function hide() {
+    tip.style.display = 'none';
+    active = null;
+  }
+
+  document.addEventListener('mouseover', (e) => {
+    const el = e.target.closest('.power-shield');
+    if (el && el !== active) show(el);
+  });
+
+  document.addEventListener('mouseout', (e) => {
+    const el = e.target.closest('.power-shield');
+    if (el && !el.contains(e.relatedTarget)) hide();
+  });
+
+  document.addEventListener('focusin', (e) => {
+    const el = e.target.closest('.power-shield');
+    if (el) show(el);
+  });
+
+  document.addEventListener('focusout', (e) => {
+    const el = e.target.closest('.power-shield');
+    if (el) hide();
+  });
+
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest('.power-shield');
+    if (el) {
+      e.stopPropagation();
+      if (active === el) hide(); else show(el);
+    } else {
+      hide();
+    }
+  });
+
+  window.addEventListener('scroll', hide, { passive: true });
+  window.addEventListener('resize', hide);
+
+  // Allow renderLeaderboardTable() to clear a stale tooltip before rebuilding rows
+  window.hidePowerTooltip = hide;
+})();
 async function fetchLeaderboard() {
   const tbody = document.getElementById('lb-body');
   if (!tbody) return;
