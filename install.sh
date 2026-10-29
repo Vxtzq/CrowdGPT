@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# CrowdGPT universal installer — Linux + macOS  (v10)
+# CrowdGPT universal installer — Linux + macOS  (v11)
 #
 #  - venv created at FINAL path (no relocation, no rewrites)
 #  - AMD ROCm: torch version detected, transformers pinned
@@ -34,6 +34,13 @@
 #         to the rocm6.0 PyTorch index (user-verified working) no
 #         matter what host ROCm version is present. This applies
 #         to auto-detected AND forced (`--backend amd`) installs.
+#  - v11: Blackwell (RTX 50-series, B100/B200, GB200) detection.
+#         cu124 wheels ship no sm_120 kernels, so 5090s used to
+#         install cleanly then crash at first matmul with
+#         cudaErrorNoKernelImageForDevice. Installer now routes
+#         Blackwell to cu130 (driver >= 580) or cu128 (driver
+#         >= 525), both of which carry Blackwell kernels. Applies
+#         to auto-detected AND forced (`--backend nvidia`).
 # ============================================================
 set -Eeuo pipefail
 
@@ -85,7 +92,7 @@ done
 
 echo
 echo "============================================================"
-echo "                 CrowdGPT Installer  (v10)"
+echo "                 CrowdGPT Installer  (v11)"
 echo "============================================================"
 echo
 
@@ -172,6 +179,35 @@ copy_tree() {
 is_gfx906() {
     command -v rocminfo >/dev/null 2>&1 || return 1
     rocminfo 2>/dev/null | grep -q 'gfx906'
+}
+
+# Blackwell (RTX 50-series, B100/B200, GB200) — needs cu128+.
+# cu124 wheels ship no sm_120 kernels, so 5090s crash at first matmul
+# with cudaErrorNoKernelImageForDevice. Driver >= 525 for cu128,
+# driver >= 580 for cu130 (preferred when available).
+is_blackwell() {
+    command -v nvidia-smi >/dev/null 2>&1 || return 1
+    local caps
+    caps="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)"
+    if [[ -n "$caps" ]]; then
+        local cap major
+        while IFS= read -r cap; do
+            cap="$(printf '%s' "$cap" | tr -d '[:space:]')"
+            [[ -z "$cap" ]] && continue
+            major="${cap%%.*}"
+            if [[ "$major" =~ ^[0-9]+$ ]] && (( major >= 12 )); then
+                return 0
+            fi
+        done <<<"$caps"
+        return 1
+    fi
+    # Fallback for older nvidia-smi builds without compute_cap support.
+    local names
+    names="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || true)"
+    if [[ -n "$names" ]] && grep -qiE '(RTX[[:space:]]*50[0-9]{2}|B100|B200|GB200|Blackwell)' <<<"$names"; then
+        return 0
+    fi
+    return 1
 }
 
 # ============================================================
@@ -306,6 +342,29 @@ detect_backend() {
         fi
 
         MAJOR="${DRIVER%%.*}"
+
+        # Blackwell (RTX 50-series, B100/B200) — cu124 has no sm_120.
+        # Route to cu130 (driver >= 580) or cu128 (driver >= 525).
+        if is_blackwell; then
+            BACKEND="nvidia"
+            if [[ -z "$DRIVER" ]] || ! [[ "$MAJOR" =~ ^[0-9]+$ ]]; then
+                TORCH_INDEX="https://download.pytorch.org/whl/cu128"
+                WHEEL_NOTE="Blackwell GPU (driver version unclear) -> cu128"
+                warn "Blackwell GPU detected but driver version unreadable. Using cu128 (safe default)."
+            elif (( MAJOR >= 580 )); then
+                TORCH_INDEX="https://download.pytorch.org/whl/cu130"
+                WHEEL_NOTE="Blackwell (RTX 50-series / B100/B200) -> cu130 (driver $DRIVER)"
+            elif (( MAJOR >= 525 )); then
+                TORCH_INDEX="https://download.pytorch.org/whl/cu128"
+                WHEEL_NOTE="Blackwell (RTX 50-series / B100/B200) -> cu128 (driver $DRIVER; cu130 needs 580+)"
+            else
+                die "Blackwell GPU detected but driver '$DRIVER' is too old.
+    cu128 needs driver >= 525; cu130 needs >= 580.
+    Please upgrade your NVIDIA driver, then rerun."
+            fi
+            return
+        fi
+
         if [[ -z "$DRIVER" ]]; then
             BACKEND="nvidia"
             TORCH_INDEX="https://download.pytorch.org/whl/cu124"
@@ -401,7 +460,28 @@ detect_backend() {
 
 if [[ -n "$BACKEND_OVERRIDE" ]]; then
     case "$BACKEND_OVERRIDE" in
-        nvidia) BACKEND="nvidia"; TORCH_INDEX="https://download.pytorch.org/whl/cu124"; WHEEL_NOTE="forced: nvidia/cu124" ;;
+        nvidia)
+            BACKEND="nvidia"
+            if is_blackwell; then
+                _DRV="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 | tr -d '[:space:]' || true)"
+                _MAJ="${_DRV%%.*}"
+                if [[ -z "$_DRV" ]] || ! [[ "$_MAJ" =~ ^[0-9]+$ ]]; then
+                    TORCH_INDEX="https://download.pytorch.org/whl/cu128"
+                    WHEEL_NOTE="forced: nvidia/Blackwell -> cu128 (driver version unclear)"
+                elif (( _MAJ >= 580 )); then
+                    TORCH_INDEX="https://download.pytorch.org/whl/cu130"
+                    WHEEL_NOTE="forced: nvidia/Blackwell -> cu130 (driver $_DRV)"
+                elif (( _MAJ >= 525 )); then
+                    TORCH_INDEX="https://download.pytorch.org/whl/cu128"
+                    WHEEL_NOTE="forced: nvidia/Blackwell -> cu128 (driver $_DRV; cu130 needs 580+)"
+                else
+                    die "Forced --backend nvidia with Blackwell GPU but driver '$_DRV' is too old. Need >= 525."
+                fi
+            else
+                TORCH_INDEX="https://download.pytorch.org/whl/cu124"
+                WHEEL_NOTE="forced: nvidia/cu124"
+            fi
+            ;;
         amd)
             # gfx906 overrides even an explicit --backend amd: the default
             # rocm6.1 wheel cannot see MI50 / Radeon VII on ROCm 6.4+ hosts.
@@ -637,6 +717,17 @@ try:
         print("  ROCm:   ", torch.version.hip)
 except Exception:
     pass
+# Blackwell extra check: if the GPU is Blackwell, sm_120 must be in the arch list.
+try:
+    if torch.cuda.is_available():
+        caps = torch.cuda.get_device_capability(0)
+        if caps[0] >= 12:
+            archs = torch.cuda.get_arch_list()
+            sm = f"sm_{caps[0]}{caps[1]}"
+            ok = sm in archs or f"compute_{caps[0]}{caps[1]}" in archs
+            print(f"  Blackwell: GPU={sm} kernel={sm if ok else 'MISSING'}  archs={archs}")
+except Exception:
+    pass
 PYEOF
 
 if ! "$APP_PY" - <<'PYEOF'
@@ -698,9 +789,6 @@ EOF
         chmod +x "$BIN_DIR/crowdgpt"
 
         # ---- Icon ----
-        # Prefer the full-colour app icon; only fall back to the
-        # monochrome logo-*.svg variants if the app icon is missing,
-        # and announce it when that happens.
         ICON_SRC=""
         ICON_NOTE=""
         for c in "$APP_DIR/docs/logo-app.svg" "$APP_DIR/docs/logo-app.png"; do
@@ -721,11 +809,9 @@ EOF
         ICON_PNG="$ICON_DIR/crowdgpt.png"
         ICON_SVG_SCALABLE="$ICON_DIR_SCALABLE/crowdgpt.svg"
 
-        # Never leave a previous install's icon behind.
         rm -f "$ICON_PNG" "$ICON_SVG_SCALABLE" "$ICON_DIR/crowdgpt.svg"
 
         if [[ -n "$ICON_SRC" ]]; then
-            # rsvg-convert, preserving aspect (-a).
             if command -v rsvg-convert >/dev/null 2>&1; then
                 if rsvg-convert -a -w 256 -h 256 "$ICON_SRC" -o "$ICON_PNG" 2>/dev/null \
                    && [[ -s "$ICON_PNG" ]]; then
@@ -734,7 +820,6 @@ EOF
                     warn "rsvg-convert failed on $ICON_SRC; trying cairosvg..."
                 fi
             fi
-            # cairosvg, preserving aspect (only output_width given).
             if [[ ! -s "$ICON_PNG" ]] && "$APP_PY" -c "import cairosvg" >/dev/null 2>&1; then
                 if "$APP_PY" - <<PYEOF 2>/dev/null
 import cairosvg
@@ -746,7 +831,6 @@ PYEOF
                     warn "cairosvg failed on $ICON_SRC; falling back to SVG copy."
                 fi
             fi
-            # SVG fallback belongs in hicolor/scalable/apps, NOT 256x256.
             if [[ ! -s "$ICON_PNG" ]]; then
                 if cp "$ICON_SRC" "$ICON_SVG_SCALABLE" 2>/dev/null && [[ -s "$ICON_SVG_SCALABLE" ]]; then
                     ok "Icon: $(basename "$ICON_SRC") -> $ICON_SVG_SCALABLE (SVG)${ICON_NOTE}"
@@ -874,7 +958,6 @@ EOF
                 TMP_ICONSET="$(mktemp -d)/crowdgpt.iconset"
                 mkdir -p "$TMP_ICONSET"
                 ICON_OK=1
-                # Standard macOS iconset sizes: 16 32 128 256 512 (each @1x/@2x).
                 for size in 16 32 128 256 512; do
                     if ! rsvg-convert -a -w "$size" -h "$size" "$ICON_SRC" \
                             -o "$TMP_ICONSET/icon_${size}x${size}.png" 2>/dev/null; then
