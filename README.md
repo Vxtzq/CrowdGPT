@@ -27,7 +27,7 @@
   <strong>The best 0$ AI.</strong>
 </p>
 
-# 🆕 CrowdGPT v1.9 Changelog 🆕
+# 🆕 CrowdGPT v2.0 Changelog 🆕
 - Revert back from broken weights (7 steps back on server)
 - UI fixes
 - client.py cryptographical signing
