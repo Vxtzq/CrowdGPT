@@ -27,12 +27,9 @@
   <strong>The best 0$ AI.</strong>
 </p>
 
-# 🆕 CrowdGPT v2.0 Changelog 🆕
-- Revert back from broken weights (7 steps back on server)
-- UI fixes
-- client.py cryptographical signing
-- Engram training enabled by default
-- Fix freeze at startup on certain devices
+# Important
+- CrowdGPT v2.2 is broken. If your client updated to this version, manually update to v2.3 or newer using the installation command or downloading the code from GitHub! 
+I apologize for this dumb mistake of a missing import 😭
 
 ## What is CrowdGPT?
 
