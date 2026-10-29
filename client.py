@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v1.9
+CrowdGPT GUI Client v2.0
 
-v1.9 changes:
+v2.0 changes (dynamic optimizer adaptation):
+  - Reports optimizer capabilities to server: X-Client-Optim-Can-Fp32, X-Client-Optim-Can-8bit
+  - Honors crossCheck.targetOptimizer from the pool (asymmetric: fp32 accepts any, 8bit requires native)
+  - recommend_batch_size() and _build_optimizers() accept force_mode so a native-8bit client
+    can be downgraded to fp32 without OOMing on the wrong bs estimate
+  - _on_step_down preserves force_mode across OOM recovery (otherwise pool mismatch mid-round)
+  - Round aborts if server forces adamw8bit and client cannot (defensive; v2 server filters this)
+  - X-Client-Optim continues to report native preference; forced mode goes into the new headers
+
+v1.9 changes (retained):
   - Engram training ENABLED by default (CROWDGPT_ENGRAM=0 to disable)
   - Engram wired into forward pass (x = x + self.engram(idx))
   - Reports X-Client-Autocast and X-Client-Optim to the coordinator
@@ -47,7 +56,7 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='repla
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
 
-CLIENT_VERSION = "1.9"
+CLIENT_VERSION = "2.0"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
@@ -478,13 +487,11 @@ def _png_to_ico(png_path: str, sizes=(256, 128, 64, 48, 32, 16)):
     except Exception: return None
 
 def _generate_fallback_ico():
-    """Generates a clean base64-less fallback icon if no SVG/ICO is found."""
     try:
         from PIL import Image, ImageDraw
         tmp = tempfile.NamedTemporaryFile(suffix='.ico', delete=False); tmp.close()
         img = Image.new('RGBA', (256, 256), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
-        # Draw a simple orange rounded box with a white circle
         d.rounded_rectangle((20, 20, 236, 236), radius=40, fill=(245, 158, 11, 255))
         d.ellipse((78, 78, 178, 178), fill=(255, 255, 255, 255))
         img.save(tmp.name, format="ICO", sizes=[(256, 256), (64, 64), (32, 32), (16, 16)])
@@ -521,14 +528,11 @@ def _find_best_icon():
                 ico_path = _png_to_ico(raster)
                 if ico_path: _cleanup_icon.append(ico_path)
             return raster, ico_path
-            
-    # Fallback so we don't get the default Tkinter/WebView squares
     if sys.platform == "win32":
         fallback = _generate_fallback_ico()
         if fallback:
             _cleanup_icon.append(fallback)
             return fallback, fallback
-            
     return None, None
 
 ICON_PATH, WINDOWS_ICO_PATH = _find_best_icon()
@@ -722,8 +726,17 @@ def estimate_vram_bytes(bs, sl, u8):
     workspace = int(ALLOCATOR_RESERVE_GB * 1024**3)
     return int(head_bytes + block_bytes + act + loss + workspace)
 
-def recommend_batch_size(sl=MAX_SEQ_LEN):
-    u8 = has_bitsandbytes() and train_backend in ("CUDA", "ROCM")
+def recommend_batch_size(sl=MAX_SEQ_LEN, force_mode=None):
+    """force_mode: None = native (8bit if available, else 32); "adamw8bit" = force 8bit (2 bytes/param);
+    "adamw32" = force fp32 (8 bytes/param). Forcing matters because 8bit<->fp32 changes the VRAM
+    estimate by ~6 bytes per param on the optimizer state, which can be the difference between
+    fitting and OOMing at model build."""
+    if force_mode == "adamw8bit":
+        u8 = True
+    elif force_mode == "adamw32":
+        u8 = False
+    else:
+        u8 = has_bitsandbytes() and train_backend in ("CUDA", "ROCM")
     budget = int(memory_config["ram_gb"] * 1024**3); best = 1
     for bs in ALLOWED_BATCH_SIZES:
         if estimate_vram_bytes(bs, sl, u8) <= budget: best = bs
@@ -733,7 +746,20 @@ def recommend_batch_size(sl=MAX_SEQ_LEN):
     if train_backend == "CPU": best = min(best, 2)
     return best
 
-def _predict_optim(backend):
+def _predict_optim(backend, force_mode=None):
+    """Returns the effective optimizer name. force_mode overrides native preference.
+    - force_mode=None → native (8bit if available, else 32)
+    - force_mode="adamw32" → fp32 always
+    - force_mode="adamw8bit" → 8bit if available, else gracefully 32 (caller is expected to have already aborted)"""
+    if force_mode == "adamw32": return "adamw32"
+    if force_mode == "adamw8bit":
+        try:
+            import bitsandbytes as bnb
+            if hasattr(bnb, "optim") and hasattr(bnb.optim, "AdamW8bit") and backend in ("CUDA", "ROCM"):
+                return "adamw8bit"
+        except Exception: pass
+        return "adamw32"
+    # native
     if backend not in ("CUDA", "ROCM"): return "adamw32"
     try:
         import bitsandbytes as bnb
@@ -741,8 +767,15 @@ def _predict_optim(backend):
         return "adamw8bit"
     except Exception: return "adamw32"
 
-def _hardware_headers():
-    try: bs = recommend_batch_size(MAX_SEQ_LEN)
+def _detect_optim_capability():
+    """Returns (native, can_fp32, can_8bit). can_fp32 is always True (every backend supports fp32 AdamW).
+    can_8bit is True only on CUDA/ROCm with a bitsandbytes that ships AdamW8bit."""
+    native = _predict_optim(train_backend)
+    can_8bit = (native == "adamw8bit")
+    return native, True, can_8bit
+
+def _hardware_headers(force_mode=None):
+    try: bs = recommend_batch_size(MAX_SEQ_LEN, force_mode=force_mode)
     except Exception: bs = 1
     gpu = "UNKNOWN"
     try:
@@ -752,13 +785,16 @@ def _hardware_headers():
     try:
         _ua, _ad = _pick_autocast(train_backend); autocast_str = "bf16" if _ua else "fp32"
     except Exception: autocast_str = "fp32"
+    native, can_fp32, can_8bit = _detect_optim_capability()
     return {
         "X-Client-Backend":   (train_backend or "UNKNOWN").upper(),
         "X-Client-Batch-Size": str(bs),
         "X-Client-Vram-Gb":   f"{memory_config.get('ram_gb', 0.0):.2f}",
         "X-Client-Gpu-Name":  gpu,
         "X-Client-Autocast":  autocast_str,
-        "X-Client-Optim":     _predict_optim(train_backend),
+        "X-Client-Optim":     native,
+        "X-Client-Optim-Can-Fp32": "1" if can_fp32 else "0",
+        "X-Client-Optim-Can-8bit": "1" if can_8bit else "0",
         "X-Client-Engram":    "1" if ENGRAM_ACTIVE else "0",
     }
 
@@ -1499,12 +1535,15 @@ class _MultiOpt:
     def step(self):
         for o in self.opts: o.step()
 
-def _build_optimizers(model, lr=1e-4):
+def _build_optimizers(model, lr=1e-4, force_mode=None):
+    """force_mode: None = native, "adamw8bit" = force 8bit, "adamw32" = force fp32.
+    Must be preserved across OOM-driven rebuilds (_on_step_down) or a client forced into an
+    fp32 pool by the server will silently flip back to 8bit after a VRAM step-down."""
     bp = [p for n, p in model.named_parameters() if not n.startswith('engram.')]
     ep = list(model.engram.parameters())
     groups = {}
     for p in bp: groups.setdefault(p.device.type, []).append(p)
-    use_8bit = (_predict_optim(train_backend) == "adamw8bit"); opts = []
+    use_8bit = (_predict_optim(train_backend, force_mode=force_mode) == "adamw8bit"); opts = []
     for dev_type, ps in groups.items():
         o = None
         if dev_type == 'cuda' and use_8bit:
@@ -1578,11 +1617,13 @@ def _parse_task_meta(md, emit):
     cc_bs = cc_cfg.get("targetBatchSize") if cohort_mode else None
     cc_accum = cc_cfg.get("targetAccumSteps") if cohort_mode else None
     cc_autocast = cc_cfg.get("targetAutocast") if cohort_mode else None
+    cc_optim = (cc_cfg.get("targetOptimizer") if cohort_mode else None) or "any"
     if cohort_mode and (cc_seed is None or cc_steps is None or cc_bs is None or cc_accum is None or cc_autocast is None):
-        emit('log', "⚠️ Cross-check metadata incomplete; disabling cohort mode for this round"); cohort_mode = False; cc_seed = cc_steps = cc_bs = cc_accum = cc_autocast = None
-    if cohort_mode: emit('log', f"[COHORT] ENABLED: seed={cc_seed} steps={cc_steps} bs_target={cc_bs} accum={cc_accum} autocast={cc_autocast}")
+        emit('log', "⚠️ Cross-check metadata incomplete; disabling cohort mode for this round")
+        cohort_mode = False; cc_seed = cc_steps = cc_bs = cc_accum = cc_autocast = None
+    if cohort_mode: emit('log', f"[COHORT] ENABLED: seed={cc_seed} steps={cc_steps} bs_target={cc_bs} accum={cc_accum} autocast={cc_autocast} optim={cc_optim}")
     else: emit('log', "[COHORT] disabled (server will use Krum for this shard)")
-    return tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast
+    return tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim
 
 def run_single_round_wrapper(srv, at, se, emit):
     global train_device, train_backend
@@ -1592,11 +1633,12 @@ def run_single_round_wrapper(srv, at, se, emit):
     cr = rs["current_round"]; hb = HeartbeatManager(srv, h, cr, se, emit); hb.start()
     model = ob = oe = x = y = lo = iw = ie = iew = ds = None
     micro_step = 0; lval = 10.0; tt = 0; tid = ""; tried_cpu_fallback = False
-    cohort_mode = False; cc_seed = cc_steps = cc_bs = cc_accum = cc_autocast = None
+    cohort_mode = False; cc_seed = cc_steps = cc_bs = cc_accum = cc_autocast = None; cc_optim = "any"
+    optim_mode = None
     try:
         emit('log', "Fetching task metadata..."); md = fetch_task_metadata(srv, h, se, emit)
         if md is None: return
-        tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast = _parse_task_meta(md, emit)
+        tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim = _parse_task_meta(md, emit)
         if not tid: return
         hb.tid = tid; iw = ie = None
         
@@ -1613,7 +1655,7 @@ def run_single_round_wrapper(srv, at, se, emit):
             emit('log', "Downloading weights from coordinator...")
             md, wb = fetch_task(srv, h, "bf16", se, emit)
             if md is None: return
-            tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast = _parse_task_meta(md, emit)
+            tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim = _parse_task_meta(md, emit)
             hb.tid = tid
             if not tid: emit('log', "Coordinator task metadata missing taskId."); return
             bbl = EXPECTED_MODEL_SIZE * 2; ebl = EXPECTED_ENGRAM_SIZE * 2
@@ -1622,12 +1664,29 @@ def run_single_round_wrapper(srv, at, se, emit):
             iw = _bf16_from_bytes(wb, 0, bbl); ie = _bf16_from_bytes(wb, bbl, ebl) if ENGRAM_ACTIVE else None
             del wb; gc.collect()
 
+        # v2: resolve optimizer mode from server's target (asymmetric forcing — fp32 pools accept any,
+        # 8bit pools require native 8bit). If we can't honor the target, abort rather than submit a
+        # delta that will silently fail cross-check or poison the aggregation.
+        if cc_optim and cc_optim != "any":
+            _native, _can_fp32, _can_8bit = _detect_optim_capability()
+            if cc_optim in ("adamw_fp32", "adamw32"):
+                optim_mode = "adamw32"
+                if _native == "adamw8bit":
+                    emit('log', f"[COHORT] pool forces fp32 (client native={_native}, downgrading)")
+            elif cc_optim in ("adamw8bit", "adamw8"):
+                if not _can_8bit:
+                    emit('log', f"[COHORT] server requires adamw8bit but client cannot (backend={train_backend}, bnb={has_bitsandbytes()}) — aborting round")
+                    return
+                optim_mode = "adamw8bit"
+            else:
+                emit('log', f"[COHORT] unknown targetOptimizer={cc_optim!r} — using native")
+
         emit('status', 'preparing'); emit('log', "Preparing model...")
         dc = md.get("datasetConfig", {}); sc = md.get("shardConfig", {}); slot = sc.get("slot", 0)
         if cohort_mode: slot = 0; emit('log', "[COHORT] slot forced to 0 (identical shard for all members)")
         ds = StreamingShardDataset(dc.get("repoId", DATASET_REPO_ID), dc.get("chunkIdx", 0), dc.get("subChunkSize", 10 * 1024 * 1024), dc.get("tokensPerSample", sl + 1), slot, at, cohort_mode=cohort_mode)
 
-        bs = recommend_batch_size(sl)
+        bs = recommend_batch_size(sl, force_mode=optim_mode)
         if cohort_mode and cc_bs and int(cc_bs) > 0: bs = int(cc_bs)
         model = None
         while bs >= 1:
@@ -1640,7 +1699,6 @@ def run_single_round_wrapper(srv, at, se, emit):
                 if not _is_oom(e): raise
                 if model: del model; model = None
                 _clear_accel_cache(train_device)
-                # Halving can't go below 1, and in a cohort a smaller batch is aborted anyway.
                 if bs == 1 or (cohort_mode and cc_bs and bs <= int(cc_bs)):
                     emit('log', f"Model build OOM at bs={bs}; skipping this round (try a lower --vram-gb)"); break
                 bs = max(1, bs // 2); emit('log', f"Model build OOM → bs={bs}")
@@ -1649,16 +1707,18 @@ def run_single_round_wrapper(srv, at, se, emit):
 
         iew = ie.view(model.engram.table.weight.shape) if (ENGRAM_ACTIVE and ie is not None) else None; ie = None; _trim_heap()
         mbt = bs * sl; as_ = int(cc_accum) if (cohort_mode and cc_accum) else max(1, round(131072 / mbt))
-        ls = 1.0 / as_; ob, oe = _build_optimizers(model, lr=1e-4)
+        ls = 1.0 / as_; ob, oe = _build_optimizers(model, lr=1e-4, force_mode=optim_mode)
 
         def _on_step_down(_ladder):
             nonlocal ob, oe
             if cohort_mode: raise CohortAbort("OOM during cohort training")
-            ob, oe = _build_optimizers(model, lr=1e-4); emit('log', "   rebuilt optimizers for new placement")
+            # Preserve optim_mode: flipping back to native mid-round would submit a delta trained
+            # with the wrong optimizer for the pool, silently failing cross-check
+            ob, oe = _build_optimizers(model, lr=1e-4, force_mode=optim_mode); emit('log', "   rebuilt optimizers for new placement")
 
         ladder = DegradeLadder(model, on_step_down=_on_step_down)
         ua, ad = _pick_autocast(train_backend)
-        emit('log', f"Backend: {train_backend} | autocast: {ua} | bs={bs} | accum={as_} | dtype={'bf16' if ua else 'fp32'} | engram={'on' if ENGRAM_ACTIVE else 'off'} | optim={_predict_optim(train_backend)}")
+        emit('log', f"Backend: {train_backend} | autocast: {ua} | bs={bs} | accum={as_} | dtype={'bf16' if ua else 'fp32'} | engram={'on' if ENGRAM_ACTIVE else 'off'} | optim={_predict_optim(train_backend, force_mode=optim_mode)}")
 
         if cohort_mode and cc_autocast and cc_autocast != "any":
             wants_bf16 = (cc_autocast == "bf16")
@@ -1853,7 +1913,6 @@ class Api:
         except queue.Full: pass
 
     def _ui_pump(self):
-        # BLOCK until the webview page fires 'loaded'. Prevents UI thread deadlock.
         self._ui_ready.wait()
         time.sleep(0.1) 
         while True:
