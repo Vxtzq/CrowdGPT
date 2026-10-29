@@ -615,7 +615,16 @@ def _pick_rocm_device(preferred_idx=None):
 
 def _check_arch_compat(device_idx):
     """Returns (compatible, arch_needed, arch_have). Only meaningful for CUDA.
-    ROCm uses gfx names; always report compatible."""
+    ROCm uses gfx names; always report compatible.
+
+    Compatibility rules:
+      1. Exact sm_XY match → runs natively.
+      2. Any sm_X* with same major X in the wheel → runs natively (minor version fwd-compat
+         within same major: sm_89 GPU runs sm_90 kernels? No — it runs sm_8X kernels.
+         Actually a sm_89 GPU runs any sm_8X wheel binary, and JIT-compiles any compute_8X PTX.)
+      3. Any compute_X* PTX in the wheel → runs via JIT (small startup cost).
+      4. Otherwise: no path from this wheel → incompatible (this is the RTX 50-series case:
+         sm_120 GPU, wheel has only sm_75..sm_90, no compute_12X PTX)."""
     if getattr(torch.version, "hip", None):
         return True, "rocm", []
     try:
@@ -627,12 +636,32 @@ def _check_arch_compat(device_idx):
         arch_have = list(torch.cuda.get_arch_list())
     except Exception:
         arch_have = []
-    compat = (
-        arch_needed in arch_have
-        or f"{arch_needed}a" in arch_have
-        or f"compute_{major}{minor}" in arch_have
+    if not arch_have:
+        # Cannot determine — fail open (don't block training on older torch builds
+        # that don't expose get_arch_list). Worst case: user sees the runtime
+        # cudaErrorNoKernelImageForDevice instead of a pre-flight message.
+        return True, arch_needed, []
+
+    # 1. Exact match
+    if arch_needed in arch_have or f"{arch_needed}a" in arch_have:
+        return True, arch_needed, arch_have
+
+    # 2. Any sm_X* in wheel with SAME MAJOR (Ada sm_89 gets sm_80/sm_86/sm_89, not sm_90)
+    same_major_sm = any(
+        h.startswith(f"sm_{major}") and h[5:].isdigit() for h in arch_have
     )
-    return compat, arch_needed, arch_have
+    if same_major_sm:
+        return True, arch_needed, arch_have
+
+    # 3. Any compute_X* PTX in wheel with SAME MAJOR (JIT path)
+    same_major_ptx = any(
+        h.startswith(f"compute_{major}") and h[8:].isdigit() for h in arch_have
+    )
+    if same_major_ptx:
+        return True, arch_needed, arch_have
+
+    # 4. No compatible path — this is the real "wrong wheel" case
+    return False, arch_needed, arch_have
 
 
 def get_gpu_list():
