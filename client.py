@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v2.1
+CrowdGPT GUI Client v2.2
 
-v2.1 changes
+v2.2 changes
   - fix UI button bugs
-
+  - Same user on multiple devices
 v2.0 changes (dynamic optimizer adaptation):
   - Reports optimizer capabilities to server: X-Client-Optim-Can-Fp32, X-Client-Optim-Can-8bit
   - Honors crossCheck.targetOptimizer from the pool (asymmetric: fp32 accepts any, 8bit requires native)
@@ -59,7 +59,7 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='repla
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
 
-CLIENT_VERSION = "2.1"
+CLIENT_VERSION = "2.2"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
@@ -230,6 +230,7 @@ CHECKPOINT_DIR = Path(__file__).resolve().parent / "checkpoints"
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 AUTH_TOKEN_FILE = CHECKPOINT_DIR / "auth_token.json"
 GPU_SELECTION_FILE = CHECKPOINT_DIR / "selected_gpu.json"
+DEVICE_ID_FILE = CHECKPOINT_DIR / "device_id.json"
 
 def _write_private(path, text):
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -255,6 +256,29 @@ except Exception: pass
 if AUTH_TOKEN_FILE.exists():
     try: os.chmod(str(AUTH_TOKEN_FILE), 0o600)
     except OSError: pass
+
+def _load_or_create_device_id() -> str:
+    """Stable per-install ID used to distinguish multiple devices on one account.
+    The coordinator keys per-client dicts on user:<uuid>:dev:<device>, so two
+    devices running the same account are treated as distinct training clients
+    (separate pools, delta slots, quotas). The UUID part is still used for
+    user-level bans / trust / token accounting."""
+    try:
+        if DEVICE_ID_FILE.exists():
+            v = json.loads(DEVICE_ID_FILE.read_text()).get("id")
+            if isinstance(v, str) and 8 <= len(v) <= 32:
+                return v
+    except Exception:
+        pass
+    new_id = uuid.uuid4().hex[:16]
+    try:
+        DEVICE_ID_FILE.write_text(json.dumps({"id": new_id, "created": time.time()}))
+    except Exception:
+        pass
+    return new_id
+
+DEVICE_ID = _load_or_create_device_id()
+log.info(f"[device] id={DEVICE_ID[:8]}… ({DEVICE_ID_FILE.name})")
 
 MAX_CACHED_REVISIONS = 1; MAX_HF_CACHE_GB = 6.0; STALE_PART_AGE_SEC = 60 * 60; STALE_BAK_AGE_SEC = 24 * 60 * 60
 
@@ -947,6 +971,7 @@ def _hardware_headers(force_mode=None):
         "X-Client-Optim-Can-Fp32": "1" if can_fp32 else "0",
         "X-Client-Optim-Can-8bit": "1" if can_8bit else "0",
         "X-Client-Engram":    "1" if ENGRAM_ACTIVE else "0",
+        "X-Client-Device":    DEVICE_ID,
     }
 
 def _plan_placement(device, backend_name, budget_gb, bs=1, sl=MAX_SEQ_LEN, u8=False, loss_chunk=LOSS_CHUNK):
@@ -1779,6 +1804,7 @@ def _parse_task_meta(md, emit):
 def run_single_round_wrapper(srv, at, se, emit):
     global train_device, train_backend
     h = {"Authorization": f"Bearer {at}"} if at else {}
+    if DEVICE_ID: h["X-Client-Device"] = DEVICE_ID
     emit('status', 'waiting'); rs = wait_for_round(srv, h, se, emit)
     if not rs: return
     cr = rs["current_round"]; hb = HeartbeatManager(srv, h, cr, se, emit); hb.start()
