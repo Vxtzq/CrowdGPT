@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v2.3
+CrowdGPT GUI Client v2.4
 
-v2.3 changes
+v2.4 changes
   - fix UI button bugs
   - Same user on multiple devices
   - Fixed missing import
@@ -60,7 +60,7 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='repla
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
 
-CLIENT_VERSION = "2.3"
+CLIENT_VERSION = "2.4"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
