@@ -38,6 +38,8 @@ I apologize for this dumb mistake of a missing import 😭
 
 If you don't wanna update manually, just find your CrowdGPT installation and append `import uuid` to the top of the file. That's all to fix to get it back to working.
 
+**CrowdGPT admin applications are open!!** Admins can train by themselves, without any checks.
+
 ## What is CrowdGPT?
 
 CrowdGPT is a **project for training arbitrary big LLMs** using volunteered compute.
