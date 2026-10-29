@@ -119,6 +119,7 @@ def ed25519_verify(public_key, message, signature):
 
 class AuthRejected(Exception): pass
 class CohortAbort(Exception): pass
+class ArchIncompatible(Exception): pass
 
 def _parse_version(v):
     try: return tuple(int(x) for x in str(v).strip().split("-")[0].split(".")[:4])
@@ -225,6 +226,7 @@ def _restart_self():
 CHECKPOINT_DIR = Path(__file__).resolve().parent / "checkpoints"
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 AUTH_TOKEN_FILE = CHECKPOINT_DIR / "auth_token.json"
+GPU_SELECTION_FILE = CHECKPOINT_DIR / "selected_gpu.json"
 
 def _write_private(path, text):
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -591,7 +593,7 @@ def get_best_default_backend():
         if avail.get(bk): return bk
     return 'cpu'
 
-def _pick_rocm_device():
+def _pick_rocm_device(preferred_idx=None):
     candidates = []
     for idx in range(torch.cuda.device_count()):
         try:
@@ -599,11 +601,121 @@ def _pick_rocm_device():
             candidates.append((idx, str(props.name), int(props.total_memory)))
         except Exception: pass
     if not candidates: raise RuntimeError("ROCm reports no usable GPU")
+    if preferred_idx is not None:
+        for idx, name, total in candidates:
+            if idx == preferred_idx:
+                torch.cuda.set_device(idx)
+                log.info(f"[ROCM-FIX] Selected cuda:{idx} (user choice): {name} ({total / 1024**3:.1f} GB VRAM)")
+                return torch.device(f"cuda:{idx}")
     preferred = [g for g in candidates if "radeon rx" in g[1].lower()]
     idx, name, total = max(preferred or candidates, key=lambda g: g[2])
     torch.cuda.set_device(idx)
     log.info(f"[ROCM-FIX] Selected cuda:{idx}: {name} ({total / 1024**3:.1f} GB VRAM)")
     return torch.device(f"cuda:{idx}")
+
+def _check_arch_compat(device_idx):
+    """Returns (compatible, arch_needed, arch_have). Only meaningful for CUDA.
+    ROCm uses gfx names; always report compatible."""
+    if getattr(torch.version, "hip", None):
+        return True, "rocm", []
+    try:
+        major, minor = torch.cuda.get_device_capability(device_idx)
+    except Exception:
+        return True, "?", []
+    arch_needed = f"sm_{major}{minor}"
+    try:
+        arch_have = list(torch.cuda.get_arch_list())
+    except Exception:
+        arch_have = []
+    compat = (
+        arch_needed in arch_have
+        or f"{arch_needed}a" in arch_have
+        or f"compute_{major}{minor}" in arch_have
+    )
+    return compat, arch_needed, arch_have
+
+
+def get_gpu_list():
+    """Returns [{idx, name, vram_gb, arch_ok, arch_needed}, ...]. Empty if no CUDA/ROCm devices."""
+    try:
+        if not torch.cuda.is_available():
+            return []
+        n = torch.cuda.device_count()
+    except Exception:
+        return []
+    out = []
+    for idx in range(n):
+        try:
+            props = torch.cuda.get_device_properties(idx)
+            arch_ok, arch_needed, _ = _check_arch_compat(idx)
+            out.append({
+                "idx": idx,
+                "name": str(props.name),
+                "vram_gb": round(int(props.total_memory) / (1024 ** 3), 1),
+                "arch_ok": arch_ok,
+                "arch_needed": arch_needed,
+            })
+        except Exception as e:
+            log.warning(f"[gpu] probe {idx} failed: {e}")
+    return out
+
+
+def _load_saved_gpu_idx():
+    try:
+        if GPU_SELECTION_FILE.exists():
+            v = json.loads(GPU_SELECTION_FILE.read_text()).get("index")
+            if v is not None:
+                return int(v)
+    except Exception:
+        pass
+    return None
+
+
+def _save_saved_gpu_idx(idx):
+    try:
+        GPU_SELECTION_FILE.write_text(json.dumps({"index": int(idx)}))
+    except Exception:
+        pass
+
+
+def _pick_cuda_device(preferred_idx=None):
+    try:
+        n = torch.cuda.device_count()
+    except Exception:
+        n = 0
+    if n == 0:
+        raise RuntimeError("CUDA reports no devices")
+    idx = preferred_idx if (preferred_idx is not None and 0 <= preferred_idx < n) else 0
+    try:
+        torch.cuda.set_device(idx)
+        name = torch.cuda.get_device_name(idx)
+        log.info(f"[CUDA] Selected cuda:{idx}: {name}")
+    except Exception:
+        log.info(f"[CUDA] Selected cuda:{idx}")
+    return torch.device(f"cuda:{idx}")
+
+
+_arch_warned = set()
+def _check_arch_and_warn(emit, device_idx):
+    """Returns True if compatible. Logs a once-per-session warning with the fix if not."""
+    compat, needed, have = _check_arch_compat(device_idx)
+    if compat:
+        return True
+    if device_idx not in _arch_warned:
+        _arch_warned.add(device_idx)
+        try:
+            name = torch.cuda.get_device_name(device_idx)
+        except Exception:
+            name = f"cuda:{device_idx}"
+        have_s = ", ".join(have) if have else "(none)"
+        emit('log', f"❌ GPU {device_idx} ({name}) requires {needed} but installed PyTorch only has: {have_s}")
+        emit('log', f"   This is the classic RTX 50-series / Blackwell issue — PyTorch wheel was built for older GPUs.")
+        emit('log', f"   Windows fix (cmd): \"%LOCALAPPDATA%\\CrowdGPT\\.venv\\Scripts\\pip.exe\" install --upgrade --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130")
+        emit('log', f"   Linux fix: pip install --upgrade --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130")
+        emit('log', f"   Or: pick a different GPU from the selector, or switch backend to CPU (slow).")
+    return False
+
+
 
 def _pick_directml_device(dml):
     try:
@@ -617,11 +729,14 @@ def _pick_directml_device(dml):
     return dml.device(0)
 
 def detect_training_backend(force=None):
+    saved_gpu = _load_saved_gpu_idx()
     if force and force != "auto":
         n = force.lower()
         if n == "cpu": return torch.device('cpu'), "CPU"
-        if n == "cuda" and torch.cuda.is_available() and not getattr(torch.version, "hip", None): return torch.device('cuda'), "CUDA"
-        if n == "rocm" and hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available(): return _pick_rocm_device(), "ROCM"
+        if n == "cuda" and torch.cuda.is_available() and not getattr(torch.version, "hip", None):
+            return _pick_cuda_device(saved_gpu), "CUDA"
+        if n == "rocm" and hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available():
+            return _pick_rocm_device(saved_gpu), "ROCM"
         if n == "mps" and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available(): return torch.device('mps'), "MPS"
         if n == "xpu":
             try:
@@ -633,8 +748,10 @@ def detect_training_backend(force=None):
                 import torch_directml
                 if torch_directml.is_available(): return _pick_directml_device(torch_directml), "DIRECTML"
             except ImportError: pass
-    if torch.cuda.is_available() and not (hasattr(torch.version, 'hip') and torch.version.hip): return torch.device('cuda'), "CUDA"
-    if hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available(): return _pick_rocm_device(), "ROCM"
+    if torch.cuda.is_available() and not (hasattr(torch.version, 'hip') and torch.version.hip):
+        return _pick_cuda_device(saved_gpu), "CUDA"
+    if hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available():
+        return _pick_rocm_device(saved_gpu), "ROCM"
     if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available(): return torch.device('mps'), "MPS"
     try:
         import intel_extension_for_pytorch
@@ -779,7 +896,9 @@ def _hardware_headers(force_mode=None):
     except Exception: bs = 1
     gpu = "UNKNOWN"
     try:
-        if train_backend in ("CUDA", "ROCM") and torch.cuda.is_available(): gpu = torch.cuda.get_device_name(0)
+        if train_backend in ("CUDA", "ROCM") and torch.cuda.is_available():
+            dev_idx = train_device.index if (train_device is not None and train_device.index is not None) else 0
+            gpu = torch.cuda.get_device_name(dev_idx)
         elif train_backend: gpu = str(train_backend)
     except Exception: pass
     try:
@@ -1641,7 +1760,13 @@ def run_single_round_wrapper(srv, at, se, emit):
         tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim = _parse_task_meta(md, emit)
         if not tid: return
         hb.tid = tid; iw = ie = None
-        
+
+        # Fail fast if selected GPU has no matching kernels in installed PyTorch
+        if train_backend in ("CUDA", "ROCM") and torch.cuda.is_available():
+            _dev_idx = train_device.index if (train_device is not None and train_device.index is not None) else 0
+            if not _check_arch_and_warn(emit, _dev_idx):
+                raise ArchIncompatible(f"GPU {_dev_idx} has no matching kernels in installed PyTorch")
+
         if USE_HF_WEIGHTS:
             wcfg = md.get("weights") or {}
             if wcfg.get("source") == "huggingface":
@@ -1933,6 +2058,26 @@ class Api:
     def get_backends(self):
         self.emit('backends', {'available': get_available_backends(), 'current': self.selected_backend})
         self.emit('vram', {'current': self.vram_gb})
+        gpus = get_gpu_list()
+        saved = _load_saved_gpu_idx()
+        if not gpus:
+            current = 0
+        elif saved is None or not any(g["idx"] == saved for g in gpus):
+            current = gpus[0]["idx"]
+        else:
+            current = saved
+        self.emit('gpus', {'list': gpus, 'current': current})
+
+    def set_gpu(self, idx):
+        try:
+            idx = int(idx)
+        except (TypeError, ValueError):
+            return
+        _save_saved_gpu_idx(idx)
+        busy = self.thread is not None and self.thread.is_alive()
+        self.emit('log', f"GPU → {idx}" + (" (stopping current round; applies from the next)" if busy else ""))
+        self.get_backends()
+        if busy: self.stop_event.set()
 
     def set_vram(self, gb):
         try: gb = max(0.0, float(gb))
@@ -2000,6 +2145,8 @@ class Api:
             try: run_single_round_wrapper(self.server_url, self.auth_token, self.stop_event, self.emit)
             except AuthRejected:
                 self.auth_token = None; self.emit('status', 'idle'); self.emit('log', "🔒 Session expired — please log in again."); break
+            except ArchIncompatible as e:
+                self.emit('status', 'idle'); self.emit('log', f"⛔ Cannot train: {e}. Fix the PyTorch/GPU mismatch above, or pick a different GPU/backend, then press Start again."); break
             except KeyboardInterrupt: self.stop_event.set(); break
             except Exception as e:
                 import traceback; tb = traceback.format_exc()
@@ -2122,6 +2269,7 @@ def run_headless(args):
         log.info(f"Round {round_count}" + (f"/{max_rounds}" if max_rounds else ""))
         try: run_single_round_wrapper(args.server, auth_token, stop_event, emit)
         except AuthRejected: return 2
+        except ArchIncompatible: return 6
         except KeyboardInterrupt: stop_event.set(); break
         except Exception as e:
             import traceback; log.error(f"Round failed: {e}"); log.error(traceback.format_exc()[-2000:])
