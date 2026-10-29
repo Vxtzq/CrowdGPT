@@ -1,4 +1,4 @@
-CrowdGPT v2.2 changelog:
+CrowdGPT v2.3 changelog:
 - Better server security
 - Multiple devices for the same user
 - Added GPU selection on app
