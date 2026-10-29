@@ -648,7 +648,7 @@ def _check_arch_compat(device_idx):
 
     # 2. Any sm_X* in wheel with SAME MAJOR (Ada sm_89 gets sm_80/sm_86/sm_89, not sm_90)
     same_major_sm = any(
-        h.startswith(f"sm_{major}") and h[5:].isdigit() for h in arch_have
+        h.startswith(f"sm_{major}") and h[3:].isdigit() for h in arch_have
     )
     if same_major_sm:
         return True, arch_needed, arch_have
