@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v2.5
+CrowdGPT GUI Client v2.6
 
-v2.5 changes
+v2.6 changes
   - fix UI button bugs
   - Same user on multiple devices
   - Fixed missing import
   - Clarified auto-login
+  - Less false-flags
 v2.0 changes (dynamic optimizer adaptation):
   - Reports optimizer capabilities to server: X-Client-Optim-Can-Fp32, X-Client-Optim-Can-8bit
   - Honors crossCheck.targetOptimizer from the pool (asymmetric: fp32 accepts any, 8bit requires native)
@@ -61,7 +62,7 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='repla
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
 
-CLIENT_VERSION = "2.5"
+CLIENT_VERSION = "2.6"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
@@ -966,6 +967,21 @@ def _hardware_headers(force_mode=None):
         _ua, _ad = _pick_autocast(train_backend); autocast_str = "bf16" if _ua else "fp32"
     except Exception: autocast_str = "fp32"
     native, can_fp32, can_8bit = _detect_optim_capability()
+
+    # NEW in v2.5: report CUDA compute capability so the coordinator can pool
+    # same-arch GPUs together in bf16 and fall back to fp32 only for mixed pools.
+    # Only populated for CUDA — ROCm/XPU/MPS/DirectML/CPU leave this empty so the
+    # server's name-based inference produces consistent values across old and new
+    # clients (all ROCm clients resolve to "gfx_unknown", etc.).
+    _cc = ""
+    if train_backend == "CUDA" and torch.cuda.is_available():
+        try:
+            _dev_idx = train_device.index if (train_device is not None and train_device.index is not None) else 0
+            _cap = torch.cuda.get_device_capability(_dev_idx)
+            _cc = f"sm_{_cap[0]}{_cap[1]}"
+        except Exception:
+            _cc = ""
+
     return {
         "X-Client-Backend":   (train_backend or "UNKNOWN").upper(),
         "X-Client-Batch-Size": str(bs),
@@ -977,6 +993,7 @@ def _hardware_headers(force_mode=None):
         "X-Client-Optim-Can-8bit": "1" if can_8bit else "0",
         "X-Client-Engram":    "1" if ENGRAM_ACTIVE else "0",
         "X-Client-Device":    DEVICE_ID,
+        "X-Client-Compute-Cap": _cc,   # NEW
     }
 
 def _plan_placement(device, backend_name, budget_gb, bs=1, sl=MAX_SEQ_LEN, u8=False, loss_chunk=LOSS_CHUNK):
