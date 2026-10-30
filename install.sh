@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# CrowdGPT universal installer — Linux + macOS  (v11)
+# CrowdGPT universal installer — Linux + macOS  (v12)
 #
 #  - venv created at FINAL path (no relocation, no rewrites)
 #  - AMD ROCm: torch version detected, transformers pinned
@@ -41,6 +41,26 @@
 #         Blackwell to cu130 (driver >= 580) or cu128 (driver
 #         >= 525), both of which carry Blackwell kernels. Applies
 #         to auto-detected AND forced (`--backend nvidia`).
+#  - v12: DGX Spark (Grace Blackwell GB10 / GB200, aarch64) and
+#         aarch64 NVIDIA servers.
+#           * Blackwell is now detected BEFORE the aarch64 check.
+#             The old order treated any aarch64 + nvidia-smi box
+#             as a Jetson and fell back to CPU, including GB10.
+#           * aarch64 + Blackwell uses the nightly cu128 index
+#             (stable cu1xx has no aarch64 Blackwell kernels);
+#             --pre is passed automatically.
+#           * torchvision/torchaudio are skipped on nightly
+#             indexes (their nightlies are date-pinned against a
+#             specific torch nightly and routinely mismatch).
+#           * Jetson (Tegra) is now detected via real markers:
+#             /etc/nv_tegra_release, dpkg nvidia-l4t-core, or
+#             "Jetson|Orin|Xavier|Tegra" in `nvidia-smi -q`.
+#             A GB10 / GH200 box no longer matches.
+#           * aarch64 non-Blackwell NVIDIA (GH200 / Grace Hopper)
+#             now installs cu124 instead of dropping to CPU.
+#           * index_has_wheel_for now checks the CPU arch too,
+#             so a missing aarch64 wheel falls back to 3.11 with
+#             a clear message instead of a pip resolution error.
 # ============================================================
 set -Eeuo pipefail
 
@@ -49,6 +69,7 @@ REPO_DIR="CrowdGPT"
 BACKEND_OVERRIDE=""
 TORCH_INDEX=""
 TORCH_EXTRA=""
+TORCH_PRE=""
 LAUNCH=1
 INTEGRATE=1
 
@@ -92,7 +113,7 @@ done
 
 echo
 echo "============================================================"
-echo "                 CrowdGPT Installer  (v11)"
+echo "                 CrowdGPT Installer  (v12)"
 echo "============================================================"
 echo
 
@@ -181,10 +202,11 @@ is_gfx906() {
     rocminfo 2>/dev/null | grep -q 'gfx906'
 }
 
-# Blackwell (RTX 50-series, B100/B200, GB200) — needs cu128+.
-# cu124 wheels ship no sm_120 kernels, so 5090s crash at first matmul
-# with cudaErrorNoKernelImageForDevice. Driver >= 525 for cu128,
-# driver >= 580 for cu130 (preferred when available).
+# Blackwell — RTX 50-series, B100/B200, GB200, GB10 (DGX Spark).
+# cu124 wheels ship no sm_120/sm_121 kernels, so 5090s used to
+# install cleanly then crash at first matmul with
+# cudaErrorNoKernelImageForDevice. On aarch64 (GB10/GB200) only
+# the *nightly* cu128 index has the kernels at all.
 is_blackwell() {
     command -v nvidia-smi >/dev/null 2>&1 || return 1
     local caps
@@ -202,10 +224,35 @@ is_blackwell() {
         return 1
     fi
     # Fallback for older nvidia-smi builds without compute_cap support.
+    # GB10 is the DGX Spark SoC; GB200 is the Grace-Blackwell superchip;
+    # B100/B200 are the datacenter parts. The word-boundary check on
+    # GB10 prevents matching e.g. "GB100" if it ever appears.
     local names
     names="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || true)"
-    if [[ -n "$names" ]] && grep -qiE '(RTX[[:space:]]*50[0-9]{2}|B100|B200|GB200|Blackwell)' <<<"$names"; then
+    if [[ -n "$names" ]] && grep -qiE '(RTX[[:space:]]*50[0-9]{2}|B100|B200|GB200|GB10([^0-9]|$)|DGX.?Spark|Blackwell)' <<<"$names"; then
         return 0
+    fi
+    return 1
+}
+
+# Jetson (Tegra) detection. Real Jetsons — Nano, Xavier, Orin, Thor —
+# all satisfy at least one of these markers. A DGX Spark (Grace
+# Blackwell GB10) or GH200 (Grace Hopper) is aarch64 but is NOT
+# Tegra, so it must NOT hit this. The old installer keyed on
+# `uname -m == aarch64` which is way too broad.
+is_jetson() {
+    # Classic JetPack marker file.
+    [[ -f /etc/nv_tegra_release ]] && return 0
+    # JetPack installs this package. Present on all modern Tegra boards.
+    if command -v dpkg >/dev/null 2>&1 && dpkg -l 2>/dev/null | grep -qE '^ii[[:space:]]+nvidia-l4t-core'; then
+        return 0
+    fi
+    # nvidia-smi -q reports the board class on Tegra ("Jetson", "Orin",
+    # "Xavier", "Tegra"). Discrete GPUs report the card name instead.
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        if nvidia-smi -q 2>/dev/null | grep -qiE 'Jetson|Orin|Xavier|Tegra'; then
+            return 0
+        fi
     fi
     return 1
 }
@@ -312,6 +359,7 @@ detect_backend() {
     BACKEND=""
     TORCH_INDEX=""
     TORCH_EXTRA=""
+    TORCH_PRE=""
     WHEEL_NOTE=""
 
     if [[ "$OS" == "Darwin" ]]; then
@@ -330,41 +378,74 @@ detect_backend() {
     if command -v nvidia-smi >/dev/null 2>&1; then
         local DRIVER MAJOR
         DRIVER="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 | tr -d '[:space:]' || true)"
-
-        if [[ "$ARCH" == "aarch64" ]]; then
-            BACKEND="cpu"
-            TORCH_INDEX="https://download.pytorch.org/whl/cpu"
-            WHEEL_NOTE="Jetson (aarch64) — generic CUDA wheels are incompatible. Using CPU for now."
-            warn "Jetson detected. For GPU support, install NVIDIA's Jetson wheels manually:"
-            warn "  https://developer.download.nvidia.com/compute/redist/jp/"
-            warn "Continuing with CPU PyTorch."
-            return
-        fi
-
         MAJOR="${DRIVER%%.*}"
 
-        # Blackwell (RTX 50-series, B100/B200) — cu124 has no sm_120.
-        # Route to cu130 (driver >= 580) or cu128 (driver >= 525).
+        # ── Blackwell first ──
+        # Handles x86_64 (RTX 50-series, B100/B200) AND aarch64
+        # (DGX Spark GB10, GB200) in one place. Doing this BEFORE
+        # the aarch64 check is the actual fix for the DGX Spark
+        # case: v11 bailed out as "Jetson" before ever getting here.
         if is_blackwell; then
             BACKEND="nvidia"
-            if [[ -z "$DRIVER" ]] || ! [[ "$MAJOR" =~ ^[0-9]+$ ]]; then
-                TORCH_INDEX="https://download.pytorch.org/whl/cu128"
-                WHEEL_NOTE="Blackwell GPU (driver version unclear) -> cu128"
-                warn "Blackwell GPU detected but driver version unreadable. Using cu128 (safe default)."
-            elif (( MAJOR >= 580 )); then
-                TORCH_INDEX="https://download.pytorch.org/whl/cu130"
-                WHEEL_NOTE="Blackwell (RTX 50-series / B100/B200) -> cu130 (driver $DRIVER)"
-            elif (( MAJOR >= 525 )); then
-                TORCH_INDEX="https://download.pytorch.org/whl/cu128"
-                WHEEL_NOTE="Blackwell (RTX 50-series / B100/B200) -> cu128 (driver $DRIVER; cu130 needs 580+)"
+            if [[ "$ARCH" == "aarch64" ]]; then
+                # Blackwell on aarch64: DGX Spark (GB10) / GB200.
+                # Stable cu1xx indexes do not ship aarch64 Blackwell
+                # (sm_120/sm_121) kernels; the nightly cu128 index
+                # does. Also skip torchvision/torchaudio (their
+                # nightly builds are date-pinned against a specific
+                # torch nightly and routinely mismatch).
+                if [[ -z "$DRIVER" ]] || ! [[ "$MAJOR" =~ ^[0-9]+$ ]]; then
+                    warn "Blackwell aarch64 GPU detected but driver version unreadable. Assuming >= 525."
+                elif (( MAJOR < 525 )); then
+                    die "Blackwell aarch64 GPU detected but driver '$DRIVER' is too old.
+    cu128 nightly needs driver >= 525. Please upgrade your NVIDIA driver, then rerun."
+                fi
+                TORCH_INDEX="https://download.pytorch.org/whl/nightly/cu128"
+                TORCH_PRE="--pre"
+                WHEEL_NOTE="Blackwell aarch64 (DGX Spark GB10 / GB200) -> nightly cu128 (stable lacks aarch64 Blackwell kernels)"
             else
-                die "Blackwell GPU detected but driver '$DRIVER' is too old.
+                # x86_64 Blackwell: cu130 preferred (driver >= 580),
+                # else cu128 (driver >= 525). Stable indexes carry
+                # the sm_120 kernels needed by RTX 50-series.
+                if [[ -z "$DRIVER" ]] || ! [[ "$MAJOR" =~ ^[0-9]+$ ]]; then
+                    TORCH_INDEX="https://download.pytorch.org/whl/cu128"
+                    WHEEL_NOTE="Blackwell GPU (driver version unclear) -> cu128"
+                    warn "Blackwell GPU detected but driver version unreadable. Using cu128 (safe default)."
+                elif (( MAJOR >= 580 )); then
+                    TORCH_INDEX="https://download.pytorch.org/whl/cu130"
+                    WHEEL_NOTE="Blackwell (RTX 50-series / B100/B200) -> cu130 (driver $DRIVER)"
+                elif (( MAJOR >= 525 )); then
+                    TORCH_INDEX="https://download.pytorch.org/whl/cu128"
+                    WHEEL_NOTE="Blackwell (RTX 50-series / B100/B200) -> cu128 (driver $DRIVER; cu130 needs 580+)"
+                else
+                    die "Blackwell GPU detected but driver '$DRIVER' is too old.
     cu128 needs driver >= 525; cu130 needs >= 580.
     Please upgrade your NVIDIA driver, then rerun."
+                fi
             fi
             return
         fi
 
+        # ── aarch64 non-Blackwell: Jetson (Tegra) or aarch64 CUDA server ──
+        if [[ "$ARCH" == "aarch64" ]]; then
+            if is_jetson; then
+                BACKEND="cpu"
+                TORCH_INDEX="https://download.pytorch.org/whl/cpu"
+                WHEEL_NOTE="Jetson (aarch64, Tegra) — generic CUDA wheels are incompatible. Using CPU for now."
+                warn "Jetson (Tegra) detected. For GPU support, install NVIDIA's Jetson wheels manually:"
+                warn "  https://developer.download.nvidia.com/compute/redist/jp/"
+                warn "Continuing with CPU PyTorch."
+                return
+            fi
+            # aarch64 NVIDIA server, non-Blackwell (e.g. GH200 / Grace Hopper).
+            # Stable cu124 has linux-aarch64 torch wheels for torch 2.5+.
+            BACKEND="nvidia"
+            TORCH_INDEX="https://download.pytorch.org/whl/cu124"
+            WHEEL_NOTE="aarch64 NVIDIA server (GH200 / Grace Hopper) -> cu124"
+            return
+        fi
+
+        # ── x86_64 NVIDIA non-Blackwell (unchanged from v11) ──
         if [[ -z "$DRIVER" ]]; then
             BACKEND="nvidia"
             TORCH_INDEX="https://download.pytorch.org/whl/cu124"
@@ -465,7 +546,14 @@ if [[ -n "$BACKEND_OVERRIDE" ]]; then
             if is_blackwell; then
                 _DRV="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 | tr -d '[:space:]' || true)"
                 _MAJ="${_DRV%%.*}"
-                if [[ -z "$_DRV" ]] || ! [[ "$_MAJ" =~ ^[0-9]+$ ]]; then
+                if [[ "$ARCH" == "aarch64" ]]; then
+                    if [[ -z "$_DRV" ]] || ! [[ "$_MAJ" =~ ^[0-9]+$ ]] || (( _MAJ < 525 )); then
+                        die "Forced --backend nvidia with Blackwell aarch64 GPU but driver '$_DRV' is too old or unreadable. Need >= 525."
+                    fi
+                    TORCH_INDEX="https://download.pytorch.org/whl/nightly/cu128"
+                    TORCH_PRE="--pre"
+                    WHEEL_NOTE="forced: nvidia/Blackwell aarch64 -> nightly cu128"
+                elif [[ -z "$_DRV" ]] || ! [[ "$_MAJ" =~ ^[0-9]+$ ]]; then
                     TORCH_INDEX="https://download.pytorch.org/whl/cu128"
                     WHEEL_NOTE="forced: nvidia/Blackwell -> cu128 (driver version unclear)"
                 elif (( _MAJ >= 580 )); then
@@ -477,6 +565,14 @@ if [[ -n "$BACKEND_OVERRIDE" ]]; then
                 else
                     die "Forced --backend nvidia with Blackwell GPU but driver '$_DRV' is too old. Need >= 525."
                 fi
+            elif [[ "$ARCH" == "aarch64" ]]; then
+                if is_jetson; then
+                    die "Forced --backend nvidia but this is a Jetson (Tegra). NVIDIA's CUDA wheels are not compatible.
+    For Jetson GPU support, install NVIDIA's Jetson wheels manually:
+        https://developer.download.nvidia.com/compute/redist/jp/"
+                fi
+                TORCH_INDEX="https://download.pytorch.org/whl/cu124"
+                WHEEL_NOTE="forced: nvidia/aarch64-server -> cu124"
             else
                 TORCH_INDEX="https://download.pytorch.org/whl/cu124"
                 WHEEL_NOTE="forced: nvidia/cu124"
@@ -513,22 +609,29 @@ echo "  Note:        $WHEEL_NOTE"
 # The chosen PyTorch index must carry wheels for the interpreter that
 # will build the venv. Older indexes (e.g. rocm6.0) stop at Python 3.12,
 # so fall back to a uv-managed 3.11 instead of failing inside pip.
+# v12: also check the CPU arch tag, so a stable cu1xx index with only
+# x86_64 wheels can't silently "succeed" on aarch64.
 index_has_wheel_for() {
-    local index="$1" tag
+    local index="$1" tag arch_tag
     [[ "$index" == https://download.pytorch.org/whl/* ]] || return 0
     tag="cp$("$PYTHON_EXE" -c 'import sys; print("%d%d" % sys.version_info[:2])')"
+    if [[ "$ARCH" == "aarch64" ]]; then
+        arch_tag="linux_aarch64"
+    else
+        arch_tag="linux_x86_64"
+    fi
     local page
     page="$(curl -fsSL "$index/torch/" 2>/dev/null)" || return 0
-    grep -q -- "-${tag}-" <<<"$page"
+    grep -q -- "-${tag}-" <<<"$page" && grep -q -- "$arch_tag" <<<"$page"
 }
 
 if ! index_has_wheel_for "$TORCH_INDEX"; then
-    warn "$TORCH_INDEX has no torch wheels for $("$PYTHON_EXE" --version 2>&1); using uv-managed Python 3.11."
+    warn "$TORCH_INDEX has no torch wheels for $("$PYTHON_EXE" --version 2>&1) on $ARCH; using uv-managed Python 3.11."
     install_uv
     uv python install 3.11
     PYTHON_EXE="$(uv python find 3.11)"
     index_has_wheel_for "$TORCH_INDEX" \
-        || die "$TORCH_INDEX has no torch wheels for $("$PYTHON_EXE" --version 2>&1) either. Try --backend <name> with a different backend."
+        || die "$TORCH_INDEX has no torch wheels for $("$PYTHON_EXE" --version 2>&1) on $ARCH either. Try --backend <name> with a different backend."
     ok "Python: $PYTHON_EXE"
 fi
 
@@ -578,11 +681,17 @@ hdr "Installing PyTorch"
 
 "$APP_PY" -m pip uninstall -y torch torchvision torchaudio >/dev/null 2>&1 || true
 
-PIP_TORCH_ARGS=(
-    install
-    torch torchvision torchaudio
-    --index-url "$TORCH_INDEX"
-)
+# Nightly indexes routinely pin torchvision/torchaudio to a specific
+# torch nightly by build date and mismatch. The client only imports
+# torch, so skip the other two when we're on a nightly index.
+if [[ "$TORCH_INDEX" == *"/nightly/"* ]]; then
+    PIP_TORCH_ARGS=( install torch --index-url "$TORCH_INDEX" )
+else
+    PIP_TORCH_ARGS=( install torch torchvision torchaudio --index-url "$TORCH_INDEX" )
+fi
+if [[ -n "$TORCH_PRE" ]]; then
+    PIP_TORCH_ARGS+=( "$TORCH_PRE" )
+fi
 if [[ -n "$TORCH_EXTRA" ]]; then
     PIP_TORCH_ARGS+=( --extra-index-url "$TORCH_EXTRA" )
 fi
@@ -717,15 +826,21 @@ try:
         print("  ROCm:   ", torch.version.hip)
 except Exception:
     pass
-# Blackwell extra check: if the GPU is Blackwell, sm_120 must be in the arch list.
+# Blackwell extra check: exact, same-major, PTX-JIT, or missing.
 try:
     if torch.cuda.is_available():
         caps = torch.cuda.get_device_capability(0)
         if caps[0] >= 12:
             archs = torch.cuda.get_arch_list()
             sm = f"sm_{caps[0]}{caps[1]}"
-            ok = sm in archs or f"compute_{caps[0]}{caps[1]}" in archs
-            print(f"  Blackwell: GPU={sm} kernel={sm if ok else 'MISSING'}  archs={archs}")
+            has_exact = sm in archs or f"{sm}a" in archs
+            has_major = any(a.startswith(f"sm_{caps[0]}") and a[3:].isdigit() for a in archs)
+            has_ptx   = any(a.startswith(f"compute_{caps[0]}") and a[8:].isdigit() for a in archs)
+            status = "exact" if has_exact else ("major" if has_major else ("ptx" if has_ptx else "MISSING"))
+            print(f"  Blackwell: GPU={sm} kernel={status}  archs={archs}")
+            if status == "MISSING":
+                print("  If training crashes with cudaErrorNoKernelImageForDevice,")
+                print("  reinstall torch from https://download.pytorch.org/whl/nightly/cu128 (with --pre).")
 except Exception:
     pass
 PYEOF
