@@ -3205,20 +3205,6 @@ footer {
       </div>
       
     </div>
-    <div class="loss-panel">
-  <div class="loss-panel-head">
-    <div class="loss-panel-title" data-i18n="status.chart.title">Loss history</div>
-    <div class="loss-panel-value" id="loss-last">—</div>
-  </div>
-  <div class="loss-graph-wrap">
-    <canvas id="loss-graph-canvas"></canvas>
-    <div class="loss-graph-empty" id="loss-graph-empty" data-i18n="status.chart.waiting">Waiting for data…</div>
-  </div>
-</div>
-
-<div style="display:flex;justify-content:flex-end;margin-bottom:29px;">
-  <button class="btn btn-ghost" id="btn-logs" data-i18n="status.logs.btn">View server logs</button>
-</div>
   </div>
 </div>
 
@@ -3273,6 +3259,21 @@ footer {
         <div class="lbl" data-i18n="status.stat.loss">Model Loss</div>
         <div class="sub" data-i18n="status.stat.loss.sub">Latest aggregated</div>
       </div>
+    </div>
+
+    <div class="loss-panel">
+      <div class="loss-panel-head">
+        <div class="loss-panel-title" data-i18n="status.chart.title">Loss history</div>
+        <div class="loss-panel-value" id="loss-last">—</div>
+      </div>
+      <div class="loss-graph-wrap">
+        <canvas id="loss-graph-canvas"></canvas>
+        <div class="loss-graph-empty" id="loss-graph-empty" data-i18n="status.chart.waiting">Waiting for data…</div>
+      </div>
+    </div>
+
+    <div style="display:flex;justify-content:flex-end;margin-bottom:29px;">
+      <button class="btn btn-ghost" id="btn-logs" data-i18n="status.logs.btn">View server logs</button>
     </div>
 
     <div class="content">
