@@ -3,30 +3,29 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 REM ============================================================
 REM CrowdGPT Universal Installer for Windows
-REM v11
-REM  Changes vs v10.3:
-REM  - Blackwell (RTX 50-series, B100/B200, GB200) detection.
-REM    cu126 (like cu124 before it) ships no sm_120 kernels, so
-REM    5090s used to install cleanly and then crash at first
-REM    matmul with cudaErrorNoKernelImageForDevice.
-REM    Installer now routes Blackwell to cu130 (driver >= 580)
-REM    or cu128 (driver >= 525). Applies to auto-detect AND
-REM    forced --backend nvidia.
-REM  - :pytorch_nvidia now honors the !TORCH_INDEX! chosen by
-REM    detect_backend / apply_override (v10.3 hardcoded cu126
-REM    and silently ignored the routing decision).
-REM  - Verify step now fails fast if a Blackwell GPU is present
-REM    but sm_120 is missing from torch.cuda.get_arch_list().
-REM
-REM  Changes in v10.3:
-REM  - transformers 5.x needs torch >= 2.6, but the cu121 wheel index
-REM    stops at torch 2.5.1. NVIDIA now uses cu126 (torch 2.6+ up to
-REM    the newest release); the old-driver fallback stays cu118
-REM    (torch 2.7.1 max, still >= 2.6).
-REM  - Step 7b threshold raised from torch 2.5 to 2.6.
-REM  - DirectML: torch-directml pins torch 2.4.1, which cannot satisfy
-REM    torch>=2.6 in requirements.txt, so torch lines are left out of
-REM    the requirements install on the AMD backend only.
+REM v12
+REM  Changes vs v11:
+REM  - v11 installer crashed on some systems with
+REM       "present was unexpected at this time."
+REM    AFTER the transformers link verify succeeded, leaving
+REM    the user with no launcher, no Start Menu shortcut, and
+REM    a broken desktop integration. Two causes:
+REM      1. :check_blackwell was called a SECOND time inside
+REM         `if /I "!BACKEND!"=="nvidia" ( call :check_blackwell
+REM         ... )` — the subroutine's /b exit inside a nested
+REM         (...)/for/f chain sometimes leaves cmd.exe mid-parse,
+REM         producing the "present was unexpected" message that
+REM         also blocks the shortcut creation that followed.
+REM      2. That shortcut creation was step 10 — AFTER the
+REM         verify that crashed. So no launcher ever existed.
+REM    Fix: reuse !BLACKWELL_FOUND! / !BLACKWELL_MAJOR! from
+REM         :detect_backend (no second detection call) and move
+REM         the launcher + Start Menu integration to run BEFORE
+REM         verify so a verify crash can't leave the user
+REM         without a way to launch the client.
+REM  - All v11 changes retained (Blackwell cu128/cu130 routing,
+REM    :pytorch_nvidia honors !TORCH_INDEX!, verify-step fails
+REM    fast if Blackwell GPU present but sm_120 missing).
 REM ============================================================
 
 set "REPO_URL=https://github.com/Vxtzq/CrowdGPT.git"
@@ -44,6 +43,7 @@ set "FRESH=1"
 set "PY_VER=3.11"
 set "BLACKWELL_FOUND=0"
 set "BLACKWELL_MAJOR="
+set "EARLY_INTEGRATE_DONE=0"
 
 REM ---------- arg parsing ----------
 :parse_args
@@ -92,7 +92,7 @@ echo   --no-fresh         Keep existing install (default: wipe and reinstall)
 echo   --help             Show this message
 echo.
 echo Notes:
-echo   - AMD automatic selection: recognized GPU -> ROCm; otherwise DirectML.
+echo   - AMD automatic selection: recognized GPU -^> ROCm; otherwise DirectML.
 echo   - Experimental ROCm: --backend rocm (requires recognized AMD GPU).
 echo   - Requires a compatible AMD driver and TheRock PyTorch wheels.
 echo   - Intel Arc uses the XPU wheel. NVIDIA uses CUDA.
@@ -104,7 +104,7 @@ exit /b 0
 
 echo.
 echo ============================================================
-echo                 CrowdGPT Installer  (v11)
+echo                 CrowdGPT Installer  (v12)
 echo ============================================================
 echo.
 
@@ -365,9 +365,6 @@ set "WHEEL_NOTE=ROCm failed; DirectML fallback"
 goto :pytorch_amd
 
 :pytorch_nvidia
-REM v11: honor the TORCH_INDEX chosen by detect_backend / apply_override.
-REM Previously this label hardcoded cu126 and silently ignored the routing,
-REM so the old-driver cu118 fallback and the Blackwell cu128 path were both dead code.
 if not defined TORCH_INDEX (
     echo [WARN] TORCH_INDEX not set by detection; defaulting to cu126.
     set "TORCH_INDEX=https://download.pytorch.org/whl/cu126"
@@ -528,7 +525,22 @@ if "!WV2_FOUND!"=="1" (
 )
 
 REM ------------------------------------------------------------
-REM 9. Verify
+REM 9. Desktop integration (MOVED BEFORE VERIFY — v12)
+REM    If verify crashes (the v11 "present was unexpected" case),
+REM    the user at least already has a launcher and Start Menu entry.
+REM ------------------------------------------------------------
+if "!INTEGRATE!"=="1" (
+    call :do_integration
+    if errorlevel 1 goto :fatal
+    set "EARLY_INTEGRATE_DONE=1"
+)
+
+REM ------------------------------------------------------------
+REM 10. Verify
+REM    v12: does NOT call :check_blackwell again. Uses the
+REM    !BLACKWELL_FOUND! / !BLACKWELL_MAJOR! values already
+REM    populated by :detect_backend / :apply_override. The
+REM    redundant call in v11 was the source of the parse error.
 REM ------------------------------------------------------------
 echo.
 echo ============================================================
@@ -545,26 +557,22 @@ if errorlevel 1 (
     goto :fatal
 )
 
-REM v11: Blackwell-specific arch verification. If a Blackwell GPU is
-REM present, sm_120 MUST be in torch.cuda.get_arch_list(), or the
-REM client will fail at first matmul with cudaErrorNoKernelImageForDevice.
-if /I "!BACKEND!"=="nvidia" (
-    call :check_blackwell
-    if "!BLACKWELL_FOUND!"=="1" (
-        echo [INFO] Blackwell GPU detected; verifying sm_120 kernels are present...
-        "!APP_PY!" -c "import torch; a=torch.cuda.get_arch_list(); print('  Arch list:', a); import sys; sys.exit(0 if any(x.startswith('sm_12') or x.startswith('compute_12') for x in a) else 1)" 2>nul
-        if errorlevel 1 (
-            echo.
-            echo [ERROR] Blackwell GPU detected but installed torch has no sm_120 kernels.
-            echo         This will crash at first matmul with cudaErrorNoKernelImageForDevice.
-            echo         Installed torch: "!APP_PY!" -c "import torch; print(torch.__version__ + ' cuda=' + str(torch.version.cuda))"
-            echo.
-            echo         Fix manually: "!APP_PY!" -m pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-            echo         Or rerun this installer with: install.bat --backend nvidia
-            goto :fatal
-        )
-        echo [OK] Blackwell kernels (sm_12x) present in installed torch.
+REM v12: no second :check_blackwell call — !BLACKWELL_FOUND! is
+REM already set by :detect_backend (and possibly :apply_override).
+if /I "!BACKEND!"=="nvidia" if "!BLACKWELL_FOUND!"=="1" (
+    echo [INFO] Blackwell GPU detected; verifying sm_120 kernels are present...
+    "!APP_PY!" -c "import torch; a=torch.cuda.get_arch_list(); print('  Arch list:', a); import sys; sys.exit(0 if any(x.startswith('sm_12') or x.startswith('compute_12') for x in a) else 1)" 2>nul
+    if errorlevel 1 (
+        echo.
+        echo [ERROR] Blackwell GPU detected but installed torch has no sm_120 kernels.
+        echo         This will crash at first matmul with cudaErrorNoKernelImageForDevice.
+        "!APP_PY!" -c "import torch; print('         Installed torch:', torch.__version__, 'cuda=' + str(torch.version.cuda))"
+        echo.
+        echo         Fix manually: "!APP_PY!" -m pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+        echo         Or rerun this installer with: install.bat --backend nvidia
+        goto :fatal
     )
+    echo [OK] Blackwell kernels (sm_12x) present in installed torch.
 )
 
 if /I "!BACKEND!"=="amd" call :verify_directml
@@ -583,14 +591,6 @@ if /I "!BACKEND!"=="nvidia" (
 
 "!APP_PY!" -c "import webview; print('  pywebview: OK')" 2>nul
 if errorlevel 1 echo [WARN] pywebview import failed.
-
-REM ------------------------------------------------------------
-REM 10. Desktop integration
-REM ------------------------------------------------------------
-if "!INTEGRATE!"=="1" (
-    call :do_integration
-    if errorlevel 1 goto :fatal
-)
 
 REM ------------------------------------------------------------
 REM 11. Launch
@@ -725,7 +725,7 @@ exit /b 1
 REM ============================================================
 REM Subroutine: check_blackwell
 REM Sets BLACKWELL_FOUND=1 and BLACKWELL_MAJOR to the compute
-REM capability major if any GPU is Blackwell. Returns 0 on success.
+REM capability major if any GPU is Blackwell.
 REM ============================================================
 :check_blackwell
 set "BLACKWELL_FOUND=0"
@@ -734,7 +734,7 @@ set "BLACKWELL_MAJOR="
 where nvidia-smi >nul 2>nul
 if errorlevel 1 exit /b 1
 
-REM Method 1: parse compute_cap. Blackwell consumer = 12.x, DC = 10.x.
+REM Method 1: parse compute_cap.
 for /f "usebackq delims=" %%C in (`nvidia-smi --query-gpu^=compute_cap --format^=csv,noheader 2^>nul`) do (
     set "CAP_RAW=%%C"
     set "CAP_RAW=!CAP_RAW: =!"
@@ -850,7 +850,7 @@ set "REG_PS=%TEMP%\crowdgpt-reg-%RANDOM%.ps1"
 > "!REG_PS!"  echo $k = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\CrowdGPT'
 >> "!REG_PS!" echo New-Item -Path $k -Force ^| Out-Null
 >> "!REG_PS!" echo Set-ItemProperty -Path $k -Name 'DisplayName'     -Value 'CrowdGPT'
->> "!REG_PS!" echo Set-ItemProperty -Path $k -Name 'DisplayVersion'  -Value '0.11.0'
+>> "!REG_PS!" echo Set-ItemProperty -Path $k -Name 'DisplayVersion'  -Value '0.12.0'
 >> "!REG_PS!" echo Set-ItemProperty -Path $k -Name 'Publisher'       -Value 'CrowdGPT Project'
 >> "!REG_PS!" echo Set-ItemProperty -Path $k -Name 'InstallLocation' -Value '!APP_DIR!'
 >> "!REG_PS!" echo Set-ItemProperty -Path $k -Name 'UninstallString' -Value ('"' + '!APP_DIR!\uninstall.bat' + '"')
