@@ -3,29 +3,34 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 REM ============================================================
 REM CrowdGPT Universal Installer for Windows
-REM v12
-REM  Changes vs v11:
-REM  - v11 installer crashed on some systems with
-REM       "present was unexpected at this time."
-REM    AFTER the transformers link verify succeeded, leaving
-REM    the user with no launcher, no Start Menu shortcut, and
-REM    a broken desktop integration. Two causes:
-REM      1. :check_blackwell was called a SECOND time inside
-REM         `if /I "!BACKEND!"=="nvidia" ( call :check_blackwell
-REM         ... )` — the subroutine's /b exit inside a nested
-REM         (...)/for/f chain sometimes leaves cmd.exe mid-parse,
-REM         producing the "present was unexpected" message that
-REM         also blocks the shortcut creation that followed.
-REM      2. That shortcut creation was step 10 — AFTER the
-REM         verify that crashed. So no launcher ever existed.
-REM    Fix: reuse !BLACKWELL_FOUND! / !BLACKWELL_MAJOR! from
-REM         :detect_backend (no second detection call) and move
-REM         the launcher + Start Menu integration to run BEFORE
-REM         verify so a verify crash can't leave the user
-REM         without a way to launch the client.
-REM  - All v11 changes retained (Blackwell cu128/cu130 routing,
-REM    :pytorch_nvidia honors !TORCH_INDEX!, verify-step fails
-REM    fast if Blackwell GPU present but sm_120 missing).
+REM v13
+REM  Changes vs v12:
+REM   [FIX v13-a] :check_blackwell now validates that nvidia-smi
+REM               returns a NUMERIC compute capability, and falls back
+REM               to PowerShell CIM (Win32_VideoController) when
+REM               nvidia-smi is broken/stale. Broken nvidia-smi was
+REM               returning "ERROR: ..." and silently preventing
+REM               Blackwell detection → cu126 install → client refusal.
+REM   [FIX v13-b] :detect_backend validates that nvidia-smi's
+REM               driver_version is numeric (digits.digits). Previously
+REM               "ERROR:" got compared with GEQ 525 as a string and
+REM               took the "modern driver" branch → cu126.
+REM   [FIX v13-c] Added :verify_torch_supports_gpu — queries torch's
+REM               own get_device_capability()/get_arch_list() AFTER
+REM               install, and auto-upgrades cu126 → cu128 → cu130 if
+REM               the wheel has no matching kernels. This is the real
+REM               safety net: even if detection misfires, we fix it
+REM               before the user launches the client.
+REM   [FIX v13-d] Verify block (step 10) rewritten as flat sequential
+REM               goto-based checks. The nested if-blocks around
+REM               Python -c "..." strings were the source of the v11/v12
+REM               "present was unexpected at this time" parse error,
+REM               which also skipped the Blackwell verification.
+REM   [FIX v13-e] apply_override also validates NB_MAJOR is numeric
+REM               before GEQ 580, and calls the same enhanced
+REM               :check_blackwell (was: only nvidia-smi).
+REM   [FIX v13-f] Better bitsandbytes warning (was misleadingly about
+REM               VRAM; it's about optimizer-mode compatibility).
 REM ============================================================
 
 set "REPO_URL=https://github.com/Vxtzq/CrowdGPT.git"
@@ -97,6 +102,7 @@ echo   - Experimental ROCm: --backend rocm (requires recognized AMD GPU).
 echo   - Requires a compatible AMD driver and TheRock PyTorch wheels.
 echo   - Intel Arc uses the XPU wheel. NVIDIA uses CUDA.
 echo   - Blackwell (RTX 50-series, B100/B200) auto-routes to cu128/cu130.
+echo   - Post-install check verifies installed torch has kernels for the GPU.
 echo.
 exit /b 0
 
@@ -104,7 +110,7 @@ exit /b 0
 
 echo.
 echo ============================================================
-echo                 CrowdGPT Installer  (v12)
+echo                 CrowdGPT Installer  (v13)
 echo ============================================================
 echo.
 
@@ -419,6 +425,16 @@ echo.
 echo [INFO] Installed torch version:
 "!APP_PY!" -c "import torch; print('       ' + torch.__version__)"
 
+REM ============================================================
+REM [FIX v13-c] Post-torch capability check + auto-upgrade.
+REM Ask torch itself whether the wheel it just installed has
+REM kernels for the detected GPU. If not, force-reinstall from
+REM cu128 (fallback cu130). This is the load-bearing fix: even
+REM if detection misfired, we self-heal before launch.
+REM ============================================================
+if /I "!BACKEND!"=="nvidia" call :ensure_torch_matches_gpu
+if errorlevel 1 goto :fatal
+
 REM ------------------------------------------------------------
 REM 7. Install project requirements
 REM ------------------------------------------------------------
@@ -459,13 +475,20 @@ if not "!PIP_RC!"=="0" (
 
 REM ------------------------------------------------------------
 REM 7a. bitsandbytes (8-bit Adam) on NVIDIA
+REM [FIX v13-f] Clarify the warning — it's about optimizer-mode
+REM              compatibility in heterogeneous pools, not VRAM.
 REM ------------------------------------------------------------
 if /I "!BACKEND!"=="nvidia" (
     echo.
     echo [INFO] Installing bitsandbytes ^(8-bit optimizer^)...
     "!APP_PY!" -m pip install bitsandbytes
     if errorlevel 1 (
-        echo [WARN] bitsandbytes failed to install; GPUs under ~12 GB may not be able to join a cohort.
+        echo [WARN] bitsandbytes failed to install.
+        echo        The client will fall back to adamw_fp32. This can
+        echo        cause cross-check flags in mixed-optimizer pools
+        echo        because fp32 AdamW and 8-bit AdamW produce
+        echo        structurally different deltas. Not fatal, but
+        echo        expect more flag events until this is resolved.
     ) else (
         echo [OK] bitsandbytes installed
     )
@@ -525,9 +548,8 @@ if "!WV2_FOUND!"=="1" (
 )
 
 REM ------------------------------------------------------------
-REM 9. Desktop integration (MOVED BEFORE VERIFY — v12)
-REM    If verify crashes (the v11 "present was unexpected" case),
-REM    the user at least already has a launcher and Start Menu entry.
+REM 9. Desktop integration (BEFORE verify, so a verify crash
+REM    still leaves a working launcher)
 REM ------------------------------------------------------------
 if "!INTEGRATE!"=="1" (
     call :do_integration
@@ -535,60 +557,92 @@ if "!INTEGRATE!"=="1" (
     set "EARLY_INTEGRATE_DONE=1"
 )
 
-REM ------------------------------------------------------------
+REM ============================================================
 REM 10. Verify
-REM    v12: does NOT call :check_blackwell again. Uses the
-REM    !BLACKWELL_FOUND! / !BLACKWELL_MAJOR! values already
-REM    populated by :detect_backend / :apply_override. The
-REM    redundant call in v11 was the source of the parse error.
-REM ------------------------------------------------------------
+REM [FIX v13-d] Flat sequential goto-based checks. The v11/v12
+REM nested if-blocks around -c "..." strings were the source of
+REM "present was unexpected at this time", which also SKIPPED the
+REM Blackwell verification that would have caught the mismatch.
+REM ============================================================
 echo.
 echo ============================================================
 echo                    Verifying install
 echo ============================================================
+
 "!APP_PY!" -c "import sys, torch; print('  Python:', sys.version.split()[0]); print('  Torch:  ', torch.__version__)"
-if errorlevel 1 echo [WARN] Torch import failed.
+if errorlevel 1 goto :verify_torch_import_failed
 
 "!APP_PY!" -c "import transformers, torch; assert transformers.utils.is_torch_available(), 'transformers refuses to use installed torch'; print('  transformers:', transformers.__version__, '-> torch', torch.__version__, 'linked OK')"
+if errorlevel 1 goto :verify_transformers_failed
+
+if /I "!BACKEND!"=="nvidia" goto :verify_nvidia
+if /I "!BACKEND!"=="amd" goto :verify_directml
+if /I "!BACKEND!"=="rocm" goto :verify_rocm
+goto :verify_pywebview
+
+:verify_torch_import_failed
+echo [WARN] Torch import failed.
+goto :verify_pywebview
+
+:verify_transformers_failed
+echo.
+echo [ERROR] transformers cannot use the installed torch.
+echo         Try: pip install "transformers>=4.45,<5.0"
+goto :fatal
+
+:verify_nvidia
+"!APP_PY!" -c "import torch, sys; sys.exit(0 if torch.version.cuda else 2)"
+if errorlevel 1 goto :verify_cuda_missing
+
+"!APP_PY!" -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 2)"
+if errorlevel 1 goto :verify_cuda_unavailable
+
+call :verify_torch_supports_gpu
+if "!TORCH_GPU_RC!"=="3" goto :verify_sm_missing
+
+"!APP_PY!" -c "import torch; print('  CUDA device:', torch.cuda.get_device_name(0)); print('  CUDA version:', torch.version.cuda); print('  Arch list:', ', '.join(torch.cuda.get_arch_list()))"
+goto :verify_pywebview
+
+:verify_cuda_missing
+echo.
+echo [ERROR] BACKEND=nvidia but installed torch is CPU-only (torch.version.cuda is None).
+echo         This should not happen — pytorch_nvidia always installs a CUDA wheel.
+echo         Retry: install.bat --backend nvidia
+goto :fatal
+
+:verify_cuda_unavailable
+echo [WARN] CUDA wheel installed but no CUDA device is visible to torch.
+echo        If you have an NVIDIA GPU, check the driver in Device Manager.
+echo        If this is a headless/VM environment, this warning is expected.
+goto :verify_pywebview
+
+:verify_sm_missing
+echo.
+echo [ERROR] Installed torch wheel has no kernels for this GPU.
+echo         Client will refuse to train at task-fetch time.
+echo.
+echo         Fix manually:
+echo           "!APP_PY!" -m pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+echo.
+echo         Or rerun: install.bat --backend nvidia
+goto :fatal
+
+:verify_rocm
+"!APP_PY!" -c "import torch; assert torch.version.hip and torch.cuda.is_available(), 'ROCm unavailable after requirements'; gs=[(i,torch.cuda.get_device_name(i),int(torch.cuda.get_device_properties(i).total_memory)) for i in range(torch.cuda.device_count())]; ds=[g for g in gs if 'radeon rx' in g[1].lower()]; g=max(ds or gs,key=lambda x:x[2]); print('  HIP:',torch.version.hip); print('  ROCm GPU:',g[1]); assert ds, 'No discrete Radeon RX visible after requirements'"
 if errorlevel 1 (
-    echo.
-    echo [ERROR] transformers cannot use the installed torch.
-    echo         Try: pip install "transformers>=4.45,<5.0"
+    echo [ERROR] ROCm unavailable after dependencies installation.
     goto :fatal
 )
+goto :verify_pywebview
 
-REM v12: no second :check_blackwell call — !BLACKWELL_FOUND! is
-REM already set by :detect_backend (and possibly :apply_override).
-if /I "!BACKEND!"=="nvidia" if "!BLACKWELL_FOUND!"=="1" (
-    echo [INFO] Blackwell GPU detected; verifying sm_120 kernels are present...
-    "!APP_PY!" -c "import torch; a=torch.cuda.get_arch_list(); print('  Arch list:', a); import sys; sys.exit(0 if any(x.startswith('sm_12') or x.startswith('compute_12') for x in a) else 1)" 2>nul
-    if errorlevel 1 (
-        echo.
-        echo [ERROR] Blackwell GPU detected but installed torch has no sm_120 kernels.
-        echo         This will crash at first matmul with cudaErrorNoKernelImageForDevice.
-        "!APP_PY!" -c "import torch; print('         Installed torch:', torch.__version__, 'cuda=' + str(torch.version.cuda))"
-        echo.
-        echo         Fix manually: "!APP_PY!" -m pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-        echo         Or rerun this installer with: install.bat --backend nvidia
-        goto :fatal
-    )
-    echo [OK] Blackwell kernels (sm_12x) present in installed torch.
-)
+:verify_directml
+"!APP_PY!" -c "import torch_directml as d; [print('  DirectML[' + str(i) + ']: ' + str(d.device_name(i))) for i in range(d.device_count())]" 2>nul
+if errorlevel 1 echo [WARN] Could not enumerate DirectML devices.
+"!APP_PY!" -c "import torch; import torch_directml as d; assert d.is_available(), 'no DirectML device'; ds=[(i,str(d.device_name(i))) for i in range(d.device_count())]; rx=[g for g in ds if 'radeon rx' in g[1].lower()]; i=(rx[0] if rx else ds[0])[0]; dev=d.device(i); a=torch.randn(64,64).to(dev); b=torch.randn(64,64).to(dev); c=(a@b).sum().cpu().item(); print('  DirectML['+str(i)+'] matmul OK, sum =',round(c,4))" 2>nul
+if errorlevel 1 echo [WARN] DirectML device present but matmul failed. Some ops may be unsupported.
+goto :verify_pywebview
 
-if /I "!BACKEND!"=="amd" call :verify_directml
-if /I "!BACKEND!"=="rocm" (
-    "!APP_PY!" -c "import torch; assert torch.version.hip and torch.cuda.is_available(), 'ROCm unavailable after requirements'; gs=[(i,torch.cuda.get_device_name(i),int(torch.cuda.get_device_properties(i).total_memory)) for i in range(torch.cuda.device_count())]; ds=[g for g in gs if 'radeon rx' in g[1].lower()]; g=max(ds or gs,key=lambda x:x[2]); print('  HIP:',torch.version.hip); print('  ROCm GPU:',g[1]); assert ds, 'No discrete Radeon RX visible after requirements'"
-    if errorlevel 1 (
-        echo [ERROR] ROCm unavailable after dependencies installation.
-        goto :fatal
-    )
-)
-
-if /I "!BACKEND!"=="nvidia" (
-    "!APP_PY!" -c "import torch; assert torch.cuda.is_available(), 'no CUDA device'; print('  CUDA device:', torch.cuda.get_device_name(0))"
-    if errorlevel 1 echo [WARN] CUDA wheel installed but no CUDA device is available.
-)
-
+:verify_pywebview
 "!APP_PY!" -c "import webview; print('  pywebview: OK')" 2>nul
 if errorlevel 1 echo [WARN] pywebview import failed.
 
@@ -724,39 +778,66 @@ exit /b 1
 
 REM ============================================================
 REM Subroutine: check_blackwell
-REM Sets BLACKWELL_FOUND=1 and BLACKWELL_MAJOR to the compute
-REM capability major if any GPU is Blackwell.
+REM [FIX v13-a] Layered detection. Tries nvidia-smi compute_cap
+REM (validated numeric), then nvidia-smi name, then PowerShell
+REM CIM (Win32_VideoController). Validates that the returned value
+REM is actually a Blackwell family value before setting
+REM BLACKWELL_MAJOR. Rejects garbage like "ERROR:".
+REM Sets BLACKWELL_FOUND=1, BLACKWELL_MAJOR to the compute
+REM capability major if any GPU is Blackwell (10..16 range).
 REM ============================================================
 :check_blackwell
 set "BLACKWELL_FOUND=0"
 set "BLACKWELL_MAJOR="
+set "BK_CAP_RAW="
+set "BK_NAME_RAW="
 
+REM --- Method 1: nvidia-smi compute_cap (must be numeric) ---
 where nvidia-smi >nul 2>nul
-if errorlevel 1 exit /b 1
-
-REM Method 1: parse compute_cap.
-for /f "usebackq delims=" %%C in (`nvidia-smi --query-gpu^=compute_cap --format^=csv,noheader 2^>nul`) do (
-    set "CAP_RAW=%%C"
-    set "CAP_RAW=!CAP_RAW: =!"
-    if not "!CAP_RAW!"=="" (
-        for /f "tokens=1 delims=." %%M in ("!CAP_RAW!") do (
-            set "CAP_MAJ=%%M"
-            if not defined BLACKWELL_MAJOR (
-                if "!CAP_MAJ!"=="10" set "BLACKWELL_MAJOR=10"
-                if "!CAP_MAJ!"=="12" set "BLACKWELL_MAJOR=12"
-                if "!CAP_MAJ!"=="13" set "BLACKWELL_MAJOR=13"
-                if "!CAP_MAJ!"=="14" set "BLACKWELL_MAJOR=14"
-                if "!CAP_MAJ!"=="15" set "BLACKWELL_MAJOR=15"
-                if "!CAP_MAJ!"=="16" set "BLACKWELL_MAJOR=16"
+if not errorlevel 1 (
+    for /f "usebackq delims=" %%C in (`nvidia-smi --query-gpu^=compute_cap --format^=csv,noheader 2^>nul`) do (
+        if not defined BK_CAP_RAW set "BK_CAP_RAW=%%C"
+    )
+    if defined BK_CAP_RAW (
+        set "BK_CAP_RAW=!BK_CAP_RAW: =!"
+        REM Only accept N.N or N.NN — reject "ERROR:" / "[N/A]" / empty.
+        echo !BK_CAP_RAW!| findstr /R /C:"^[0-9][0-9]*\.[0-9][0-9]*$" >nul 2>nul
+        if not errorlevel 1 (
+            for /f "tokens=1 delims=." %%M in ("!BK_CAP_RAW!") do (
+                set "BK_MAJ=%%M"
+                if "!BK_MAJ!"=="10" set "BLACKWELL_MAJOR=10"
+                if "!BK_MAJ!"=="11" set "BLACKWELL_MAJOR=11"
+                if "!BK_MAJ!"=="12" set "BLACKWELL_MAJOR=12"
+                if "!BK_MAJ!"=="13" set "BLACKWELL_MAJOR=13"
+                if "!BK_MAJ!"=="14" set "BLACKWELL_MAJOR=14"
+                if "!BK_MAJ!"=="15" set "BLACKWELL_MAJOR=15"
+                if "!BK_MAJ!"=="16" set "BLACKWELL_MAJOR=16"
             )
         )
     )
 )
 
-REM Method 2: fallback name match (for older nvidia-smi).
+REM --- Method 2: nvidia-smi name (works with old nvidia-smi, and ---
+REM --- with new nvidia-smi that fails compute_cap for some reason) ---
 if not defined BLACKWELL_MAJOR (
-    for /f "usebackq delims=" %%N in (`nvidia-smi --query-gpu^=name --format^=csv,noheader 2^>nul ^| findstr /I /R /C:"RTX 50[0-9][0-9]" /C:"B100" /C:"B200" /C:"GB200" /C:"GB100" /C:"Blackwell"`) do (
-        if not defined BLACKWELL_MAJOR set "BLACKWELL_MAJOR=12"
+    if not errorlevel 1 (
+        for /f "usebackq delims=" %%N in (`nvidia-smi --query-gpu^=name --format^=csv,noheader 2^>nul`) do (
+            if not defined BK_NAME_RAW set "BK_NAME_RAW=%%N"
+        )
+        if defined BK_NAME_RAW (
+            echo !BK_NAME_RAW!| findstr /I /R /C:"RTX 50[0-9][0-9]" /C:"B100" /C:"B200" /C:"GB200" /C:"GB100" /C:"Blackwell" >nul 2>nul
+            if not errorlevel 1 set "BLACKWELL_MAJOR=12"
+        )
+    )
+)
+
+REM --- Method 3: PowerShell CIM (Win32_VideoController name) ---
+REM Does NOT use nvidia-smi at all. Fires when nvidia-smi is broken
+REM or missing entirely. Output is one device name per line.
+if not defined BLACKWELL_MAJOR (
+    for /f "usebackq delims=" %%P in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance -ClassName Win32_VideoController -ErrorAction SilentlyContinue ^| ForEach-Object { $_.Name }" 2^>nul`) do (
+        echo %%P| findstr /I /R /C:"RTX 50[0-9][0-9]" /C:"B100" /C:"B200" /C:"GB200" /C:"GB100" /C:"Blackwell" >nul 2>nul
+        if not errorlevel 1 if not defined BLACKWELL_MAJOR set "BLACKWELL_MAJOR=12"
     )
 )
 
@@ -850,7 +931,7 @@ set "REG_PS=%TEMP%\crowdgpt-reg-%RANDOM%.ps1"
 > "!REG_PS!"  echo $k = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\CrowdGPT'
 >> "!REG_PS!" echo New-Item -Path $k -Force ^| Out-Null
 >> "!REG_PS!" echo Set-ItemProperty -Path $k -Name 'DisplayName'     -Value 'CrowdGPT'
->> "!REG_PS!" echo Set-ItemProperty -Path $k -Name 'DisplayVersion'  -Value '0.12.0'
+>> "!REG_PS!" echo Set-ItemProperty -Path $k -Name 'DisplayVersion'  -Value '0.13.0'
 >> "!REG_PS!" echo Set-ItemProperty -Path $k -Name 'Publisher'       -Value 'CrowdGPT Project'
 >> "!REG_PS!" echo Set-ItemProperty -Path $k -Name 'InstallLocation' -Value '!APP_DIR!'
 >> "!REG_PS!" echo Set-ItemProperty -Path $k -Name 'UninstallString' -Value ('"' + '!APP_DIR!\uninstall.bat' + '"')
@@ -882,6 +963,8 @@ exit /b 0
 
 REM ============================================================
 REM Subroutine: apply_override
+REM [FIX v13-e] Validate NB_MAJOR is numeric before GEQ 580.
+REM             Call enhanced :check_blackwell for detection.
 REM ============================================================
 :apply_override
 if /I "!BACKEND_OVERRIDE!"=="nvidia" (
@@ -892,10 +975,15 @@ if /I "!BACKEND_OVERRIDE!"=="nvidia" (
         for /f "usebackq tokens=1 delims=," %%V in (`nvidia-smi --query-gpu^=driver_version --format^=csv,noheader 2^>nul`) do (
             if not defined NB_DRIVER set "NB_DRIVER=%%V"
         )
-        for /f "tokens=*" %%V in ("!NB_DRIVER!") do set "NB_DRIVER=%%V"
+        if defined NB_DRIVER (
+            for /f "tokens=1 delims= " %%V in ("!NB_DRIVER!") do set "NB_DRIVER=%%V"
+        )
         set "NB_MAJOR="
         if defined NB_DRIVER (
-            for /f "tokens=1 delims=." %%M in ("!NB_DRIVER!") do set "NB_MAJOR=%%M"
+            echo !NB_DRIVER!| findstr /R /C:"^[0-9][0-9]*\.[0-9][0-9]*" >nul 2>nul
+            if not errorlevel 1 (
+                for /f "tokens=1 delims=." %%M in ("!NB_DRIVER!") do set "NB_MAJOR=%%M"
+            )
         )
         if defined NB_MAJOR (
             if !NB_MAJOR! GEQ 580 (
@@ -905,7 +993,7 @@ if /I "!BACKEND_OVERRIDE!"=="nvidia" (
             )
         )
         set "TORCH_INDEX=https://download.pytorch.org/whl/cu128"
-        set "WHEEL_NOTE=forced: nvidia/Blackwell -> cu128 (driver !NB_DRIVER!; cu130 needs 580+)"
+        set "WHEEL_NOTE=forced: nvidia/Blackwell -> cu128"
         exit /b 0
     )
     set "TORCH_INDEX=https://download.pytorch.org/whl/cu126"
@@ -962,6 +1050,12 @@ exit /b 0
 
 REM ============================================================
 REM Subroutine: detect_backend
+REM [FIX v13-b] Validate nvidia-smi driver_version is numeric.
+REM             Reject "ERROR:" / non-numeric before any GEQ
+REM             comparison (which falls back to string compare and
+REM             silently misroutes). Blackwell check runs BEFORE
+REM             the driver-version gate — Blackwell always needs
+REM             cu128/cu130 regardless of what nvidia-smi thinks.
 REM ============================================================
 :detect_backend
 set "BLACKWELL_FOUND=0"
@@ -971,64 +1065,64 @@ REM --- NVIDIA ---
 where nvidia-smi >nul 2>nul
 if errorlevel 1 goto :detect_no_nvidia
 
-set "NVIDIA_DRIVER="
-for /f "delims=" %%V in ('nvidia-smi --query-gpu^=driver_version --format^=csv,noheader 2^>nul') do (
-    if not defined NVIDIA_DRIVER set "NVIDIA_DRIVER=%%V"
+set "NVIDIA_DRIVER_RAW="
+for /f "usebackq delims=" %%V in (`nvidia-smi --query-gpu^=driver_version --format^=csv,noheader 2^>nul`) do (
+    if not defined NVIDIA_DRIVER_RAW set "NVIDIA_DRIVER_RAW=%%V"
 )
+set "NVIDIA_DRIVER="
+if defined NVIDIA_DRIVER_RAW (
+    for /f "tokens=1 delims=, " %%A in ("!NVIDIA_DRIVER_RAW!") do set "NVIDIA_DRIVER=%%A"
+)
+set "DRIVER_MAJOR="
 if defined NVIDIA_DRIVER (
-    for /f "tokens=1 delims= " %%A in ("!NVIDIA_DRIVER!") do set "NVIDIA_DRIVER=%%A"
+    echo !NVIDIA_DRIVER!| findstr /R /C:"^[0-9][0-9]*\.[0-9][0-9]*" >nul 2>nul
+    if not errorlevel 1 (
+        for /f "tokens=1 delims=." %%M in ("!NVIDIA_DRIVER!") do set "DRIVER_MAJOR=%%M"
+    ) else (
+        echo [WARN] nvidia-smi returned non-numeric driver version "!NVIDIA_DRIVER!" — ignoring it.
+        set "NVIDIA_DRIVER="
+    )
 )
 
-if not defined NVIDIA_DRIVER (
-    call :check_blackwell
-    if "!BLACKWELL_FOUND!"=="1" (
-        set "BACKEND=nvidia"
-        set "TORCH_INDEX=https://download.pytorch.org/whl/cu128"
-        set "WHEEL_NOTE=Blackwell GPU (driver unreadable) -> cu128"
-        exit /b 0
+REM --- Blackwell check FIRST (before driver-version gate) ---
+REM Every Blackwell GPU needs cu128 or cu130. If we detected one,
+REM route there regardless of what the driver reports, because
+REM broken nvidia-smi cannot be trusted and a stale driver version
+REM on a Blackwell card is a separate problem the user must fix.
+call :check_blackwell
+if "!BLACKWELL_FOUND!"=="1" (
+    set "BACKEND=nvidia"
+    if defined DRIVER_MAJOR (
+        if !DRIVER_MAJOR! GEQ 580 (
+            set "TORCH_INDEX=https://download.pytorch.org/whl/cu130"
+            set "WHEEL_NOTE=Blackwell -> cu130 (driver !NVIDIA_DRIVER!)"
+            exit /b 0
+        )
     )
+    set "TORCH_INDEX=https://download.pytorch.org/whl/cu128"
+    if defined DRIVER_MAJOR (
+        set "WHEEL_NOTE=Blackwell -> cu128 (driver !NVIDIA_DRIVER!; cu130 needs 580+)"
+    ) else (
+        set "WHEEL_NOTE=Blackwell -> cu128 (driver version unreadable)"
+    )
+    exit /b 0
+)
+
+REM --- Non-Blackwell NVIDIA: driver version gate ---
+if not defined DRIVER_MAJOR (
     set "BACKEND=nvidia"
     set "TORCH_INDEX=https://download.pytorch.org/whl/cu126"
     set "WHEEL_NOTE=NVIDIA GPU - could not read driver, defaulting to cu126"
     exit /b 0
 )
 
-set "DRIVER_MAJOR="
-for /f "tokens=1 delims=." %%M in ("!NVIDIA_DRIVER!") do set "DRIVER_MAJOR=%%M"
-
-if not defined DRIVER_MAJOR (
-    set "BACKEND=nvidia"
-    set "TORCH_INDEX=https://download.pytorch.org/whl/cu126"
-    set "WHEEL_NOTE=NVIDIA driver !NVIDIA_DRIVER! - defaulting to cu126"
-    exit /b 0
-)
-
 if !DRIVER_MAJOR! GEQ 525 (
-    call :check_blackwell
-    if "!BLACKWELL_FOUND!"=="1" (
-        if !DRIVER_MAJOR! GEQ 580 (
-            set "BACKEND=nvidia"
-            set "TORCH_INDEX=https://download.pytorch.org/whl/cu130"
-            set "WHEEL_NOTE=Blackwell (RTX 50-series / B100/B200) -> cu130 (driver !NVIDIA_DRIVER!)"
-            exit /b 0
-        )
-        set "BACKEND=nvidia"
-        set "TORCH_INDEX=https://download.pytorch.org/whl/cu128"
-        set "WHEEL_NOTE=Blackwell (RTX 50-series / B100/B200) -> cu128 (driver !NVIDIA_DRIVER!; cu130 needs 580+)"
-        exit /b 0
-    )
     set "BACKEND=nvidia"
     set "TORCH_INDEX=https://download.pytorch.org/whl/cu126"
     set "WHEEL_NOTE=NVIDIA driver !NVIDIA_DRIVER! -> CUDA 12.6 wheel"
     exit /b 0
 )
 if !DRIVER_MAJOR! GEQ 470 (
-    call :check_blackwell
-    if "!BLACKWELL_FOUND!"=="1" (
-        echo [ERROR] Blackwell GPU detected but driver !NVIDIA_DRIVER! is too old.
-        echo         Blackwell needs driver ^>= 525 ^(cu128^). Please update.
-        exit /b 1
-    )
     set "BACKEND=nvidia"
     set "TORCH_INDEX=https://download.pytorch.org/whl/cu118"
     set "WHEEL_NOTE=NVIDIA driver !NVIDIA_DRIVER! -> CUDA 11.8 wheel - older driver"
@@ -1080,6 +1174,99 @@ set "BACKEND=cpu"
 set "TORCH_INDEX=https://download.pytorch.org/whl/cpu"
 set "WHEEL_NOTE=No usable GPU detected -> CPU wheel"
 exit /b 0
+
+REM ============================================================
+REM Subroutine: verify_torch_supports_gpu
+REM [FIX v13-c] Ask torch itself whether the installed wheel has
+REM kernels for the detected GPU. Writes the check to a temp .py
+REM file so no batch string-parse issues with () [] in the source.
+REM Returns:
+REM   0 = okay (CUDA unavailable, or kernels match)
+REM   3 = GPU visible, wheel has no matching kernels → upgrade
+REM ============================================================
+:verify_torch_supports_gpu
+set "TORCH_GPU_RC=0"
+set "TORCH_CHECK_PY=%TEMP%\crowdgpt-torch-check-%RANDOM%.py"
+> "!TORCH_CHECK_PY!"  echo import sys
+>>"!TORCH_CHECK_PY!" echo try:
+>>"!TORCH_CHECK_PY!" echo     import torch
+>>"!TORCH_CHECK_PY!" echo except Exception as e:
+>>"!TORCH_CHECK_PY!" echo     print('  torch import failed:', e)
+>>"!TORCH_CHECK_PY!" echo     sys.exit(0)
+>>"!TORCH_CHECK_PY!" echo if not torch.cuda.is_available():
+>>"!TORCH_CHECK_PY!" echo     sys.exit(0)
+>>"!TORCH_CHECK_PY!" echo try:
+>>"!TORCH_CHECK_PY!" echo     cap = torch.cuda.get_device_capability(0)
+>>"!TORCH_CHECK_PY!" echo     archs = list(torch.cuda.get_arch_list())
+>>"!TORCH_CHECK_PY!" echo except Exception as e:
+>>"!TORCH_CHECK_PY!" echo     print('  capability query failed:', e)
+>>"!TORCH_CHECK_PY!" echo     sys.exit(0)
+>>"!TORCH_CHECK_PY!" echo need = 'sm_' + str(cap[0]) + str(cap[1])
+>>"!TORCH_CHECK_PY!" echo prefix_sm = 'sm_' + str(cap[0])
+>>"!TORCH_CHECK_PY!" echo prefix_compute = 'compute_' + str(cap[0])
+>>"!TORCH_CHECK_PY!" echo same_major = [a for a in archs if a.startswith(prefix_sm) or a.startswith(prefix_compute)]
+>>"!TORCH_CHECK_PY!" echo ok = (need in archs) or (len(same_major) ^> 0)
+>>"!TORCH_CHECK_PY!" echo print('  GPU CC:', need)
+>>"!TORCH_CHECK_PY!" echo print('  wheel archs:', ', '.join(archs) if archs else '(none)')
+>>"!TORCH_CHECK_PY!" echo sys.exit(0 if ok else 3)
+"!APP_PY!" "!TORCH_CHECK_PY!"
+set "TORCH_GPU_RC=!ERRORLEVEL!"
+del "!TORCH_CHECK_PY!" >nul 2>nul
+exit /b 0
+
+REM ============================================================
+REM Subroutine: ensure_torch_matches_gpu
+REM [FIX v13-c] Called from :pytorch_done for BACKEND=nvidia.
+REM If verify_torch_supports_gpu returns 3, force-reinstall from
+REM cu128 (then cu130 as last resort). Uses the current installed
+REM torch version so we don't accidentally downgrade/upgrade
+REM versions — we only swap the CUDA runtime build.
+REM ============================================================
+:ensure_torch_matches_gpu
+call :verify_torch_supports_gpu
+if "!TORCH_GPU_RC!"=="0" (
+    echo [OK] Installed torch has kernels for the detected GPU.
+    exit /b 0
+)
+
+echo.
+echo ============================================================
+echo   Auto-upgrade: installed torch has NO kernels for this GPU
+echo ============================================================
+echo [WARN] Detected kernel mismatch. The client would refuse to train.
+echo [WARN] Reinstalling torch from cu128 (this takes ~2.6 GB / a few min)...
+"!APP_PY!" -m pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+if errorlevel 1 (
+    echo [ERROR] cu128 reinstall failed. Network or index issue?
+    echo         Manual fix: "!APP_PY!" -m pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+    exit /b 1
+)
+call :verify_torch_supports_gpu
+if "!TORCH_GPU_RC!"=="0" (
+    echo [OK] cu128 wheel installed and has kernels for this GPU.
+    set "WHEEL_NOTE=!WHEEL_NOTE! (auto-upgraded to cu128)"
+    exit /b 0
+)
+
+echo [WARN] cu128 still lacks kernels for this GPU. Trying cu130...
+"!APP_PY!" -m pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
+if errorlevel 1 (
+    echo [ERROR] cu130 reinstall failed.
+    exit /b 1
+)
+call :verify_torch_supports_gpu
+if "!TORCH_GPU_RC!"=="0" (
+    echo [OK] cu130 wheel installed and has kernels for this GPU.
+    set "WHEEL_NOTE=!WHEEL_NOTE! (auto-upgraded to cu130)"
+    exit /b 0
+)
+
+echo.
+echo [ERROR] Neither cu128 nor cu130 provides kernels for this GPU.
+echo         Driver may be too old. Update your NVIDIA driver and rerun.
+echo         Current: driver !NVIDIA_DRIVER!
+"!APP_PY!" -c "import torch; print('  torch:', torch.__version__, '| cuda:', torch.version.cuda, '| arch:', torch.cuda.get_arch_list())"
+exit /b 1
 
 :fatal
 echo.
