@@ -393,6 +393,150 @@ nav a.nav-with-badge {
   flex-shrink: 0;
 }
 
+/* ===== LOSS HISTORY GRAPH ===== */
+.loss-panel {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: clamp(16px, 2.2vw, 22px);
+  margin-bottom: 38px;
+}
+.loss-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.loss-panel-title {
+  font-size: clamp(14px, 1.1vw, 16px);
+  font-weight: 600;
+  color: var(--text);
+}
+.loss-panel-value {
+  font-family: var(--mono);
+  font-size: clamp(15px, 1.25vw, 19px);
+  font-weight: 500;
+  color: var(--accent);
+  font-feature-settings: "tnum" 1;
+}
+.loss-graph-wrap {
+  position: relative;
+  height: 230px;
+}
+#loss-graph-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  transition: opacity .2s;
+}
+#loss-graph-canvas.hidden-graph { opacity: 0; pointer-events: none; }
+.loss-graph-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  transition: opacity .2s;
+}
+.loss-graph-empty.hidden-empty { opacity: 0; pointer-events: none; }
+
+/* ===== LOGS MODAL ===== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .55);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 500;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s;
+  padding: 20px;
+}
+.modal-overlay.show { opacity: 1; pointer-events: auto; }
+.modal-card {
+  width: min(760px, 100%);
+  max-height: 82vh;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, .35);
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.modal-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.modal-title::before {
+  content: '';
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(34, 197, 94, .5);
+}
+.modal-close {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all .15s;
+}
+.modal-close:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--bg-softer);
+}
+.modal-body {
+  flex: 1 1 auto;
+  min-height: 200px;
+  max-height: 60vh;
+  overflow-y: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--term-bg);
+  color: var(--term-text);
+  border: 1px solid var(--term-border);
+  border-radius: 4px;
+  padding: 12px 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+  -webkit-overflow-scrolling: touch;
+}
+.modal-sub {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+  
 .gh-btn:hover {
   color: var(--text);
   border-color: var(--border-strong);
@@ -3059,7 +3203,22 @@ footer {
         <div class="lbl" data-i18n="about.stat.precision">Precision</div>
         <div class="sub" data-i18n="about.stat.precision.sub">Native GPU Support</div>
       </div>
+      
     </div>
+    <div class="loss-panel">
+  <div class="loss-panel-head">
+    <div class="loss-panel-title" data-i18n="status.chart.title">Loss history</div>
+    <div class="loss-panel-value" id="loss-last">—</div>
+  </div>
+  <div class="loss-graph-wrap">
+    <canvas id="loss-graph-canvas"></canvas>
+    <div class="loss-graph-empty" id="loss-graph-empty" data-i18n="status.chart.waiting">Waiting for data…</div>
+  </div>
+</div>
+
+<div style="display:flex;justify-content:flex-end;margin-bottom:29px;">
+  <button class="btn btn-ghost" id="btn-logs" data-i18n="status.logs.btn">View server logs</button>
+</div>
   </div>
 </div>
 
@@ -3314,7 +3473,20 @@ footer {
     </div>
   </div>
 </div>
-
+<div class="modal-overlay" id="logs-overlay" aria-hidden="true">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="logs-title">
+    <div class="modal-head">
+      <div class="modal-title" id="logs-title" data-i18n="status.logs.title">Server Logs</div>
+      <button class="modal-close" id="logs-close" data-i18n="status.logs.close">Close</button>
+    </div>
+    <div class="modal-body" id="logs-content"></div>
+    <div class="modal-sub">
+      <span id="logs-endpoint"></span>
+      <span id="logs-updated"></span>
+    </div>
+  </div>
+</div>
+  
 <footer>
   <div class="footer-inner">
     <div data-i18n-html="footer.copy">CrowdGPT - MIT License - server.crowdgpt.net proudly hosted by <a href="https://xevex.dev" target="_blank" rel="noopener noreferrer">xevex</a></div>
@@ -3435,6 +3607,15 @@ const TRANSLATIONS = {
     'status.explainer.foot': 'Stats refresh automatically every 15 seconds from the HuggingFace CDN. The global model weights are pushed to HuggingFace every 10 hours after aggregated updates complete.',
     'status.goal.title': 'Token goal',
 
+    'status.chart.title': 'Loss history',
+'status.chart.waiting': 'Waiting for data…',
+'status.logs.btn': 'View server logs',
+'status.logs.title': 'Server Logs',
+'status.logs.close': 'Close',
+'status.logs.loading': 'Loading…',
+'status.logs.empty': 'No logs available.',
+'status.logs.error': 'Could not fetch logs',
+    
     'contrib.crumb': 'home / leaderboard',
     'contrib.h1': 'Contributor Leaderboard',
     'contrib.sub': 'The top contributors powering the CrowdGPT training run. Rankings are based on total tokens processed.',
@@ -4500,6 +4681,183 @@ async function fetchLeaderboard() {
   renderLeaderboardTable();
 }
 
+/* ============================================================
+   LOSS HISTORY GRAPH  — accumulates via status polling,
+   persisted in localStorage; also honours server-provided
+   d.lossHistory if the coordinator ever ships one.
+   ============================================================ */
+const LOSS_HISTORY_KEY = 'crowdgpt-loss-history';
+const MAX_LOSS_POINTS  = 120;
+const MAX_LOSS_STORED  = 500;
+let lossHistory = [];
+
+function loadLossHistory() {
+  try {
+    const raw = localStorage.getItem(LOSS_HISTORY_KEY);
+    if (raw) lossHistory = JSON.parse(raw) || [];
+  } catch (e) { lossHistory = []; }
+}
+function saveLossHistory() {
+  try {
+    localStorage.setItem(LOSS_HISTORY_KEY, JSON.stringify(lossHistory.slice(-MAX_LOSS_STORED)));
+  } catch (e) {}
+}
+function recordLoss(loss, step) {
+  const n = Number(loss);
+  if (!isFinite(n) || n <= 0) return;
+  const last = lossHistory[lossHistory.length - 1];
+  if (last && last.loss === n && last.step === (step || null)) return;
+  lossHistory.push({ loss: n, step: step || null, ts: Date.now() });
+  if (lossHistory.length > MAX_LOSS_STORED) lossHistory.splice(0, lossHistory.length - MAX_LOSS_STORED);
+  saveLossHistory();
+}
+
+function drawLossGraph() {
+  const canvas = document.getElementById('loss-graph-canvas');
+  if (!canvas) return;
+  const empty = document.getElementById('loss-graph-empty');
+  const rect = canvas.getBoundingClientRect();
+  const W = rect.width, H = rect.height;
+  if (W < 10 || H < 10) {            // view not visible yet → retry
+    requestAnimationFrame(drawLossGraph);
+    return;
+  }
+
+  const data = lossHistory.slice(-MAX_LOSS_POINTS);
+  if (data.length < 2) {
+    canvas.classList.add('hidden-graph');
+    if (empty) empty.classList.remove('hidden-empty');
+    const lastEl = document.getElementById('loss-last');
+    if (lastEl) lastEl.textContent = '—';
+    return;
+  }
+  canvas.classList.remove('hidden-graph');
+  if (empty) empty.classList.add('hidden-empty');
+
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width  = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const values = data.map(d => d.loss);
+  const mn = Math.min(...values), mx = Math.max(...values);
+  const range = (mx - mn) || 1;
+  const pad = 8, pH = H - pad * 2, pW = W - pad * 2, st = pW / (data.length - 1);
+  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+  // horizontal grid
+  ctx.strokeStyle = isDark ? 'rgba(255,255,255,.06)' : 'rgba(17,17,19,.07)';
+  ctx.lineWidth = 1;
+  for (let g = 1; g < 4; g++) {
+    const y = pad + pH * g / 4;
+    ctx.beginPath();
+    ctx.moveTo(pad, y);
+    ctx.lineTo(pad + pW, y);
+    ctx.stroke();
+  }
+
+  const pt = i => [pad + i * st, pad + pH - (data[i].loss - mn) / range * pH];
+
+  // area fill
+  ctx.beginPath();
+  data.forEach((v, i) => { const [x, y] = pt(i); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  ctx.lineTo(pad + pW, pad + pH);
+  ctx.lineTo(pad, pad + pH);
+  ctx.closePath();
+  const gr = ctx.createLinearGradient(0, 0, 0, H);
+  gr.addColorStop(0, isDark ? 'rgba(34,197,94,.20)' : 'rgba(22,163,74,.16)');
+  gr.addColorStop(1, 'rgba(22,163,74,0)');
+  ctx.fillStyle = gr;
+  ctx.fill();
+
+  // line
+  ctx.beginPath();
+  data.forEach((v, i) => { const [x, y] = pt(i); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  ctx.strokeStyle = isDark ? '#22c55e' : '#16a34a';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  const lastEl = document.getElementById('loss-last');
+  if (lastEl) lastEl.textContent = data[data.length - 1].loss.toFixed(4);
+}
+
+loadLossHistory();
+window.addEventListener('resize', () => requestAnimationFrame(drawLossGraph));
+
+/* ============================================================
+   SERVER LOGS MODAL
+   ============================================================ */
+const LOGS_ENDPOINT = `${API_BASE}/api/logs`;
+let logsInterval = null;
+
+function formatLogEntry(l) {
+  if (typeof l === 'string') return l;
+  const ts = l.ts || l.timestamp || l.time || l.at;
+  const lvl = (l.level || l.severity || 'INFO').toUpperCase();
+  const msg = l.msg || l.message || l.text || l.line || JSON.stringify(l);
+  const time = ts ? new Date(ts).toLocaleTimeString() : '--:--:--';
+  return `[${time}] [${lvl}] ${msg}`;
+}
+
+async function refreshLogs() {
+  const content = document.getElementById('logs-content');
+  const updated = document.getElementById('logs-updated');
+  const endpoint = document.getElementById('logs-endpoint');
+  if (!content) return;
+  if (endpoint && !endpoint.textContent) endpoint.textContent = LOGS_ENDPOINT.replace(/^https?:\/\//, '');
+
+  try {
+    const r = await fetch(LOGS_ENDPOINT, { cache: 'no-store', signal: AbortSignal.timeout(10000) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const text = await r.text();
+    if (updated) updated.textContent = 'updated ' + new Date().toLocaleTimeString();
+
+    if (!text || !text.trim()) { content.textContent = t('status.logs.empty'); return; }
+
+    // Try JSON first, fall back to raw text
+    try {
+      const data = JSON.parse(text);
+      const arr = Array.isArray(data) ? data : (Array.isArray(data.logs) ? data.logs : null);
+      if (arr) content.textContent = arr.map(formatLogEntry).join('\n');
+      else content.textContent = JSON.stringify(data, null, 2);
+    } catch (_) {
+      content.textContent = text;
+    }
+  } catch (e) {
+    content.textContent = t('status.logs.error') + ': ' + e.message;
+  }
+}
+
+function openLogs() {
+  const overlay = document.getElementById('logs-overlay');
+  const content = document.getElementById('logs-content');
+  if (!overlay || !content) return;
+  overlay.classList.add('show');
+  overlay.setAttribute('aria-hidden', 'false');
+  content.textContent = t('status.logs.loading');
+  refreshLogs();
+  if (logsInterval) clearInterval(logsInterval);
+  logsInterval = setInterval(refreshLogs, 5000);
+}
+function closeLogs() {
+  const overlay = document.getElementById('logs-overlay');
+  if (!overlay) return;
+  overlay.classList.remove('show');
+  overlay.setAttribute('aria-hidden', 'true');
+  if (logsInterval) { clearInterval(logsInterval); logsInterval = null; }
+}
+
+document.getElementById('btn-logs')?.addEventListener('click', openLogs);
+document.getElementById('logs-close')?.addEventListener('click', closeLogs);
+document.getElementById('logs-overlay')?.addEventListener('click', (e) => {
+  if (e.target.id === 'logs-overlay') closeLogs();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeLogs();
+});
+  
 let apiReachable = null;
 let failedAttempts = 0;
 let statsInterval, lbInterval;
@@ -4530,6 +4888,18 @@ async function fetchStats() {
 
     updateGoalProgress(d.totalTokens || 0);
 
+    // Loss history: prefer server-provided array, else accumulate from polling
+    if (Array.isArray(d.lossHistory) && d.lossHistory.length > 0) {
+      lossHistory = d.lossHistory.map(p => typeof p === 'number'
+        ? { loss: p, step: null, ts: Date.now() }
+        : { loss: Number(p.loss ?? p.value ?? 0), step: p.step ?? null, ts: p.ts ?? Date.now() }
+      ).filter(p => isFinite(p.loss) && p.loss > 0);
+      saveLossHistory();
+    } else {
+      recordLoss(currentLoss, d.globalStep || null);
+    }
+    requestAnimationFrame(drawLossGraph);
+    
     failedAttempts = 0;
     apiReachable = true;
 
@@ -4552,6 +4922,8 @@ async function fetchStats() {
           lossEl.style.color = 'var(--text)';
 
           updateGoalProgress(d2.totalTokens || 0);
+          recordLoss(Number(currentLoss), d2.globalStep || null);
+          requestAnimationFrame(drawLossGraph);
 
           failedAttempts = 0;
           apiReachable = true;
@@ -4764,6 +5136,7 @@ function applyView(view) {
   html.style.scrollBehavior = 'auto';
   window.scrollTo(0, 0);
   html.style.scrollBehavior = prev;
+  if (view === 'status') requestAnimationFrame(drawLossGraph);
 }
 
 function navigate(view) {
@@ -5108,9 +5481,11 @@ fetchStats();
 fetchLeaderboard();
 statsInterval = setInterval(fetchStats, 15000);
 lbInterval = setInterval(fetchLeaderboard, 30000);
-fetch('https://upload.crowdgpt.net', { method: 'GET' }).catch(() => {
-  // It will return a 405 Method Not Allowed, but that's fine—it wakes up the server!
-});
+// Warm-up ping to the upload worker. no-cors avoids the console CORS error
+// (the browser blocks reading the response, but the request itself still fires
+//  and wakes a cold Cloudflare Worker).
+fetch('https://upload.crowdgpt.net', { method: 'GET', mode: 'no-cors', cache: 'no-store' })
+  .catch(() => { /* opaque / network error – ignored on purpose */ });
 </script>
   
 </body>
