@@ -60,7 +60,7 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='repla
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
 
-CLIENT_VERSION = "2.4"
+CLIENT_VERSION = "2.5"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
@@ -221,7 +221,10 @@ def check_for_update():
     if downloaded and _apply_update(downloaded): return True
     return False
 
-def _restart_self():
+def _restart_self(resume_training=False):
+    # resume_training=True only when an update lands WHILE training: the new process then logs back in and resumes by itself
+    if resume_training: os.environ["CROWDGPT_RESUME_TRAINING"] = "1"
+    else: os.environ.pop("CROWDGPT_RESUME_TRAINING", None)
     python = sys.executable; script = str(Path(__file__).resolve()); args = [python, script] + sys.argv[1:]
     if os.name == "nt":
         subprocess.Popen(args, close_fds=True, creationflags=0x00000008); sys.exit(0)
@@ -2053,7 +2056,7 @@ def _do_backend_setup(selected_backend, vram_gb, emit):
 
 def _check_updates_between_rounds(emit):
     try:
-        if check_for_update(): emit('log', "🔄 Updated to a new version — restarting..."); emit('status', 'idle'); time.sleep(2); _restart_self()
+        if check_for_update(): emit('log', "🔄 Updated to a new version — restarting..."); emit('status', 'idle'); time.sleep(2); _restart_self(resume_training=True)
     except Exception: pass
 
 class Api:
@@ -2064,10 +2067,17 @@ class Api:
         self._ui_queue = queue.Queue(maxsize=2048)
         self._ui_ready = threading.Event()
         threading.Thread(target=self._ui_pump, daemon=True, name="ui-emit").start()
+        # v2.5: a saved session is used ONLY if "Remember me" was ticked, or if we just restarted because of an update
+        # while training. A normal start without "Remember me" forgets the token and shows the login screen.
+        self._saved = None
+        self._resume = os.environ.pop("CROWDGPT_RESUME_TRAINING", "") == "1"
         try:
             if AUTH_TOKEN_FILE.exists():
-                j = json.loads(AUTH_TOKEN_FILE.read_text()); tok = j.get("token")
-                if tok: self.auth_token = tok; self.username = j.get("username"); log.info(f"[auth] restored session for {self.username}")
+                j = json.loads(AUTH_TOKEN_FILE.read_text())
+                if j.get("token") and (j.get("remember") or self._resume):
+                    self._saved = {"token": j["token"], "username": j.get("username"), "server": j.get("server"), "remember": bool(j.get("remember"))}
+                else:
+                    AUTH_TOKEN_FILE.unlink(missing_ok=True)
         except Exception: pass
         self._backend_file = CHECKPOINT_DIR / "selected_backend.json"; saved = None
         try:
@@ -2113,11 +2123,20 @@ class Api:
         if self._ui_ready.is_set(): return
         self._ui_ready.set()
         log.info("[ui] page loaded; starting emit pump and training thread")
-        if self.auth_token:
-            try:
-                self.emit('login_success', {'username': self.username or 'restored'})
-                if self.thread is None or not self.thread.is_alive(): self.start()
-            except Exception: pass
+        saved, resume = self._saved, self._resume
+        try:
+            if saved and saved.get("token"):                       # remember-me ticked, or update-resume
+                self.auth_token = saved["token"]; self.username = saved.get("username")
+                if saved.get("server"): self.server_url = saved["server"]
+                self.emit('login_success', {'username': self.username or 'restored', 'autologin': True})
+            elif resume:                                            # update-resume of an anonymous session
+                self.auth_token = None; self.username = "anonymous"
+                self.emit('login_success', {'username': 'anonymous', 'autologin': True})
+            else:
+                return                                              # normal start: login screen, nothing runs
+            if resume and (self.thread is None or not self.thread.is_alive()):
+                self.emit('log', "🔄 Updated — resuming training"); self.start()
+        except Exception as e: log.warning(f"[auth] auto-login failed: {e}")
 
     def get_backends(self):
         self.emit('backends', {'available': get_available_backends(), 'current': self.selected_backend})
@@ -2159,28 +2178,28 @@ class Api:
         self.get_backends()
         if self.thread and self.thread.is_alive(): self.stop_event.set()
 
-    def login(self, s, u, p):
+    def login(self, s, u, p, remember=False):
         self.server_url = s or self.server_url
-        threading.Thread(target=self._do_login, args=(u, p), daemon=True).start()
+        threading.Thread(target=self._do_login, args=(u, p, bool(remember)), daemon=True).start()
 
-    def _do_login(self, u, p):
+    def _do_login(self, u, p, remember=False):
         tok, err = do_login(self.server_url, u, p)
         if tok:
             self.auth_token = tok; self.username = u
-            try: _write_private(AUTH_TOKEN_FILE, json.dumps({"token": tok, "username": u}))
+            try: _write_private(AUTH_TOKEN_FILE, json.dumps({"token": tok, "username": u, "server": self.server_url, "remember": bool(remember)}))
             except Exception: pass
             self.emit('login_success', {'username': u})
         else: self.emit('login_error', {'code': err or 'login_failed'})
 
-    def register(self, s, u, email, p):
+    def register(self, s, u, email, p, remember=False):
         self.server_url = s or self.server_url
-        threading.Thread(target=self._do_register, args=(u, email, p), daemon=True).start()
+        threading.Thread(target=self._do_register, args=(u, email, p, bool(remember)), daemon=True).start()
 
-    def _do_register(self, u, email, p):
+    def _do_register(self, u, email, p, remember=False):
         tok, err = do_register(self.server_url, u, email, p)
         if tok:
             self.auth_token = tok; self.username = u
-            try: _write_private(AUTH_TOKEN_FILE, json.dumps({"token": tok, "username": u}))
+            try: _write_private(AUTH_TOKEN_FILE, json.dumps({"token": tok, "username": u, "server": self.server_url, "remember": bool(remember)}))
             except Exception: pass
             self.emit('login_success', {'username': u})
         else: self.emit('login_error', {'code': err or 'register_failed'})
@@ -2192,7 +2211,10 @@ class Api:
         self.emit('login_success', {'username': 'anonymous'})
 
     def start(self):
-        if self.thread and self.thread.is_alive(): return
+        if self.thread and self.thread.is_alive():
+            if self.stop_event.is_set():
+                self.emit('log', "Previous run is still shutting down — press Start again in a moment."); self.emit('start_refused', {})
+            return
         self.stop_event.clear()
         self.thread = threading.Thread(target=self._rs, daemon=True)
         self.thread.start()
@@ -2201,6 +2223,13 @@ class Api:
     def stop(self):
         self.stop_event.set()
         self.emit('stopped')
+    def logout(self):
+        self.stop_event.set()                                      # stops training after the current step; a new login can't start until it has ended
+        self.auth_token = None; self.username = None
+        try: AUTH_TOKEN_FILE.unlink(missing_ok=True)
+        except Exception: pass
+        self.emit('log', "Logged out.")
+        self.emit('logged_out', {})
     def _check_updates_between_rounds(self): _check_updates_between_rounds(self.emit)
 
     def _rs(self):
@@ -2213,7 +2242,10 @@ class Api:
             self.emit('log', f"{'='*40}\nStarting Round Cycle #{round_count}\n{'='*40}")
             try: run_single_round_wrapper(self.server_url, self.auth_token, self.stop_event, self.emit)
             except AuthRejected:
-                self.auth_token = None; self.emit('status', 'idle'); self.emit('log', "🔒 Session expired — please log in again."); break
+                self.auth_token = None; self.emit('status', 'idle'); self.emit('log', "🔒 Session expired — please log in again.")
+                try: AUTH_TOKEN_FILE.unlink(missing_ok=True)
+                except Exception: pass
+                self.emit('logged_out', {}); break
             except ArchIncompatible as e:
                 self.emit('status', 'idle'); self.emit('log', f"⛔ Cannot train: {e}. Fix the PyTorch/GPU mismatch above, or pick a different GPU/backend, then press Start again."); break
             except KeyboardInterrupt: self.stop_event.set(); break
