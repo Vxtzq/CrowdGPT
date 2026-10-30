@@ -4818,7 +4818,8 @@ window.addEventListener('resize', () => requestAnimationFrame(drawLossGraph));
 /* ============================================================
    SERVER LOGS MODAL
    ============================================================ */
-const LOGS_ENDPOINT = `${API_BASE}/api/logs`;
+const LOGS_ENDPOINT = 'https://huggingface.co/Vxtzq/Crowd-v1/raw/main/public_log.json';
+const HF_LOSS_HISTORY_URL = 'https://huggingface.co/Vxtzq/Crowd-v1/raw/main/loss_history.json';
 let logsInterval = null;
 
 function formatLogEntry(l) {
@@ -4828,6 +4829,42 @@ function formatLogEntry(l) {
   const msg = l.msg || l.message || l.text || l.line || JSON.stringify(l);
   const time = ts ? new Date(ts).toLocaleTimeString() : '--:--:--';
   return `[${time}] [${lvl}] ${msg}`;
+}
+
+function formatLogEvent(e) {
+  if (!e || typeof e !== 'object') return String(e);
+
+  const time = e.t
+    ? new Date(e.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : '--:--:--';
+  const tag = (e.type || 'event').toUpperCase().padEnd(12);
+
+  let msg;
+  switch (e.type) {
+    case 'server_start':
+      msg = `server started · round ${e.round ?? '?'} · step ${e.step ?? '?'}` +
+            (e.users != null ? ` · ${e.users} users` : '');
+      break;
+    case 'pool_start':
+      msg = `pool ${e.pool} · chunk ${e.chunk ?? '?'} · ${e.steps ?? '?'} steps · ${e.autocast || '?'}` +
+            (e.power_solo ? ' · solo' : '');
+      break;
+    case 'submission':
+      msg = `${e.user} → ${e.pool} · filled ${e.filled || '?'}` +
+            (e.cross_check ? ' · cross-checked' : '');
+      break;
+    case 'pool_passed':
+      msg = `pool ${e.pool} passed · ${e.survivors}/${e.submitted} survived` +
+            (e.power_solo ? ' · solo' : '');
+      break;
+    case 'flag':
+      msg = `⚠ ${e.user} flagged · ${e.reason || ''}`;
+      break;
+    default:
+      msg = JSON.stringify(e);
+  }
+
+  return `[${time}] ${tag} ${msg}`;
 }
 
 async function refreshLogs() {
@@ -4846,16 +4883,48 @@ async function refreshLogs() {
     if (!text || !text.trim()) { content.textContent = t('status.logs.empty'); return; }
 
     // Try JSON first, fall back to raw text
-    try {
-      const data = JSON.parse(text);
-      const arr = Array.isArray(data) ? data : (Array.isArray(data.logs) ? data.logs : null);
-      if (arr) content.textContent = arr.map(formatLogEntry).join('\n');
-      else content.textContent = JSON.stringify(data, null, 2);
-    } catch (_) {
-      content.textContent = text;
-    }
+try {
+  const data = JSON.parse(text);
+  const arr = Array.isArray(data)
+    ? data
+    : Array.isArray(data.events) ? data.events.slice().reverse()   // newest first
+    : Array.isArray(data.logs)   ? data.logs
+    : null;
+  if (arr) content.textContent = arr.map(formatLogEvent).join('\n');
+  else content.textContent = JSON.stringify(data, null, 2);
+} catch (_) {
+  content.textContent = text;
+}
   } catch (e) {
     content.textContent = t('status.logs.error') + ': ' + e.message;
+  }
+}
+
+/* ===== AUTHORITATIVE LOSS HISTORY FROM HF ===== */
+async function fetchLossHistory() {
+  try {
+    const r = await fetch(HF_LOSS_HISTORY_URL, { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const pools = Array.isArray(d && d.pools) ? d.pools : [];
+    if (pools.length === 0) return;
+
+    const mapped = pools
+      .map(p => ({
+        loss: Number(p.loss),
+        step: p.step != null ? p.step : null,
+        round: p.round != null ? p.round : null,
+        ts: p.ts ? p.ts * 1000 : (p.t ? Date.parse(p.t) : Date.now())
+      }))
+      .filter(p => isFinite(p.loss) && p.loss > 0);
+
+    if (mapped.length === 0) return;
+
+    lossHistory = mapped;
+    saveLossHistory();
+    requestAnimationFrame(drawLossGraph);
+  } catch (e) {
+    // silent — polling fallback via fetchStats still works
   }
 }
 
@@ -4924,9 +4993,11 @@ async function fetchStats() {
         : { loss: Number(p.loss ?? p.value ?? 0), step: p.step ?? null, ts: p.ts ?? Date.now() }
       ).filter(p => isFinite(p.loss) && p.loss > 0);
       saveLossHistory();
-    } else {
-      recordLoss(currentLoss, d.globalStep || null);
-    }
+} else {
+  // Only accumulate from status polling if the authoritative
+  // loss_history.json hasn't produced at least two points yet.
+  if (lossHistory.length < 2) recordLoss(currentLoss, d.globalStep || null);
+}
     requestAnimationFrame(drawLossGraph);
     
     failedAttempts = 0;
@@ -4951,7 +5022,7 @@ async function fetchStats() {
           lossEl.style.color = 'var(--text)';
 
           updateGoalProgress(d2.totalTokens || 0);
-          recordLoss(Number(currentLoss), d2.globalStep || null);
+          if (lossHistory.length < 2) recordLoss(Number(currentLoss), d2.globalStep || null);
           requestAnimationFrame(drawLossGraph);
 
           failedAttempts = 0;
@@ -5508,8 +5579,10 @@ applyTranslations();
 
 fetchStats();
 fetchLeaderboard();
+fetchLossHistory();
 statsInterval = setInterval(fetchStats, 15000);
 lbInterval = setInterval(fetchLeaderboard, 30000);
+setInterval(fetchLossHistory, 30000);
 // Warm-up ping to the upload worker. no-cors avoids the console CORS error
 // (the browser blocks reading the response, but the request itself still fires
 //  and wakes a cold Cloudflare Worker).
