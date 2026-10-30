@@ -763,6 +763,92 @@ nav a.nav-with-badge {
   min-width: 0;
 }
 
+/* ===== LOG LINES (Ubuntu-terminal feel) ===== */
+.log-line {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 3px 0;
+  line-height: 1.6;
+  white-space: normal;
+  border-radius: 3px;
+}
+.log-line:hover {
+  background: rgba(255, 255, 255, .025);
+}
+.log-time {
+  color: var(--term-dim);
+  flex-shrink: 0;
+  min-width: 8ch;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  letter-spacing: 0.02em;
+}
+.log-badge {
+  display: inline-block;
+  flex-shrink: 0;
+  min-width: 11ch;
+  padding: 1px 7px;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-align: center;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.log-badge-info    { color: #60a5fa; background: rgba(96,165,250,.10);  border: 1px solid rgba(96,165,250,.30); }
+.log-badge-ok      { color: #4ade80; background: rgba(74,222,128,.10);  border: 1px solid rgba(74,222,128,.30); }
+.log-badge-warn    { color: #fbbf24; background: rgba(251,191,36,.10);  border: 1px solid rgba(251,191,36,.30); }
+.log-badge-error   { color: #ef4444; background: rgba(239,68,68,.10);   border: 1px solid rgba(239,68,68,.30); }
+.log-badge-default { color: #a1a1aa; background: rgba(161,161,170,.08); border: 1px solid rgba(161,161,170,.22); }
+
+.log-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--term-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.log-body strong, .log-body b { color: #f5f5f7; font-weight: 600; }
+.log-body code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(255,255,255,.05);
+  color: #d4d4d8;
+  white-space: nowrap;
+}
+.log-pool      { color: #c7c7cc; }
+.log-arrow     { color: var(--term-dim); font-weight: 500; }
+.log-sep       { color: var(--term-dim); }
+.log-passed    { color: #4ade80; font-weight: 500; }
+.log-check     { color: var(--term-accent); font-weight: 700; margin-left: 4px; }
+.log-flag-icon { color: #fbbf24; }
+.log-autocast  { color: #c084fc; font-family: var(--mono); font-size: 0.9em; }
+.log-solo {
+  color: #c084fc;
+  font-family: var(--mono);
+  font-size: 0.88em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(192,132,252,.10);
+}
+.log-fill {
+  font-family: var(--mono);
+  font-size: 0.9em;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: 4px;
+}
+.log-fill.empty   { color: #71717a; background: rgba(113,113,122,.12); }
+.log-fill.partial { color: #fbbf24; background: rgba(251,191,36,.12); }
+.log-fill.full    { color: #4ade80; background: rgba(74,222,128,.12); }
+.log-mono { font-family: var(--mono); font-size: 0.9em; color: var(--term-dim); }
+
 .mobile-menu-links a {
   padding: 18px 22px;
   font-size: clamp(18px, 1.4vw, 20px);
@@ -4807,49 +4893,105 @@ const LOGS_ENDPOINT = 'https://huggingface.co/Vxtzq/Crowd-v1/raw/main/public_log
 const HF_LOSS_HISTORY_URL = 'https://huggingface.co/Vxtzq/Crowd-v1/raw/main/loss_history.json';
 let logsInterval = null;
 
-function formatLogEntry(l) {
-  if (typeof l === 'string') return l;
-  const ts = l.ts || l.timestamp || l.time || l.at;
-  const lvl = (l.level || l.severity || 'INFO').toUpperCase();
-  const msg = l.msg || l.message || l.text || l.line || JSON.stringify(l);
-  const time = ts ? new Date(ts).toLocaleTimeString() : '--:--:--';
-  return `[${time}] [${lvl}] ${msg}`;
+function classifyLogEvent(type) {
+  switch (type) {
+    case 'server_start':
+    case 'pool_start':
+      return 'info';
+    case 'pool_passed':
+      return 'ok';
+    case 'flag':
+      return 'warn';
+    case 'error':
+    case 'ban':
+    case 'reject':
+      return 'error';
+    default:
+      return 'default';
+  }
 }
 
-function formatLogEvent(e) {
-  if (!e || typeof e !== 'object') return String(e);
+function poolShort(id) {
+  if (!id) return '?';
+  const parts = String(id).split('_');
+  const tail = parts[parts.length - 1];
+  return `p…_${tail}`;
+}
 
-  const time = e.t
-    ? new Date(e.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    : '--:--:--';
-  const tag = (e.type || 'event').toUpperCase().padEnd(12);
-
-  let msg;
-  switch (e.type) {
-    case 'server_start':
-      msg = `server started · round ${e.round ?? '?'} · step ${e.step ?? '?'}` +
-            (e.users != null ? ` · ${e.users} users` : '');
-      break;
-    case 'pool_start':
-      msg = `pool ${e.pool} · chunk ${e.chunk ?? '?'} · ${e.steps ?? '?'} steps · ${e.autocast || '?'}` +
-            (e.power_solo ? ' · solo' : '');
-      break;
-    case 'submission':
-      msg = `${e.user} → ${e.pool} · filled ${e.filled || '?'}` +
-            (e.cross_check ? ' · cross-checked' : '');
-      break;
-    case 'pool_passed':
-      msg = `pool ${e.pool} passed · ${e.survivors}/${e.submitted} survived` +
-            (e.power_solo ? ' · solo' : '');
-      break;
-    case 'flag':
-      msg = `⚠ ${e.user} flagged · ${e.reason || ''}`;
-      break;
-    default:
-      msg = JSON.stringify(e);
+function buildLogEntry(e) {
+  if (!e || typeof e !== 'object') {
+    return { time: '--:--:--', tag: 'event', kind: 'default', html: escapeHtml(String(e)) };
   }
 
-  return `[${time}] ${tag} ${msg}`;
+  const time = e.t
+    ? new Date(e.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    : '--:--:--';
+  const tag  = e.type || 'event';
+  const kind = classifyLogEvent(e.type);
+  const pool = e.pool
+    ? `<code class="log-pool" title="${escapeHtml(e.pool)}">${escapeHtml(poolShort(e.pool))}</code>`
+    : '';
+  let html = '';
+
+  switch (e.type) {
+    case 'server_start':
+      // tag already says SERVER_START — no need to repeat "server started"
+      html = `round <b>${e.round ?? '?'}</b> · step <b>${e.step ?? '?'}</b>` +
+             (e.users != null ? ` · <b>${e.users}</b> users` : '');
+      break;
+
+    case 'pool_start':
+      html = `${pool} · chunk <b>${e.chunk ?? '?'}</b> · <b>${e.steps ?? '?'}</b> steps · <span class="log-autocast">${escapeHtml(e.autocast || '?')}</span>` +
+             (e.power_solo ? ' · <span class="log-solo">solo</span>' : '');
+      break;
+
+    case 'submission': {
+      let fillHtml = '';
+      const m = String(e.filled || '').match(/^(\d+)\/(\d+)$/);
+      if (m) {
+        const cur = +m[1], tot = +m[2];
+        const cls = cur >= tot ? 'full' : (cur === 0 ? 'empty' : 'partial');
+        fillHtml = ` <span class="log-fill ${cls}">${cur}/${tot}</span>`;
+      }
+      const check = e.cross_check ? ' <span class="log-check" title="cross-checked">✓</span>' : '';
+      html = `<strong>${escapeHtml(e.user || '?')}</strong> <span class="log-arrow">→</span> ${pool}${fillHtml}${check}`;
+      break;
+    }
+
+    case 'pool_passed':
+      html = `${pool} <span class="log-passed">passed</span> · <b>${e.survivors ?? '?'}</b>/<b>${e.submitted ?? '?'}</b> survived` +
+             (e.power_solo ? ' · <span class="log-solo">solo</span>' : '');
+      break;
+
+    case 'flag':
+      // no "flagged" — FLAG tag + reason reads cleaner
+      html = `<span class="log-flag-icon">⚠</span> <strong>${escapeHtml(e.user || '?')}</strong>` +
+             ` <span class="log-sep">—</span> ${escapeHtml(e.reason || '')}` +
+             (e.pool ? ` · ${pool}` : '');
+      break;
+
+    default:
+      html = `<span class="log-mono">${escapeHtml(JSON.stringify(e))}</span>`;
+  }
+
+  return { time, tag, kind, html };
+}
+
+function renderLogs(entries) {
+  const content = document.getElementById('logs-content');
+  if (!content) return;
+  if (!entries || entries.length === 0) {
+    content.textContent = t('status.logs.empty');
+    return;
+  }
+  content.innerHTML = entries.map(e => {
+    const { time, tag, kind, html } = buildLogEntry(e);
+    return `<div class="log-line">` +
+      `<span class="log-time">${escapeHtml(time)}</span>` +
+      `<span class="log-badge log-badge-${kind}">${escapeHtml(tag)}</span>` +
+      `<span class="log-body">${html}</span>` +
+      `</div>`;
+  }).join('');
 }
 
 async function refreshLogs() {
@@ -4875,8 +5017,8 @@ try {
     : Array.isArray(data.events) ? data.events.slice().reverse()   // newest first
     : Array.isArray(data.logs)   ? data.logs
     : null;
-  if (arr) content.textContent = arr.map(formatLogEvent).join('\n');
-  else content.textContent = JSON.stringify(data, null, 2);
+if (arr) renderLogs(arr);
+else content.textContent = JSON.stringify(data, null, 2);
 } catch (_) {
   content.textContent = text;
 }
