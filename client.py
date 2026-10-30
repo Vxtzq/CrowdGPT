@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v2.4
+CrowdGPT GUI Client v2.5
 
-v2.4 changes
+v2.5 changes
   - fix UI button bugs
   - Same user on multiple devices
   - Fixed missing import
+  - Clarified auto-login
 v2.0 changes (dynamic optimizer adaptation):
   - Reports optimizer capabilities to server: X-Client-Optim-Can-Fp32, X-Client-Optim-Can-8bit
   - Honors crossCheck.targetOptimizer from the pool (asymmetric: fp32 accepts any, 8bit requires native)
