@@ -32,11 +32,10 @@
   <strong>The best 0$ AI.</strong>
 </p>
 
-# Important
-- CrowdGPT v2.2 is broken. If your client updated to this version, manually update to v2.3 or newer using the installation command or downloading the code from GitHub! 
-I apologize for this dumb mistake of a missing import 😭
-
-If you don't wanna update manually, just find your CrowdGPT installation and append `import uuid` to the top of the file. That's all to fix to get it back to working.
+# CrowdGPT v2.6 changelog
+- False flags should now be much rarer
+- Fixed UI bugs
+- Clarifier auto-login logic between updates
 
 ### CrowdGPT admin applications are open!! 
 
