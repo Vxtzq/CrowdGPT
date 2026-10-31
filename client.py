@@ -65,7 +65,7 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='repla
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
 
-CLIENT_VERSION = "2.6"
+CLIENT_VERSION = "2.7"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
@@ -612,11 +612,11 @@ def get_available_backends():
     backends['cuda'] = torch.cuda.is_available() and not (hasattr(torch.version, 'hip') and torch.version.hip)
     backends['rocm'] = hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available()
     backends['mps'] = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
-    try:
-        import intel_extension_for_pytorch
-        backends['xpu'] = hasattr(torch, 'xpu') and torch.xpu.is_available()
-    except ImportError: backends['xpu'] = False
     backends['xpu'] = _xpu_available()
+    try:
+        import torch_directml
+        backends['directml'] = torch_directml.is_available()
+    except ImportError: backends['directml'] = False
     backends['cpu'] = True
     return backends
 
@@ -1970,7 +1970,6 @@ def run_single_round_wrapper(srv, at, se, emit):
             ob, oe = _build_optimizers(model, lr=1e-4, force_mode=optim_mode); emit('log', "   rebuilt optimizers for new placement")
 
         ladder = DegradeLadder(model, on_step_down=_on_step_down)
-        ua, ad = _pick_autocast(train_backend)
         emit('log', f"Backend: {train_backend} | autocast: {ua} | bs={bs} | accum={as_} | dtype={'bf16' if ua else 'fp32'} | engram={'on' if ENGRAM_ACTIVE else 'off'} | optim={_predict_optim(train_backend, force_mode=optim_mode)}")
         cs_ = time.time(); target_micro_steps = 100
         if cohort_mode: target_micro_steps = int(cc_steps); emit('status', 'training')
