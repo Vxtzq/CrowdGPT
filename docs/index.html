@@ -4791,6 +4791,32 @@ const MAX_LOSS_POINTS  = 120;
 const MAX_LOSS_STORED  = 500;
 let lossHistory = [];
 
+
+const LOSS_SMOOTH_WINDOW = 10;   // ← new: average over 10 points
+
+let lossHistory = [];
+
+// Trailing moving average, O(n). Each output = mean of the last `window` inputs
+// (or fewer at the head of the series, so the very first points aren't dropped).
+function smoothLossHistory(data, window) {
+  if (!Array.isArray(data) || data.length === 0) return [];
+  const w = Math.max(1, Math.floor(window));
+  if (w === 1) return data.map(p => ({ ...p, rawLoss: p.loss }));
+
+  const out = [];
+  let sum = 0;
+  for (let i = 0; i < data.length; i++) {
+    sum += data[i].loss;
+    if (i >= w) sum -= data[i - w].loss;
+    out.push({
+      ...data[i],
+      loss: sum / Math.min(i + 1, w),   // smoothed
+      rawLoss: data[i].loss              // keep the original for the faint line
+    });
+  }
+  return out;
+}
+
 function loadLossHistory() {
   try {
     const raw = localStorage.getItem(LOSS_HISTORY_KEY);
@@ -4818,12 +4844,11 @@ function drawLossGraph() {
   const empty = document.getElementById('loss-graph-empty');
   const rect = canvas.getBoundingClientRect();
   const W = rect.width, H = rect.height;
-  if (W < 10 || H < 10) {            // view not visible yet → retry
-    requestAnimationFrame(drawLossGraph);
-    return;
-  }
+  if (W < 10 || H < 10) { requestAnimationFrame(drawLossGraph); return; }
 
-  const data = lossHistory.slice(-MAX_LOSS_POINTS);
+  const rawData = lossHistory.slice(-MAX_LOSS_POINTS);
+  const data    = smoothLossHistory(rawData, LOSS_SMOOTH_WINDOW);
+
   if (data.length < 2) {
     canvas.classList.add('hidden-graph');
     if (empty) empty.classList.remove('hidden-empty');
@@ -4841,46 +4866,51 @@ function drawLossGraph() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
 
-  const values = data.map(d => d.loss);
-  const mn = Math.min(...values), mx = Math.max(...values);
+  // Y-range from the RAW values so both the smoothed and raw lines fit.
+  const rawVals = rawData.map(d => d.loss);
+  const mn = Math.min(...rawVals), mx = Math.max(...rawVals);
   const range = (mx - mn) || 1;
   const pad = 8, pH = H - pad * 2, pW = W - pad * 2, st = pW / (data.length - 1);
   const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
 
-  // horizontal grid
+  // grid (unchanged)
   ctx.strokeStyle = isDark ? 'rgba(255,255,255,.06)' : 'rgba(17,17,19,.07)';
   ctx.lineWidth = 1;
   for (let g = 1; g < 4; g++) {
     const y = pad + pH * g / 4;
-    ctx.beginPath();
-    ctx.moveTo(pad, y);
-    ctx.lineTo(pad + pW, y);
-    ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(pad + pW, y); ctx.stroke();
   }
 
-  const pt = i => [pad + i * st, pad + pH - (data[i].loss - mn) / range * pH];
+  const ptSmooth = i => [pad + i * st, pad + pH - (data[i].loss    - mn) / range * pH];
+  const ptRaw    = i => [pad + i * st, pad + pH - (rawData[i].loss - mn) / range * pH];
 
-  // area fill
+  // area under the smoothed curve
   ctx.beginPath();
-  data.forEach((v, i) => { const [x, y] = pt(i); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  data.forEach((_, i) => { const [x, y] = ptSmooth(i); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
   ctx.lineTo(pad + pW, pad + pH);
   ctx.lineTo(pad, pad + pH);
   ctx.closePath();
   const gr = ctx.createLinearGradient(0, 0, 0, H);
   gr.addColorStop(0, isDark ? 'rgba(34,197,94,.20)' : 'rgba(22,163,74,.16)');
   gr.addColorStop(1, 'rgba(22,163,74,0)');
-  ctx.fillStyle = gr;
-  ctx.fill();
+  ctx.fillStyle = gr; ctx.fill();
 
-  // line
+  // raw line, faint — shows the noise you're averaging over
   ctx.beginPath();
-  data.forEach((v, i) => { const [x, y] = pt(i); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  rawData.forEach((_, i) => { const [x, y] = ptRaw(i); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  ctx.strokeStyle = isDark ? 'rgba(34,197,94,.22)' : 'rgba(22,163,74,.28)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // smoothed line, bold
+  ctx.beginPath();
+  data.forEach((_, i) => { const [x, y] = ptSmooth(i); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
   ctx.strokeStyle = isDark ? '#22c55e' : '#16a34a';
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth = 1.75;
   ctx.stroke();
 
   const lastEl = document.getElementById('loss-last');
-  if (lastEl) lastEl.textContent = data[data.length - 1].loss.toFixed(4);
+  if (lastEl) lastEl.textContent = data[data.length - 1].loss.toFixed(4); // ← smoothed value
 }
 
 loadLossHistory();
