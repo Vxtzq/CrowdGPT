@@ -4895,13 +4895,6 @@ function drawLossGraph() {
   gr.addColorStop(1, 'rgba(22,163,74,0)');
   ctx.fillStyle = gr; ctx.fill();
 
-  // raw line, faint — shows the noise you're averaging over
-  ctx.beginPath();
-  rawData.forEach((_, i) => { const [x, y] = ptRaw(i); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-  ctx.strokeStyle = isDark ? 'rgba(34,197,94,.22)' : 'rgba(22,163,74,.28)';
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
   // smoothed line, bold
   ctx.beginPath();
   data.forEach((_, i) => { const [x, y] = ptSmooth(i); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
