@@ -32,9 +32,10 @@
   <strong>The best 0$ AI.</strong>
 </p>
 
-# CrowdGPT v2.6 changelog
+# CrowdGPT v2.8 changelog
 - False flags should now be much rarer
 - Fixed UI bugs
+- Fixed XPU backend issues
 - Clarifier auto-login logic between updates
 
 ### CrowdGPT admin applications are open!! 
