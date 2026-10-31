@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v2.6
+CrowdGPT GUI Client v2.7
 
-v2.6 changes
+v2.7 changes
   - fix UI button bugs
   - Same user on multiple devices
   - Fixed missing import
   - Clarified auto-login
   - Less false-flags
+  - fixed XPU backend
+  - fixed random OOMs
+  - Smoothed out loss reported by clients
 v2.0 changes (dynamic optimizer adaptation):
   - Reports optimizer capabilities to server: X-Client-Optim-Can-Fp32, X-Client-Optim-Can-8bit
   - Honors crossCheck.targetOptimizer from the pool (asymmetric: fp32 accepts any, 8bit requires native)
@@ -613,12 +616,19 @@ def get_available_backends():
         import intel_extension_for_pytorch
         backends['xpu'] = hasattr(torch, 'xpu') and torch.xpu.is_available()
     except ImportError: backends['xpu'] = False
-    try:
-        import torch_directml
-        backends['directml'] = torch_directml.is_available()
-    except ImportError: backends['directml'] = False
+    backends['xpu'] = _xpu_available()
     backends['cpu'] = True
     return backends
+
+def _xpu_available():
+    """Intel Arc / DC GPU. Modern PyTorch (>=2.4) supports XPU natively via
+    torch.xpu; IPEX (`intel_extension_for_pytorch`) is deprecated and NOT
+    installed by the current XPU wheel. The old import-gate silently disabled
+    XPU on every modern Arc install."""
+    try:
+        return hasattr(torch, "xpu") and bool(torch.xpu.is_available())
+    except Exception:
+        return False
 
 def get_best_default_backend():
     avail = get_available_backends()
@@ -800,11 +810,8 @@ def detect_training_backend(force=None):
         if n == "rocm" and hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available():
             return _pick_rocm_device(saved_gpu), "ROCM"
         if n == "mps" and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available(): return torch.device('mps'), "MPS"
-        if n == "xpu":
-            try:
-                import intel_extension_for_pytorch
-                if hasattr(torch, 'xpu') and torch.xpu.is_available(): return torch.device('xpu'), "XPU"
-            except ImportError: pass
+        if n == "xpu" and _xpu_available():
+            return torch.device('xpu'), "XPU"
         if n == "directml":
             try:
                 import torch_directml
@@ -815,10 +822,8 @@ def detect_training_backend(force=None):
     if hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available():
         return _pick_rocm_device(saved_gpu), "ROCM"
     if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available(): return torch.device('mps'), "MPS"
-    try:
-        import intel_extension_for_pytorch
-        if hasattr(torch, 'xpu') and torch.xpu.is_available(): return torch.device('xpu'), "XPU"
-    except ImportError: pass
+    if _xpu_available():
+        return torch.device('xpu'), "XPU"
     try:
         import torch_directml
         if torch_directml.is_available(): return _pick_directml_device(torch_directml), "DIRECTML"
@@ -996,10 +1001,12 @@ def _hardware_headers(force_mode=None):
         "X-Client-Compute-Cap": _cc,   # NEW
     }
 
-def _plan_placement(device, backend_name, budget_gb, bs=1, sl=MAX_SEQ_LEN, u8=False, loss_chunk=LOSS_CHUNK):
+def _plan_placement(device, backend_name, budget_gb, bs=1, sl=MAX_SEQ_LEN,
+                    u8=False, loss_chunk=LOSS_CHUNK, act_bytes=None):
     if backend_name == "ROCM": loss_chunk = min(loss_chunk, 128)
     if device is None or device.type == "cpu": return False, 0, loss_chunk
-    GB = 1024 ** 3; cd = 2 if device.type in ("cuda", "xpu") else 4
+    GB = 1024 ** 3
+    cd = act_bytes if act_bytes is not None else (2 if device.type in ("cuda", "xpu") else 4)
     budget = int(max(0.0, budget_gb) * GB); per_block = _bytes_per_block_params(); head_params = VOCAB_SIZE * DIM
     opt_b = 2 if u8 else 8
     def fixed_cost(lc):
@@ -1116,12 +1123,18 @@ def _streamed_block(block, dev, dtype, x, cos, sin, use_chunked):
     return torch.func.functional_call(block, params, (x, cos, sin, use_chunked))
 
 class SotaGPT(nn.Module):
-    def __init__(self, bn, device, gpu_layers=None, bs=1, sl=MAX_SEQ_LEN):
+    def __init__(self, bn, device, gpu_layers=None, bs=1, sl=MAX_SEQ_LEN,
+                 u8_override=None, act_bytes_override=None):
         super().__init__()
         self.main_device = device; self.accel_device = device; self.cpu_device  = torch.device('cpu'); self.backend_name = bn
         is_cpu = (device is None) or (device.type == 'cpu')
         if gpu_layers is None:
-            head_gpu, gpu_layers, self.loss_chunk_hint = _plan_placement(device, bn, memory_config["ram_gb"], bs=bs, sl=sl, u8=(has_bitsandbytes() and device is not None and device.type in ('cuda',)))
+            u8 = u8_override if u8_override is not None else (
+                has_bitsandbytes() and device is not None and device.type in ('cuda',))
+            head_gpu, gpu_layers, self.loss_chunk_hint = _plan_placement(
+                device, bn, memory_config["ram_gb"], bs=bs, sl=sl,
+                u8=u8, act_bytes=act_bytes_override,
+            )
         else:
             head_gpu = int(gpu_layers) >= N_LAYERS; self.loss_chunk_hint = LOSS_CHUNK
         self.gpu_layers = 0 if is_cpu else max(0, min(N_LAYERS, int(gpu_layers)))
@@ -1725,8 +1738,10 @@ def chunked_submit_delta(srv, h, delta_path, meta, emit, se):
                 emit("log", f"Chunk too large. Reducing to {chunk_size / (1024 * 1024):.0f} MB and retrying."); continue
             raise
 
-def _build_model(bn, device, iw, ie, emit, bs=1, sl=MAX_SEQ_LEN):
-    model = SotaGPT(bn, device, gpu_layers=None, bs=bs, sl=sl)
+def _build_model(bn, device, iw, ie, emit, bs=1, sl=MAX_SEQ_LEN,
+                 u8_override=None, act_bytes_override=None):
+    model = SotaGPT(bn, device, gpu_layers=None, bs=bs, sl=sl,
+                    u8_override=u8_override, act_bytes_override=act_bytes_override)
     model.engram.table.to('cpu'); model.load_base_weights(iw)
     if ENGRAM_ACTIVE and ie is not None: model.engram.table.weight.data.copy_(ie.view(model.engram.table.weight.shape))
     model.engram.table.to('cpu'); model.train(); return model
@@ -1839,6 +1854,8 @@ def run_single_round_wrapper(srv, at, se, emit):
     micro_step = 0; lval = 10.0; tt = 0; tid = ""; tried_cpu_fallback = False
     cohort_mode = False; cc_seed = cc_steps = cc_bs = cc_accum = cc_autocast = None; cc_optim = "any"
     optim_mode = None
+    round_loss_sum = 0.0; round_loss_sq_sum = 0.0; round_loss_count = 0
+    last_step_loss = None
     try:
         emit('log', "Fetching task metadata..."); md = fetch_task_metadata(srv, h, se, emit, hb=hb)
         if md is None: return
@@ -1891,20 +1908,45 @@ def run_single_round_wrapper(srv, at, se, emit):
             else:
                 emit('log', f"[COHORT] unknown targetOptimizer={cc_optim!r} — using native")
 
+        # Resolve autocast BEFORE model build so the VRAM planner sees the
+        # ACTUAL activation dtype, not the client's native one.
+        _ua, _ad = _pick_autocast(train_backend)
+        if cohort_mode and cc_autocast and cc_autocast != "any":
+            wants_bf16 = (cc_autocast == "bf16")
+            if wants_bf16 and not _ua:
+                emit('log', f"[COHORT] cannot reach bf16 on {train_backend} — aborting round"); return
+            elif not wants_bf16 and _ua:
+                emit('log', f"[COHORT] server requires fp32 — disabling autocast"); _ua, _ad = False, None
+        ua, ad = _ua, _ad
+
+        # Planner overrides from the ACTUAL (post-cohort) plan.
+        _u8_override = True if optim_mode == "adamw8bit" else (False if optim_mode == "adamw32" else None)
+        _act_bytes_override = 2 if ua else 4
+
         emit('status', 'preparing'); emit('log', "Preparing model...")
         dc = md.get("datasetConfig", {}); sc = md.get("shardConfig", {}); slot = sc.get("slot", 0)
         if cohort_mode: slot = 0; emit('log', "[COHORT] slot forced to 0 (identical shard for all members)")
         ds = StreamingShardDataset(dc.get("repoId", DATASET_REPO_ID), dc.get("chunkIdx", 0), dc.get("subChunkSize", 10 * 1024 * 1024), dc.get("tokensPerSample", sl + 1), slot, at, cohort_mode=cohort_mode)
 
-        bs = recommend_batch_size(sl, force_mode=optim_mode)
-        if cohort_mode and cc_bs and int(cc_bs) > 0: bs = int(cc_bs)
+        _bs_est = recommend_batch_size(sl, force_mode=optim_mode)
+        bs = _bs_est
+        if cohort_mode and cc_bs and int(cc_bs) > 0:
+            if int(cc_bs) > _bs_est:
+                emit('log', f"[COHORT] ⚠️ target bs={cc_bs} exceeds local estimate (bs={_bs_est}); will attempt with layout degradation")
+            bs = int(cc_bs)
+
         model = None
         while bs >= 1:
             try:
                 if train_backend in ("CUDA", "ROCM"):
                     try: torch.cuda.empty_cache()
                     except Exception: pass
-                gc.collect(); model = _build_model(train_backend, train_device, iw, ie, emit, bs=bs, sl=sl); break
+                gc.collect()
+                model = _build_model(
+                    train_backend, train_device, iw, ie, emit, bs=bs, sl=sl,
+                    u8_override=_u8_override, act_bytes_override=_act_bytes_override,
+                )
+                break
             except RuntimeError as e:
                 if not _is_oom(e): raise
                 if model: del model; model = None
@@ -1921,7 +1963,8 @@ def run_single_round_wrapper(srv, at, se, emit):
 
         def _on_step_down(_ladder):
             nonlocal ob, oe
-            if cohort_mode: raise CohortAbort("OOM during cohort training")
+            if cohort_mode and _ladder.stage >= 6:
+                raise CohortAbort("OOM: would require CPU-only fallback in cohort mode")
             # Preserve optim_mode: flipping back to native mid-round would submit a delta trained
             # with the wrong optimizer for the pool, silently failing cross-check
             ob, oe = _build_optimizers(model, lr=1e-4, force_mode=optim_mode); emit('log', "   rebuilt optimizers for new placement")
@@ -1929,13 +1972,6 @@ def run_single_round_wrapper(srv, at, se, emit):
         ladder = DegradeLadder(model, on_step_down=_on_step_down)
         ua, ad = _pick_autocast(train_backend)
         emit('log', f"Backend: {train_backend} | autocast: {ua} | bs={bs} | accum={as_} | dtype={'bf16' if ua else 'fp32'} | engram={'on' if ENGRAM_ACTIVE else 'off'} | optim={_predict_optim(train_backend, force_mode=optim_mode)}")
-
-        if cohort_mode and cc_autocast and cc_autocast != "any":
-            wants_bf16 = (cc_autocast == "bf16")
-            if wants_bf16 != bool(ua):
-                if not wants_bf16: emit('log', f"[COHORT] server requires fp32 — disabling autocast"); ua, ad = False, None
-                else: emit('log', f"[COHORT] cannot reach server bf16 on {train_backend} — aborting round"); return
-
         cs_ = time.time(); target_micro_steps = 100
         if cohort_mode: target_micro_steps = int(cc_steps); emit('status', 'training')
         else:
@@ -1951,6 +1987,9 @@ def run_single_round_wrapper(srv, at, se, emit):
                 try: lo, cards = _train_step_safe(model, step_x, step_y, step_sl, ua, ad, ls, preview=want_preview, ladder=ladder, emit=emit)
                 except CohortAbort: return
                 lval = float(lo.item()); micro_step += 1
+                _unscaled = lval * as_
+                last_step_loss = _unscaled
+                round_loss_sum += _unscaled; round_loss_sq_sum += _unscaled * _unscaled; round_loss_count += 1
                 if cards: emit('model_preview', {'step': micro_step, 'cards': cards})
                 elapsed_cal = max(0.001, time.time() - cs_); current_tps = (tt + step_x.numel()) / elapsed_cal
                 if micro_step >= CAL_MIN_MICRO:
@@ -1990,6 +2029,8 @@ def run_single_round_wrapper(srv, at, se, emit):
                 except CohortAbort: return
                 lval = float(lo.item()) * as_; oe.step(); oe.zero_grad(set_to_none=True)
                 als += lval; tt += x.numel(); accum_count += 1; micro_step += 1
+                round_loss_sum += lval; round_loss_sq_sum += lval * lval; round_loss_count += 1
+                last_step_loss = lval
                 if cards: emit('model_preview', {'step': micro_step, 'cards': cards})
                 elapsed_total = time.time() - cs_
                 rem_time = (max(0, int(cc_steps) - micro_step) * max(1e-6, elapsed_total / max(1, micro_step))) if cohort_mode else max(1, dl - time.time())
@@ -2007,7 +2048,17 @@ def run_single_round_wrapper(srv, at, se, emit):
         if hb.should_stop(): emit('log', f"Stopped mid-training (round {cr} ended or task gone); discarding partial delta, no upload."); return
         hb.tid = None
         if cohort_mode and int(micro_step) != int(cc_steps): emit('log', f"[COHORT] only completed {micro_step}/{cc_steps} steps; aborting upload"); return
-        fl = float(lval) if lval else 10.0; emit('log', f"Done: {micro_step} micro-steps, loss {fl:.4f}"); emit('status', 'uploading')
+        if round_loss_count > 0:
+            fl = round_loss_sum / round_loss_count
+            _var = max(0.0, round_loss_sq_sum / round_loss_count - fl * fl)
+            fl_std = math.sqrt(_var)
+        else:
+            fl = float(last_step_loss) if last_step_loss is not None else 10.0
+            fl_std = 0.0
+        _last_str = f"{last_step_loss:.4f}" if last_step_loss is not None else "n/a"
+        emit('log', f"Done: {micro_step} micro-steps, loss {fl:.4f} ± {fl_std:.4f} "
+                    f"(mean of {round_loss_count}, last {_last_str})")
+        emit('status', 'uploading')
         for _o in (ob, oe):
             try: _o.zero_grad(set_to_none=True)
             except Exception: pass
@@ -2021,7 +2072,15 @@ def run_single_round_wrapper(srv, at, se, emit):
         else: si, sv = np.array([], dtype=np.uint32), np.array([], dtype=np.uint16)
         iew = None; has_engram = bool(len(si) > 0); engram_sparse_count = int(len(si))
 
-        submit_extra = {"crossCheckUsed": cohort_mode, "actualSeed": int(cc_seed) if (cohort_mode and cc_seed is not None) else None, "actualSteps": int(micro_step), "actualBatchSize": int(bs)}
+        submit_extra = {
+            "crossCheckUsed": cohort_mode,
+            "actualSeed": int(cc_seed) if (cohort_mode and cc_seed is not None) else None,
+            "actualSteps": int(micro_step),
+            "actualBatchSize": int(bs),
+            "lastLoss": float(last_step_loss) if last_step_loss is not None else None,
+            "lossStd": float(fl_std),
+            "lossSamples": int(round_loss_count),
+        }
         pl = json.dumps({"taskId": tid, "loss": fl, "localSteps": micro_step, "tokensProcessed": tt, "loraRank": 0, "isDelta": True, "weightFormat": "bf16", "hasEngram": has_engram, "engramSparseCount": engram_sparse_count, **submit_extra}).encode()
         delta_fd, delta_path = tempfile.mkstemp(prefix="delta-", suffix=".gz", dir=str(CHECKPOINT_DIR)); os.close(delta_fd)
         try: delta_size = _write_delta_file(delta_path, struct.pack('<I', len(pl)) + pl, model, iw, (si, sv))
