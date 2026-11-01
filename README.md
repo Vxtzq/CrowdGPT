@@ -32,16 +32,20 @@
   <strong>The best 0$ AI.</strong>
 </p>
 
+# About server crashes
+- Server disk space bumped from 80GB to 150GB
+- Optimized server code so hopefully that doesn't happen again 😭
+
 # CrowdGPT v2.8 changelog
 - False flags should now be much rarer
 - Fixed UI bugs
 - Fixed XPU backend issues
 - Clarifier auto-login logic between updates
 
-### CrowdGPT admin applications are open!! 
+### CrowdGPT power-trainers applications are open!! 
 
-Admins can train by themselves, without any checks.
-
+Power-trainers can train by themselves, without any checks. Reach a trust-score of 1, and you're eligible.
+ 
 ## What is CrowdGPT?
 
 CrowdGPT is a **project for training arbitrary big LLMs** using volunteered compute.
