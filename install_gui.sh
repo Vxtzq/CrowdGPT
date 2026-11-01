@@ -1,10 +1,21 @@
 #!/usr/bin/env bash
 # ============================================================
-# CrowdGPT GUI bootstrap installer — v5
+# CrowdGPT GUI bootstrap installer — v6
 #
-# v5 vs v4:
-#   - SCRIPT_DIR resolution no longer crashes under `set -u`
-#     when BASH_SOURCE[0] is unbound (falls back to $0, then PWD)
+# Bootstrap responsibilities (small on purpose):
+#   1. git + uv
+#   2. clone / sync repo (from SCRIPT_DIR, cwd-safe)
+#   3. find logo files, pass to installer.py
+#   4. download Python 3.11 (python-build-standalone)
+#   5. installer venv + PyQt6 WebEngine + qtpy
+#   6. verify Qt backend imports
+#   7. launch installer.py (GUI or headless)
+#
+# All install logic lives in installer.py and streams to the GUI.
+#
+# v6 vs v5:
+#   - BASH_SOURCE unbound fix: use ${BASH_SOURCE+x} set-test
+#   - every failure path pauses with a readable message
 # ============================================================
 
 if [ -z "${BASH_VERSION:-}" ]; then
@@ -87,9 +98,7 @@ EOF
     esac
 done
 
-if [[ "$DEBUG" -eq 1 ]]; then
-    set -x
-fi
+[[ "$DEBUG" -eq 1 ]] && set -x
 
 echo
 echo "============================================================"
@@ -113,11 +122,14 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 ok "git: $(git --version | awk '{print $3}')"
 
-# ── 2. resolve repo (safe under set -u) ──
-_self="${BASH_SOURCE[0]:-$0}"
-_self="${_self:-install.sh}"
-SCRIPT_DIR="$( cd -- "$( dirname -- "$_self" )" >/dev/null 2>&1 && pwd )"
-SCRIPT_DIR="${SCRIPT_DIR:-$PWD}"
+# ── 2. resolve repo (SAFE under set -u, script-dir first) ──
+SCRIPT_DIR="$PWD"
+if [[ -n "${BASH_SOURCE+x}" ]]; then
+    _self="${BASH_SOURCE[0]:-}"
+    if [[ -n "$_self" ]] && [[ -f "$_self" ]]; then
+        SCRIPT_DIR="$( cd -- "$( dirname -- "$_self" )" >/dev/null 2>&1 && pwd )" || SCRIPT_DIR="$PWD"
+    fi
+fi
 
 if [[ -f "$SCRIPT_DIR/client.py" && -d "$SCRIPT_DIR/.git" ]]; then
     REPO_DIR="$SCRIPT_DIR"
@@ -148,13 +160,11 @@ if [[ ! -f installer.py ]]; then
 fi
 ok "installer.py found"
 
-# Verify installer.py actually has the --logo flag (protects against
-# someone pulling an older installer.py that doesn't know about it).
 if ! grep -q '\-\-logo-dark' installer.py; then
-    die "installer.py is an outdated version (no --logo-dark flag).
+    die "installer.py is outdated (no --logo-dark flag).
 
-  This installer passes --logo / --logo-dark to installer.py.
-  Update installer.py from the repo (it must contain:
+  This bootstrap passes --logo / --logo-dark to installer.py.
+  Pull the latest installer.py (it must contain:
     p.add_argument(\"--logo\", ...)
     p.add_argument(\"--logo-dark\", ...)
   ) then rerun."
@@ -178,9 +188,7 @@ elif [[ "$LOGO_LIGHT" == *"logo-black"* || "$LOGO_LIGHT" == *"logo-white"* ]]; t
 else
     ok "Logo: ${LOGO_LIGHT#$PWD/}"
 fi
-if [[ -n "$LOGO_DARK" && "$LOGO_DARK" != "$LOGO_LIGHT" ]]; then
-    ok "Dark logo: ${LOGO_DARK#$PWD/}"
-fi
+[[ -n "$LOGO_DARK" && "$LOGO_DARK" != "$LOGO_LIGHT" ]] && ok "Dark logo: ${LOGO_DARK#$PWD/}"
 
 # ── 4. uv ──
 if ! command -v uv >/dev/null 2>&1; then
@@ -219,6 +227,7 @@ WEBVIEW_OK=0
 if "$INSTALLER_VENV/bin/python" - <<'PY' >/dev/null 2>&1
 from qtpy import QtCore
 from PyQt6 import QtWidgets, QtWebEngineWidgets
+from PyQt6.QtSvg import QSvgRenderer
 import webview.platforms.qt
 print("qt-ok")
 PY
