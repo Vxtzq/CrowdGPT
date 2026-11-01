@@ -452,11 +452,11 @@ class InstallerAPI:
         self.launch = launch
         self.integrate = integrate
         self.headless = headless
-        self.window = None
+        self._window = None
         self.cancelled = False
         self.finished = False
-        self.proc = None
-        self.proc_lock = threading.Lock()
+        self._proc = None
+        self._proc_lock = threading.Lock()
 
         self._log_buffer: list[tuple[str, str]] = []
         self._log_lock = threading.Lock()
@@ -473,10 +473,10 @@ class InstallerAPI:
 
     # ---------- GUI callbacks ----------
     def _js(self, code):
-        if self.headless or not self.window:
+        if self.headless or not self._window:
             return
         try:
-            self.window.evaluate_js(code)
+            self._window.evaluate_js(code)
         except Exception:
             pass
 
@@ -499,12 +499,12 @@ class InstallerAPI:
         batch = list(self._log_buffer)
         self._log_buffer.clear()
         try:
-            self.window.evaluate_js("window.onLogBatch(" + json.dumps(batch) + ");")
+            self._window.evaluate_js("window.onLogBatch(" + json.dumps(batch) + ");")
         except Exception:
             pass
 
     def _flush_logs(self):
-        if self.headless or not self.window:
+        if self.headless or not self._window:
             return
         with self._log_lock:
             self._flush_logs_locked()
@@ -550,8 +550,8 @@ class InstallerAPI:
             )
         except FileNotFoundError:
             raise RuntimeError(f"Command not found: {cmd[0]}")
-        with self.proc_lock:
-            self.proc = proc
+        with self._proc_lock:
+            self._proc = proc
         try:
             assert proc.stdout is not None
             for line in proc.stdout:
@@ -566,8 +566,8 @@ class InstallerAPI:
                     self.log(line)
             rc = proc.wait()
         finally:
-            with self.proc_lock:
-                self.proc = None
+            with self._proc_lock:
+                self._proc = None
         if check and rc != 0:
             raise RuntimeError(f"Command failed (exit {rc}): {' '.join(str(c) for c in cmd)}")
         return rc
@@ -583,16 +583,16 @@ class InstallerAPI:
 
     def cancel_install(self):
         self.cancelled = True
-        with self.proc_lock:
-            if self.proc and self.proc.poll() is None:
+        with self._proc_lock:
+            if self._proc and self._proc.poll() is None:
                 try:
-                    self.proc.terminate()
+                    self._proc.terminate()
                 except Exception:
                     pass
 
     def close_window(self):
-        if self.window:
-            self.window.destroy()
+        if self._window:
+            self._window.destroy()
         else:
             sys.exit(0)
 
@@ -1668,6 +1668,32 @@ def run_headless(api):
 
 
 # ============================================================
+# Windows console visibility
+# ============================================================
+
+def _set_windows_console_visible(visible: bool) -> bool:
+    """Hide the launching CMD while the GUI is open; return whether it worked.
+
+    The console is restored when the GUI closes, so a terminal from which the
+    batch file was launched remains usable. This affects only the console
+    window, not the installer process or its GUI.
+    """
+    if platform.system() != "Windows":
+        return False
+    try:
+        import ctypes
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if not hwnd:
+            return False
+        # SW_HIDE=0; SW_RESTORE=9 (also restores a previously minimized window).
+        ctypes.windll.user32.ShowWindow(hwnd, 9 if visible else 0)
+        return True
+    except Exception as e:
+        print(f"[installer] Could not change console visibility: {e}", flush=True)
+        return False
+
+
+# ============================================================
 # Main
 # ============================================================
 
@@ -1732,18 +1758,27 @@ def main():
         resizable=True,
         js_api=api,
     )
-    api.window = window
+    api._window = window
     window.events.closing += lambda: (setattr(api, "cancelled", True), True)[1]
 
+    # Hide the console only after the GUI window has been created. Keep the
+    # process alive and restore the same console when the user closes the GUI.
+    console_hidden = _set_windows_console_visible(False)
     try:
         webview.start(debug=False)
     except Exception as e:
+        if console_hidden:
+            _set_windows_console_visible(True)
+            console_hidden = False
         print(f"\n[installer] GUI failed to start: {e}", file=sys.stderr)
         print("[installer] Falling back to headless mode...\n", file=sys.stderr)
         api.headless = True
-        api.window = None
+        api._window = None
         if not api.finished:
             run_headless(api)
+    finally:
+        if console_hidden:
+            _set_windows_console_visible(True)
     return 0
 
 
