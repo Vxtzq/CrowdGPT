@@ -1,6 +1,4 @@
-CrowdGPT v2.8 changelog:
-- Even less false flags
-- Multiple devices for the same user
-- Added GPU selection on app
-- Refined Intel GPUs support
+CrowdGPT v2.9 changelog:
+- Fixed icon pixelation
+- Removed redundant downloads
 Check GitHub for more infos
