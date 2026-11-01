@@ -48,6 +48,16 @@ echo   --debug            verbose
 exit /b 0
 :parse_done
 
+REM Keep the installer.py shipped next to this BAT file. The git reset below
+REM synchronizes the application repository and would otherwise overwrite it.
+set "LOCAL_INSTALLER=%~dp0installer.py"
+set "INSTALLER_BACKUP="
+if exist "!LOCAL_INSTALLER!" (
+    set "INSTALLER_BACKUP=%TEMP%\CrowdGPT-installer-%RANDOM%-%RANDOM%.py"
+    copy /y "!LOCAL_INSTALLER!" "!INSTALLER_BACKUP!" >nul
+    if errorlevel 1 ( echo ERROR: could not preserve installer.py & pause & exit /b 1 )
+)
+
 echo.
 echo ============================================================
 echo                CrowdGPT Installer - Windows
@@ -87,6 +97,12 @@ git fetch --all --prune --tags
 if errorlevel 1 ( echo ERROR: git fetch failed & pause & exit /b 1 )
 git reset --hard origin/!BRANCH!
 if errorlevel 1 ( echo ERROR: git reset failed & pause & exit /b 1 )
+if defined INSTALLER_BACKUP (
+    echo Preserving bundled installer.py ...
+    copy /y "!INSTALLER_BACKUP!" "%CD%\installer.py" >nul
+    if errorlevel 1 ( echo ERROR: could not restore installer.py & pause & exit /b 1 )
+    del /q "!INSTALLER_BACKUP!" >nul 2>&1
+)
 for /f "tokens=*" %%c in ('git log -1 --format^="%%h %%s"') do echo Synced to %%c
 
 REM ---- 3. installer.py ----
