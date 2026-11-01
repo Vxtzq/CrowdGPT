@@ -32,18 +32,12 @@
   <strong>The best 0$ AI.</strong>
 </p>
 
-# ⚠️ About server crashes ⚠️
-I'm really sorry for anyone who attempted to train or register tonight, server had crashed.
-
-**I'm trying to adress this problem by implementing these fixes:**
-- Server disk space bumped from 80GB to 150GB
-- Optimized server code so hopefully that doesn't happen again 😭
-
-# CrowdGPT v2.8 changelog
+# CrowdGPT v2.9 changelog
 - False flags should now be much rarer
 - Fixed UI bugs
 - Fixed XPU backend issues
 - Clarifier auto-login logic between updates
+- Removed redundant weight downloads
  
 ## What is CrowdGPT?
 
