@@ -2,18 +2,9 @@
 """
 CrowdGPT GUI installer (pywebview + PyQt6).
 
-Same install logic as the v12 bash installer:
-  1. sync repo
-  2. detect backend (nvidia / amd / intel / apple / cpu)
-  3. pick torch index
-  4. create final venv at APP_DIR/.venv
-  5. install torch
-  6. install requirements
-  7. pin transformers to 4.x if torch < 2.5
-  8. install bitsandbytes on nvidia
-  9. install GUI backend for pywebview (GTK preferred, Qt fallback)
- 10. desktop / command integration
- 11. optionally launch client
+Same install logic as the v12 bash installer, streamed to a window
+styled exactly like the client. Batched log updates (150ms) so pip
+output doesn't lock up the GUI thread.
 """
 
 import argparse
@@ -26,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 
@@ -37,7 +29,7 @@ except ImportError:
 
 
 # ============================================================
-# HTML — same design system as the client
+# HTML
 # ============================================================
 HTML = r"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
@@ -186,12 +178,22 @@ window.onStep = function(id, status, detail) {
   renderSteps();
 };
 
+// single-line log — still supported for legacy paths
 window.onLog = function(line, kind) {
+  window.onLogBatch([[line, kind || ""]]);
+};
+
+// batched log — the hot path during pip output
+window.onLogBatch = function(batch) {
   const panel = document.getElementById('log-panel');
-  const div = document.createElement('div');
-  div.className = 'log-line' + (kind ? ' ' + kind : '');
-  div.textContent = line;
-  panel.appendChild(div);
+  for (let i = 0; i < batch.length; i++) {
+    const [line, kind] = batch[i];
+    const div = document.createElement('div');
+    div.className = 'log-line' + (kind ? ' ' + kind : '');
+    div.textContent = line;
+    panel.appendChild(div);
+  }
+  while (panel.children.length > 2000) panel.removeChild(panel.firstChild);
   panel.scrollTop = panel.scrollHeight;
 };
 
@@ -291,11 +293,10 @@ window.addEventListener('keydown', e => {
 
 
 # ============================================================
-# Logo helpers
+# Logo + icon helpers
 # ============================================================
 
 def _logo_data_uri(path: str) -> str:
-    """Return a data: URI for the given logo file, or '' on failure."""
     if not path:
         return ""
     p = Path(path)
@@ -311,7 +312,6 @@ def _logo_data_uri(path: str) -> str:
 
 
 def _render_installer_html(logo_light_uri: str, logo_dark_uri: str) -> str:
-    """Inject the logo into the HTML template as base64 data URIs."""
     if not logo_light_uri:
         return HTML.replace(
             "__LOGO_WRAP__",
@@ -330,26 +330,61 @@ def _render_installer_html(logo_light_uri: str, logo_dark_uri: str) -> str:
 
 
 def _setup_qt_icon(logo_path: str) -> None:
-    """Create the QApplication early and set its window icon."""
+    """Render SVG/PNG into a multi-size QIcon. QIcon(str(svg)) is
+    unreliable on Linux — SVG needs explicit QSvgRenderer."""
     if not logo_path:
         return
     try:
-        from PyQt6.QtGui import QIcon
+        from PyQt6.QtGui import QIcon, QPixmap, QPainter
         from PyQt6.QtWidgets import QApplication
-        app = QApplication.instance() or QApplication([])
-        icon = QIcon(str(logo_path))
-        if not icon.isNull():
-            app.setWindowIcon(icon)
+        from PyQt6.QtCore import Qt
+
+        app = QApplication.instance() or QApplication(sys.argv[:1])
+        app.setApplicationName("CrowdGPT")
+        app.setApplicationDisplayName("CrowdGPT Installer")
+        try:
+            app.setDesktopFileName("crowdgpt-installer")  # Wayland app_id
+        except AttributeError:
+            pass
+
+        path = Path(logo_path)
+        icon = QIcon()
+
+        if path.suffix.lower() == ".svg":
+            try:
+                from PyQt6.QtSvg import QSvgRenderer
+                renderer = QSvgRenderer(str(path))
+                if renderer.isValid():
+                    for size in (16, 24, 32, 48, 64, 128, 256):
+                        pm = QPixmap(size, size)
+                        pm.fill(Qt.GlobalColor.transparent)
+                        painter = QPainter(pm)
+                        renderer.render(painter)
+                        painter.end()
+                        icon.addPixmap(pm)
+                    print(f"[installer] Window icon rendered from SVG ({path.name})", flush=True)
+            except Exception as e:
+                print(f"[installer] SVG render failed, trying direct: {e}", flush=True)
+
+        if icon.isNull() or not icon.availableSizes():
+            icon = QIcon(str(path))
+            if not icon.isNull():
+                print(f"[installer] Window icon loaded directly ({path.name})", flush=True)
+
+        if icon.isNull():
+            print(f"[installer] Could not load icon from {path}", flush=True)
+            return
+
+        app.setWindowIcon(icon)
     except Exception as e:
         print(f"[installer] Window icon setup failed (continuing): {e}", flush=True)
 
 
 # ============================================================
-# Helpers
+# General helpers
 # ============================================================
 
 def run_capture(cmd, **kw):
-    """Run a command, return (rc, stdout+stderr)."""
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=120, **kw)
         return p.returncode, (p.stdout or "") + (p.stderr or "")
@@ -364,7 +399,6 @@ def which(binary):
 
 
 def _webview_backend_ok() -> bool:
-    """Return True if a pywebview GUI backend can be imported."""
     try:
         from qtpy import QtCore  # noqa: F401
         from PyQt6 import QtWebEngineWidgets  # noqa: F401
@@ -378,6 +412,10 @@ def _webview_backend_ok() -> bool:
         return False
 
 
+# ============================================================
+# InstallerAPI
+# ============================================================
+
 class InstallerAPI:
     def __init__(self, repo_dir, backend_override, launch, integrate, headless):
         self.repo_dir = Path(repo_dir).resolve()
@@ -390,6 +428,10 @@ class InstallerAPI:
         self.finished = False
         self.proc = None
         self.proc_lock = threading.Lock()
+
+        self._log_buffer: list[tuple[str, str]] = []
+        self._log_lock = threading.Lock()
+        self._log_flusher_started = False
 
         self.os_name = platform.system()
         self.arch = platform.machine().lower()
@@ -417,7 +459,33 @@ class InstallerAPI:
             prefix = {"err": "[FAIL] ", "warn": "[WARN] ", "ok": "[ OK ] "}.get(kind, "")
             print(prefix + line, flush=True)
             return
-        self._js(f"window.onLog({json.dumps(line)}, {json.dumps(kind)})")
+        with self._log_lock:
+            self._log_buffer.append((line, kind))
+            if len(self._log_buffer) >= 25:
+                self._flush_logs_locked()
+
+    def _flush_logs_locked(self):
+        if not self._log_buffer:
+            return
+        batch = list(self._log_buffer)
+        self._log_buffer.clear()
+        try:
+            self.window.evaluate_js(
+                "window.onLogBatch(" + json.dumps(batch) + ");"
+            )
+        except Exception:
+            pass
+
+    def _flush_logs(self):
+        if self.headless or not self.window:
+            return
+        with self._log_lock:
+            self._flush_logs_locked()
+
+    def _log_flusher_loop(self):
+        while not self.finished and not self.cancelled:
+            time.sleep(0.15)
+            self._flush_logs()
 
     def step(self, step_id, status, detail=""):
         self._js(f"window.onStep({json.dumps(step_id)}, {json.dumps(status)}, {json.dumps(detail)})")
@@ -432,6 +500,7 @@ class InstallerAPI:
         self._js(f"window.onProgress({pct})")
 
     def finish(self, ok, title, body="", can_relaunch=False):
+        self._flush_logs()
         self.finished = True
         if self.headless:
             print(f"\n{'[DONE]' if ok else '[FAILED]'} {title}", flush=True)
@@ -477,6 +546,10 @@ class InstallerAPI:
     # ---------- Public API (called from JS) ----------
     def start_install(self):
         self.cancelled = False
+        self.finished = False
+        if not self._log_flusher_started:
+            self._log_flusher_started = True
+            threading.Thread(target=self._log_flusher_loop, daemon=True).start()
         threading.Thread(target=self._run_install, daemon=True).start()
 
     def cancel_install(self):
@@ -532,73 +605,35 @@ class InstallerAPI:
         total_steps = 10
         done = 0
 
-        def _step_begin(sid):
+        def _begin(sid):
             self.step(sid, "running")
             self.progress(done / total_steps * 100)
 
-        def _step_end(sid, detail=""):
+        def _end(sid, detail=""):
             nonlocal done
             self.step(sid, "done", detail)
             done += 1
             self.progress(done / total_steps * 100)
 
-        _step_begin("check")
-        self.subtitle("Checking system…")
-        self.check_system()
-        _step_end("check", f"{self.os_name}/{self.arch}")
-
-        _step_begin("git")
-        self.subtitle("Syncing repository…")
-        self.sync_repo()
-        _step_end("git")
-
-        _step_begin("detect")
-        self.subtitle("Detecting hardware…")
-        self.detect_backend()
-        _step_end("detect", self.backend or "cpu")
+        _begin("check");   self.subtitle("Checking system…");              self.check_system();             _end("check", f"{self.os_name}/{self.arch}")
+        _begin("git");     self.subtitle("Syncing repository…");           self.sync_repo();                _end("git")
+        _begin("detect");  self.subtitle("Detecting hardware…");           self.detect_backend();           _end("detect", self.backend or "cpu")
         self.log(f"Backend: {self.backend}", "ok")
         self.log(f"Torch index: {self.torch_index}", "ok")
         self.log(f"Note: {self.wheel_note}", "ok")
 
-        _step_begin("venv")
-        self.subtitle("Creating virtual environment…")
-        self.create_venv()
-        _step_end("venv")
-
-        _step_begin("torch")
-        self.subtitle("Installing PyTorch (this can take a few minutes)…")
-        self.install_torch()
-        _step_end("torch", self.torch_ver)
-
-        _step_begin("reqs")
-        self.subtitle("Installing project dependencies…")
-        self.install_requirements()
-        _step_end("reqs")
-
-        _step_begin("extras")
-        self.subtitle("Installing extras…")
-        self.install_extras()
-        _step_end("extras")
-
-        _step_begin("webview")
-        self.subtitle("Installing GUI backend…")
-        self.install_webview_for_client()
-        _step_end("webview")
+        _begin("venv");    self.subtitle("Creating virtual environment…"); self.create_venv();              _end("venv")
+        _begin("torch");   self.subtitle("Installing PyTorch (few minutes)…"); self.install_torch();       _end("torch", self.torch_ver)
+        _begin("reqs");    self.subtitle("Installing project dependencies…"); self.install_requirements(); _end("reqs")
+        _begin("extras");  self.subtitle("Installing extras…");            self.install_extras();           _end("extras")
+        _begin("webview"); self.subtitle("Installing GUI backend…");       self.install_webview_for_client(); _end("webview")
 
         if self.integrate:
-            _step_begin("integrate")
-            self.subtitle("Installing desktop integration…")
-            self.install_integration()
-            _step_end("integrate")
+            _begin("integrate"); self.subtitle("Installing desktop integration…"); self.install_integration(); _end("integrate")
         else:
-            self.step("integrate", "done", "skipped")
-            done += 1
-            self.progress(done / total_steps * 100)
+            self.step("integrate", "done", "skipped"); done += 1; self.progress(done / total_steps * 100)
 
-        _step_begin("finalize")
-        self.subtitle("Finalizing…")
-        self.finalize()
-        _step_end("finalize")
+        _begin("finalize"); self.subtitle("Finalizing…"); self.finalize(); _end("finalize")
 
         self.subtitle("Installation complete")
         self.log("", "ok")
@@ -609,8 +644,7 @@ class InstallerAPI:
 
         launch_hint = "crowdgpt" if self.integrate else f"{self.installed_venv_py} {self.installed_app_dir/'client.py'}"
         self.finish(
-            True,
-            "CrowdGPT is ready",
+            True, "CrowdGPT is ready",
             f"Installed to {self.installed_app_dir}\n"
             f"Backend: {self.backend}\n"
             f"Torch: {self.torch_ver}\n"
@@ -618,7 +652,7 @@ class InstallerAPI:
             can_relaunch=self.launch,
         )
 
-    # ---------- Steps ----------
+    # ---------- System ----------
     def check_system(self):
         self.log(f"OS: {self.os_name} {platform.release()}")
         self.log(f"Arch: {self.arch}")
@@ -638,69 +672,51 @@ class InstallerAPI:
         if rc == 0:
             self.log(f"HEAD: {out.strip()}", "ok")
 
-    def detect_backend(self):
-        forced = self.backend_override
-
-        if forced:
-            self.backend = forced
-            if forced == "apple":
-                self.torch_index = "https://pypi.org/simple"
-                self.wheel_note = "forced: apple/mps"
-            elif forced == "intel":
-                self.torch_index = "https://download.pytorch.org/whl/xpu"
-                self.wheel_note = "forced: intel/xpu"
-            elif forced == "cpu":
-                self.torch_index = "https://download.pytorch.org/whl/cpu"
-                self.wheel_note = "forced: cpu"
-            elif forced == "amd":
-                if self._is_gfx906():
-                    self.torch_index = "https://download.pytorch.org/whl/rocm6.0"
-                    self.wheel_note = "forced: amd/gfx906 -> rocm6.0"
-                else:
-                    self.torch_index = "https://download.pytorch.org/whl/rocm6.1"
-                    self.wheel_note = "forced: amd/rocm6.1"
-            elif forced == "nvidia":
-                self._detect_nvidia(forced=True)
-            else:
-                raise RuntimeError(f"Unknown --backend: {forced}")
-            return
-
-        if self.os_name == "Darwin":
-            if self.arch == "arm64":
-                self.backend = "apple"
-                self.torch_index = "https://pypi.org/simple"
-                self.wheel_note = "Apple Silicon (MPS)"
-            else:
-                self.backend = "cpu"
-                self.torch_index = "https://download.pytorch.org/whl/cpu"
-                self.wheel_note = "Intel Mac — CPU only"
-            return
-
+    # ---------- Backend detection ----------
+    def _is_jetson(self) -> bool:
+        if Path("/etc/nv_tegra_release").exists():
+            return True
+        if which("dpkg"):
+            rc, out = run_capture(["dpkg", "-l"])
+            if rc == 0 and re.search(r"^ii\s+nvidia-l4t-core", out, re.M):
+                return True
         if which("nvidia-smi"):
-            self._detect_nvidia(forced=False)
-            return
+            rc, out = run_capture(["nvidia-smi", "-q"])
+            if rc == 0 and re.search(r"Jetson|Orin|Xavier|Tegra", out, re.I):
+                return True
+        return False
 
-        if self._detect_amd():
-            return
+    def _is_blackwell(self) -> bool:
+        if not which("nvidia-smi"):
+            return False
+        rc, out = run_capture(["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"])
+        if rc == 0 and out.strip():
+            for cap in out.splitlines():
+                cap = cap.strip()
+                if not cap: continue
+                try:
+                    if int(cap.split(".")[0]) >= 12:
+                        return True
+                except ValueError:
+                    continue
+            return False
+        rc, out = run_capture(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
+        if rc == 0 and out:
+            if re.search(r"RTX\s*50\d\d|B100|B200|GB200|GB10(\D|$)|DGX.?Spark|Blackwell", out, re.I):
+                return True
+        return False
 
-        if which("sycl-ls") or Path("/opt/intel/oneapi").exists():
-            self.backend = "intel"
-            self.torch_index = "https://download.pytorch.org/whl/xpu"
-            self.wheel_note = "Intel Arc / Data Center GPU -> XPU"
-            return
-
-        self.backend = "cpu"
-        self.torch_index = "https://download.pytorch.org/whl/cpu"
-        self.wheel_note = "No GPU detected — CPU wheel"
+    def _is_gfx906(self) -> bool:
+        if not which("rocminfo"):
+            return False
+        rc, out = run_capture(["rocminfo"])
+        return rc == 0 and "gfx906" in out
 
     def _detect_nvidia(self, forced):
         rc, out = run_capture(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"])
         driver = out.strip().splitlines()[0].strip() if rc == 0 and out.strip() else ""
-        major_str = driver.split(".")[0] if driver else ""
-        try:
-            major = int(major_str)
-        except ValueError:
-            major = 0
+        try: major = int(driver.split(".")[0]) if driver else 0
+        except ValueError: major = 0
 
         is_bw = self._is_blackwell()
         is_aarch = self.arch in ("aarch64", "arm64")
@@ -714,69 +730,50 @@ class InstallerAPI:
             return
         if is_bw:
             if not major:
-                self.backend = "nvidia"
-                self.torch_index = "https://download.pytorch.org/whl/cu128"
+                self.backend = "nvidia"; self.torch_index = "https://download.pytorch.org/whl/cu128"
                 self.wheel_note = "Blackwell (driver unknown) -> cu128"
             elif major >= 580:
-                self.backend = "nvidia"
-                self.torch_index = "https://download.pytorch.org/whl/cu130"
+                self.backend = "nvidia"; self.torch_index = "https://download.pytorch.org/whl/cu130"
                 self.wheel_note = f"Blackwell -> cu130 (driver {driver})"
             elif major >= 525:
-                self.backend = "nvidia"
-                self.torch_index = "https://download.pytorch.org/whl/cu128"
+                self.backend = "nvidia"; self.torch_index = "https://download.pytorch.org/whl/cu128"
                 self.wheel_note = f"Blackwell -> cu128 (driver {driver})"
             else:
                 raise RuntimeError(f"Blackwell needs driver >= 525 (got {driver})")
             return
+
         if is_aarch:
+            if self._is_jetson():
+                self.backend = "cpu"
+                self.torch_index = "https://download.pytorch.org/whl/cpu"
+                self.wheel_note = "Jetson (Tegra) — generic CUDA wheels incompatible, using CPU"
+                self.log("Jetson detected — PyTorch installs CPU wheel.", "warn")
+                self.log("For GPU on Jetson, install NVIDIA's wheel manually:", "warn")
+                self.log("  https://developer.download.nvidia.com/compute/redist/jp/", "warn")
+                return
             self.backend = "nvidia"
             self.torch_index = "https://download.pytorch.org/whl/cu124"
             self.wheel_note = "aarch64 NVIDIA server -> cu124"
             return
+
         if not driver:
-            self.backend = "nvidia"
-            self.torch_index = "https://download.pytorch.org/whl/cu124"
+            self.backend = "nvidia"; self.torch_index = "https://download.pytorch.org/whl/cu124"
             self.wheel_note = "NVIDIA (driver unknown) -> cu124"
         elif major >= 525:
-            self.backend = "nvidia"
-            self.torch_index = "https://download.pytorch.org/whl/cu124"
+            self.backend = "nvidia"; self.torch_index = "https://download.pytorch.org/whl/cu124"
             self.wheel_note = f"NVIDIA driver {driver} -> cu124"
         elif major >= 470:
-            self.backend = "nvidia"
-            self.torch_index = "https://download.pytorch.org/whl/cu118"
+            self.backend = "nvidia"; self.torch_index = "https://download.pytorch.org/whl/cu118"
             self.wheel_note = f"NVIDIA driver {driver} -> cu118"
         else:
             raise RuntimeError(f"NVIDIA driver {driver} is too old (need >= 470)")
 
-    def _is_blackwell(self):
-        if not which("nvidia-smi"):
-            return False
-        rc, out = run_capture(["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"])
-        if rc == 0 and out.strip():
-            for cap in out.splitlines():
-                cap = cap.strip()
-                if not cap: continue
-                try:
-                    maj = int(cap.split(".")[0])
-                except ValueError:
-                    continue
-                if maj >= 12:
-                    return True
-            return False
-        rc, out = run_capture(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
-        if rc == 0 and out:
-            if re.search(r"RTX\s*50\d\d|B100|B200|GB200|GB10(\D|$)|DGX.?Spark|Blackwell", out, re.I):
-                return True
-        return False
-
-    def _detect_amd(self):
+    def _detect_amd(self) -> bool:
         rocm_ver = ""
         info = Path("/opt/rocm/.info/version")
         if info.exists():
-            try:
-                rocm_ver = ".".join(info.read_text().strip().split(".")[:2])
-            except Exception:
-                pass
+            try: rocm_ver = ".".join(info.read_text().strip().split(".")[:2])
+            except Exception: pass
         if not rocm_ver and which("rocminfo"):
             rc, out = run_capture(["rocminfo"])
             if rc == 0:
@@ -787,7 +784,6 @@ class InstallerAPI:
             if rc == 0:
                 m = re.search(r"^(\d+\.\d+)", out)
                 if m: rocm_ver = m.group(1)
-
         if not rocm_ver and not Path("/opt/rocm").exists() and not which("rocm-smi"):
             return False
 
@@ -812,21 +808,59 @@ class InstallerAPI:
         self.wheel_note = f"AMD ROCm {rocm_ver or 'unknown'} -> {self.torch_index.rsplit('/',1)[-1]}"
         return True
 
-    def _is_gfx906(self):
-        if not which("rocminfo"):
-            return False
-        rc, out = run_capture(["rocminfo"])
-        return rc == 0 and "gfx906" in out
+    def detect_backend(self):
+        forced = self.backend_override
+        if forced:
+            self.backend = forced
+            if forced == "apple":
+                self.torch_index = "https://pypi.org/simple"; self.wheel_note = "forced: apple/mps"
+            elif forced == "intel":
+                self.torch_index = "https://download.pytorch.org/whl/xpu"; self.wheel_note = "forced: intel/xpu"
+            elif forced == "cpu":
+                self.torch_index = "https://download.pytorch.org/whl/cpu"; self.wheel_note = "forced: cpu"
+            elif forced == "amd":
+                if self._is_gfx906():
+                    self.torch_index = "https://download.pytorch.org/whl/rocm6.0"
+                    self.wheel_note = "forced: amd/gfx906 -> rocm6.0"
+                else:
+                    self.torch_index = "https://download.pytorch.org/whl/rocm6.1"
+                    self.wheel_note = "forced: amd/rocm6.1"
+            elif forced == "nvidia":
+                self._detect_nvidia(forced=True)
+            else:
+                raise RuntimeError(f"Unknown --backend: {forced}")
+            return
 
+        if self.os_name == "Darwin":
+            if self.arch == "arm64":
+                self.backend = "apple"; self.torch_index = "https://pypi.org/simple"
+                self.wheel_note = "Apple Silicon (MPS)"
+            else:
+                self.backend = "cpu"; self.torch_index = "https://download.pytorch.org/whl/cpu"
+                self.wheel_note = "Intel Mac — CPU only"
+            return
+
+        if which("nvidia-smi"):
+            self._detect_nvidia(forced=False); return
+        if self._detect_amd():
+            return
+        if which("sycl-ls") or Path("/opt/intel/oneapi").exists():
+            self.backend = "intel"
+            self.torch_index = "https://download.pytorch.org/whl/xpu"
+            self.wheel_note = "Intel Arc / Data Center GPU -> XPU"
+            return
+        self.backend = "cpu"
+        self.torch_index = "https://download.pytorch.org/whl/cpu"
+        self.wheel_note = "No GPU detected — CPU wheel"
+
+    # ---------- venv ----------
     def create_venv(self):
         if self.os_name == "Darwin":
             app_dir = Path.home() / "Library" / "Application Support" / "CrowdGPT"
         else:
             app_dir = Path.home() / ".local" / "share" / "crowdgpt"
-
         venv_dir = app_dir / ".venv" if self.integrate else self.repo_dir / ".venv"
         app_dir.mkdir(parents=True, exist_ok=True)
-
         if venv_dir.exists():
             self.log(f"Removing existing venv at {venv_dir}")
             shutil.rmtree(venv_dir, ignore_errors=True)
@@ -847,10 +881,51 @@ class InstallerAPI:
         self.installed_app_dir = app_dir
         self.log(f"venv Python: {venv_py}", "ok")
 
+    # ---------- Torch ----------
+    def _index_has_wheel_for(self) -> bool:
+        """Check whether the torch index actually has wheels for our python
+        version and cpu arch. Avoids the pip 'no matching distribution'
+        error on Python 3.12+ with older indexes (e.g. rocm6.0 → torch 2.4.1)."""
+        if not self.torch_index.startswith("https://download.pytorch.org/whl/"):
+            return True  # pypi.org/simple always carries pure-python + wheels
+        py = str(self.installed_venv_py)
+        rc, out = run_capture([py, "-c", "import sys; print('%d%d' % sys.version_info[:2])"])
+        if rc != 0:
+            return True  # can't determine; let pip decide
+        tag = f"cp{out.strip()}"
+        arch_tag = "linux_aarch64" if self.arch in ("aarch64", "arm64") else "linux_x86_64"
+        try:
+            import urllib.request
+            url = self.torch_index.rstrip("/") + "/torch/"
+            with urllib.request.urlopen(url, timeout=15) as r:
+                page = r.read().decode("utf-8", "replace")
+            return tag in page and arch_tag in page
+        except Exception:
+            return True  # network issue — let pip try
+
     def install_torch(self):
         py = str(self.installed_venv_py)
         subprocess.run([py, "-m", "pip", "uninstall", "-y", "torch", "torchvision", "torchaudio"],
                        capture_output=True, text=True)
+
+        if not self._index_has_wheel_for():
+            self.log(
+                f"{self.torch_index} has no torch wheels for python "
+                f"{sys.version.split()[0]} on {self.arch} — installing Python 3.11",
+                "warn",
+            )
+            self.run(["uv", "python", "install", "3.11"])
+            rc, out = run_capture(["uv", "python", "find", "3.11"])
+            py311 = out.strip() if rc == 0 else ""
+            if not py311:
+                raise RuntimeError("Could not find Python 3.11 after uv install")
+            # Rebuild the venv with 3.11
+            venv_dir = self.installed_app_dir / ".venv"
+            shutil.rmtree(venv_dir, ignore_errors=True)
+            self.run(["uv", "venv", "--system-site-packages", "--python", "3.11", str(venv_dir)])
+            self.installed_venv_py = venv_dir / "bin" / "python"
+            py = str(self.installed_venv_py)
+            self.run([py, "-m", "pip", "install", "--upgrade", "pip"])
 
         args = [py, "-m", "pip", "install"]
         is_nightly = "/nightly/" in self.torch_index
@@ -885,28 +960,24 @@ class InstallerAPI:
 
     def install_extras(self):
         py = str(self.installed_venv_py)
-
         m = re.match(r"(\d+)\.(\d+)", self.torch_ver)
         if m:
             major, minor = int(m.group(1)), int(m.group(2))
             if major == 2 and minor < 5:
                 self.log(f"torch {self.torch_ver} < 2.5 → pinning transformers 4.x")
                 self.run([py, "-m", "pip", "install", "transformers>=4.45,<5.0"])
-
         if self.backend == "nvidia":
             self.log("Installing bitsandbytes (8-bit optimizer)...")
             rc = self.run([py, "-m", "pip", "install", "bitsandbytes"], check=False)
             if rc != 0:
-                self.log("bitsandbytes failed (8-bit Adam unavailable — GPUs <12GB may not fit)", "warn")
+                self.log("bitsandbytes failed (8-bit Adam unavailable — <12GB GPUs may not fit)", "warn")
 
     def install_webview_for_client(self):
         py = str(self.installed_venv_py)
-
         rc, _ = run_capture([py, "-c", "import gi"])
         if rc == 0:
             self.log("GTK bindings already available (system PyGObject)", "ok")
             return
-
         self.log("Installing Qt backend (PyQt6 + WebEngine)...")
         rc = self.run([py, "-m", "pip", "install", "QtPy", "PyQt6", "PyQt6-WebEngine"], check=False)
         if rc != 0:
@@ -914,20 +985,33 @@ class InstallerAPI:
             rc = self.run([py, "-m", "pip", "install", "QtPy", "PyQt5", "PyQtWebEngine"], check=False)
             if rc != 0:
                 raise RuntimeError("Could not install any Qt backend")
-
-        self.log("Verifying webview import...")
         rc, out = run_capture([py, "-c", "import webview; print('ok')"])
         if rc != 0:
             self.log(f"pywebview import failed: {out}", "warn")
         else:
             self.log("webview backend OK", "ok")
 
+    # ---------- Integration ----------
     def install_integration(self):
         src = self.repo_dir
         dst = self.installed_app_dir
-
         self.log(f"Copying app files to {dst}")
         self._copy_tree(src, dst)
+
+        # Sanity: did the copy actually happen?
+        src_client = src / "client.py"
+        dst_client = dst / "client.py"
+        if src_client.exists() and dst_client.exists():
+            try:
+                if src_client.read_bytes() != dst_client.read_bytes():
+                    raise RuntimeError(
+                        f"Installed client.py does not match source — copy_tree failed.\n"
+                        f"  Source:    {src_client}\n"
+                        f"  Installed: {dst_client}\n"
+                        f"Delete {dst} and rerun."
+                    )
+            except OSError:
+                pass
 
         if self.os_name == "Darwin":
             self._install_macos_integration()
@@ -943,8 +1027,7 @@ class InstallerAPI:
             target = dst / item.name
             if item.is_dir():
                 if target.exists(): shutil.rmtree(target)
-                shutil.copytree(item, target,
-                                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+                shutil.copytree(item, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
             else:
                 shutil.copy2(item, target)
 
@@ -955,6 +1038,14 @@ class InstallerAPI:
                      f"date:   {parts[1] if len(parts) > 1 else '?'}\n"
                      f"subject:{parts[2] if len(parts) > 2 else '?'}\n")
             (dst / ".installed-version").write_text(stamp)
+
+    def _pick_icon_src(self):
+        for cand in ("docs/logo-app.svg", "docs/logo-app.png",
+                     "docs/logo-black.svg", "docs/logo-white.svg"):
+            p = self.installed_app_dir / cand
+            if p.exists():
+                return p, (cand if "logo-app" in cand else f"monochrome fallback: {cand}")
+        return None, ""
 
     def _install_linux_integration(self):
         bin_dir = Path.home() / ".local" / "bin"
@@ -968,40 +1059,20 @@ class InstallerAPI:
         launcher.write_text(f'#!/usr/bin/env bash\nexec "{self.installed_venv_py}" "{self.installed_app_dir}/client.py" "$@"\n')
         launcher.chmod(0o755)
 
-        # Icon — full-colour first, monochrome fallbacks, same order as v12
-        icon_src = None
-        icon_note = ""
-        for cand in ("docs/logo-app.svg", "docs/logo-app.png"):
-            p = self.installed_app_dir / cand
-            if p.exists(): icon_src = p; break
-        if icon_src is None:
-            for cand in ("docs/logo-black.svg", "docs/logo-white.svg"):
-                p = self.installed_app_dir / cand
-                if p.exists():
-                    icon_src = p
-                    icon_note = f" (monochrome fallback: {p.name})"
-                    self.log(
-                        f"logo-app.* not found; using {p.name}. "
-                        f"Add docs/logo-app.svg for a proper icon.",
-                        "warn",
-                    )
-                    break
-
+        icon_src, note = self._pick_icon_src()
         if icon_src:
             if icon_src.suffix == ".png":
                 shutil.copy2(icon_src, icon_dir / "crowdgpt.png")
-                self.log(f"Icon installed: {icon_dir/'crowdgpt.png'}{icon_note}", "ok")
+                self.log(f"Icon installed: {icon_dir/'crowdgpt.png'} ({note})", "ok")
             else:
                 png = icon_dir / "crowdgpt.png"
-                rc, _ = run_capture([
-                    "rsvg-convert", "-a", "-w", "256", "-h", "256",
-                    str(icon_src), "-o", str(png),
-                ])
+                rc, _ = run_capture(["rsvg-convert", "-a", "-w", "256", "-h", "256",
+                                     str(icon_src), "-o", str(png)])
                 if rc == 0 and png.exists():
-                    self.log(f"Icon installed (rasterised): {png}{icon_note}", "ok")
+                    self.log(f"Icon installed (rasterised): {png} ({note})", "ok")
                 else:
                     shutil.copy2(icon_src, icon_scalable / "crowdgpt.svg")
-                    self.log(f"Icon installed (SVG): {icon_scalable/'crowdgpt.svg'}{icon_note}", "ok")
+                    self.log(f"Icon installed (SVG): {icon_scalable/'crowdgpt.svg'} ({note})", "ok")
         else:
             self.log("No icon found under docs/ — generic icon will be used.", "warn")
 
@@ -1039,9 +1110,50 @@ echo "Done."
 
         self.log(f"Desktop entry: {desktop}", "ok")
         self.log(f"Command: {launcher}", "ok")
-
         if str(bin_dir) not in os.environ.get("PATH", "").split(":"):
             self.log(f"⚠ {bin_dir} not on PATH — add: export PATH=\"$HOME/.local/bin:$PATH\"", "warn")
+
+    def _make_icns(self, src: Path, icns_out: Path) -> bool:
+        """Render PNGs and package as .icns with macOS's iconutil."""
+        if not which("iconutil"):
+            self.log("iconutil not found (not macOS?) — skipping icns", "warn")
+            return False
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            iconset = Path(tmp) / "crowdgpt.iconset"
+            iconset.mkdir()
+            sizes = [(16, "icon_16x16.png"),      (32, "icon_16x16@2x.png"),
+                     (32, "icon_32x32.png"),      (64, "icon_32x32@2x.png"),
+                     (128, "icon_128x128.png"),   (256, "icon_128x128@2x.png"),
+                     (256, "icon_256x256.png"),   (512, "icon_256x256@2x.png"),
+                     (512, "icon_512x512.png"),   (1024, "icon_512x512@2x.png")]
+            try:
+                from PyQt6.QtGui import QPixmap, QPainter
+                from PyQt6.QtCore import Qt
+                if src.suffix.lower() == ".svg":
+                    from PyQt6.QtSvg import QSvgRenderer
+                    r = QSvgRenderer(str(src))
+                    if not r.isValid():
+                        return False
+                    for size, name in sizes:
+                        pm = QPixmap(size, size)
+                        pm.fill(Qt.GlobalColor.transparent)
+                        p = QPainter(pm); r.render(p); p.end()
+                        pm.save(str(iconset / name), "PNG")
+                else:
+                    base = QPixmap(str(src))
+                    for size, name in sizes:
+                        scaled = base.scaled(
+                            size, size,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
+                        scaled.save(str(iconset / name), "PNG")
+            except Exception as e:
+                self.log(f"icns render failed: {e}", "warn")
+                return False
+            rc, _ = run_capture(["iconutil", "-c", "icns", str(iconset), "-o", str(icns_out)])
+            return rc == 0 and icns_out.exists()
 
     def _install_macos_integration(self):
         bin_dir = Path("/usr/local/bin")
@@ -1052,8 +1164,7 @@ echo "Done."
         launcher = bin_dir / "crowdgpt"
         script = f'#!/usr/bin/env bash\nexec "{self.installed_venv_py}" "{self.installed_app_dir}/client.py" "$@"\n'
         try:
-            launcher.write_text(script)
-            launcher.chmod(0o755)
+            launcher.write_text(script); launcher.chmod(0o755)
         except PermissionError:
             self.log(f"Cannot write {launcher} (needs sudo). Skipping command launcher.", "warn")
 
@@ -1071,6 +1182,7 @@ echo "Done."
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>launcher</string>
+  <key>CFBundleIconFile</key><string>icon.icns</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
@@ -1078,6 +1190,17 @@ echo "Done."
         exe = app_bundle / "Contents" / "MacOS" / "launcher"
         exe.write_text(f'#!/usr/bin/env bash\nexec "{self.installed_venv_py}" "{self.installed_app_dir}/client.py"\n')
         exe.chmod(0o755)
+
+        icon_src, note = self._pick_icon_src()
+        if icon_src:
+            icns = app_bundle / "Contents" / "Resources" / "icon.icns"
+            if self._make_icns(icon_src, icns):
+                self.log(f"App icon: icon.icns ({note})", "ok")
+            else:
+                self.log(f"icns generation failed for {icon_src.name}", "warn")
+        else:
+            self.log("No icon found under docs/ — .app will use default icon.", "warn")
+
         self.log(f"App bundle: {app_bundle}", "ok")
 
     def finalize(self):
@@ -1097,12 +1220,15 @@ echo "Done."
 
 
 # ============================================================
-# Headless mode
+# Headless
 # ============================================================
 
 def run_headless(api):
     print("\n=== CrowdGPT installer (text mode) ===\n")
-    api._run_install()
+    api.start_install()
+    # Wait for the worker thread to finish so the process exits cleanly
+    while not api.finished and not api.cancelled:
+        time.sleep(0.2)
 
 
 # ============================================================
