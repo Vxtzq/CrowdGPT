@@ -32,7 +32,7 @@
   <strong>The best 0$ AI.</strong>
 </p>
 
-# About server crashes
+# ⚠️ About server crashes ⚠️
 - Server disk space bumped from 80GB to 150GB
 - Optimized server code so hopefully that doesn't happen again 😭
 
@@ -41,10 +41,6 @@
 - Fixed UI bugs
 - Fixed XPU backend issues
 - Clarifier auto-login logic between updates
-
-### CrowdGPT power-trainers applications are open!! 
-
-Power-trainers can train by themselves, without any checks. Reach a trust-score of 1, and you're eligible.
  
 ## What is CrowdGPT?
 
@@ -162,6 +158,10 @@ python client.py
 - **Code**: pull requests are welcome. CI checks that the Python files compile and that `install.sh` parses.
 - **Bugs**: open an issue with the bug report template, and include the client version and the log.
 - **Server**: the coordinator lives in [Vxtzq/CrowdGPT-Server](https://github.com/Vxtzq/CrowdGPT-Server).
+
+### CrowdGPT power-trainers applications are open!! 
+
+Power-trainers can train by themselves, without any checks. Reach a trust-score of 1, and you're eligible.
 
 ## 📄 License
 
