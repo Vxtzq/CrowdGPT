@@ -14,11 +14,10 @@ Same install logic as the v12 bash installer:
   9. install GUI backend for pywebview (GTK preferred, Qt fallback)
  10. desktop / command integration
  11. optionally launch client
-
-Progress streamed to a window styled exactly like the client.
 """
 
 import argparse
+import base64
 import json
 import os
 import platform
@@ -50,9 +49,10 @@ body.dark{color-scheme:dark;--bg:#1a1a1e;--bg-soft:#242428;--bg-softer:#2e2e33;-
 html,body{height:100%;width:100%}
 body{background:var(--bg);color:var(--text);font-family:var(--sans);display:flex;flex-direction:column;overflow:hidden;font-size:14px;line-height:1.5}
 header{flex:0 0 auto;height:54px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 20px;gap:10px}
-.logo{display:flex;align-items:center;gap:9px}
-.logo-fallback{width:24px;height:24px;border:1px solid var(--border-strong);display:grid;place-items:center;font-size:13px;font-weight:600}
-.logo-text{font-size:15px;font-weight:600}
+.logo{display:flex;align-items:center;gap:9px;min-width:0}
+.logo-img{height:22px;width:auto;display:block}
+.logo-fallback{width:24px;height:24px;border:1px solid var(--border-strong);display:none;place-items:center;font-size:13px;font-weight:600}
+.logo-text{font-size:15px;font-weight:600;white-space:nowrap}
 .logo-ver{font-family:var(--mono);font-size:10px;color:var(--text-muted);border:1px solid var(--border);padding:1px 5px;border-radius:3px}
 .theme-toggle{width:30px;height:30px;display:flex;align-items:center;justify-content:center;background:var(--bg-soft);color:var(--text);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:14px;padding:0}
 .theme-toggle:hover{border-color:var(--border-strong)}
@@ -112,7 +112,7 @@ body.dark .btn-primary{background:var(--bg-softer)!important;color:var(--text)!i
 <body>
 <header>
   <div class="logo">
-    <div class="logo-fallback">C</div>
+    __LOGO_WRAP__
     <span class="logo-text">CrowdGPT</span>
     <span class="logo-ver" id="ver">installer</span>
   </div>
@@ -244,15 +244,25 @@ function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+function updateLogo() {
+  const img = document.getElementById('logo-img');
+  if (!img) return;
+  const isDark = document.body.classList.contains('dark');
+  const next = isDark ? img.dataset.dark : img.dataset.light;
+  if (next && img.src !== next) img.src = next;
+}
+
 (function(){
   try {
     const saved = localStorage.getItem('crowdgpt-installer-theme');
     const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
     if (saved === 'dark' || (!saved && prefersDark)) document.body.classList.add('dark');
   } catch(e) {}
+  updateLogo();
   document.getElementById('theme-toggle').addEventListener('click', () => {
     document.body.classList.toggle('dark');
     try { localStorage.setItem('crowdgpt-installer-theme', document.body.classList.contains('dark') ? 'dark' : 'light'); } catch(e) {}
+    updateLogo();
   });
 })();
 
@@ -281,6 +291,60 @@ window.addEventListener('keydown', e => {
 
 
 # ============================================================
+# Logo helpers
+# ============================================================
+
+def _logo_data_uri(path: str) -> str:
+    """Return a data: URI for the given logo file, or '' on failure."""
+    if not path:
+        return ""
+    p = Path(path)
+    if not p.is_file():
+        return ""
+    mime = "image/png" if p.suffix.lower() == ".png" else "image/svg+xml"
+    try:
+        data = p.read_bytes()
+    except OSError as e:
+        print(f"[installer] Could not read logo {p}: {e}", flush=True)
+        return ""
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _render_installer_html(logo_light_uri: str, logo_dark_uri: str) -> str:
+    """Inject the logo into the HTML template as base64 data URIs."""
+    if not logo_light_uri:
+        return HTML.replace(
+            "__LOGO_WRAP__",
+            '<div class="logo-fallback" style="display:grid">C</div>',
+        )
+    dark = logo_dark_uri or logo_light_uri
+    wrap = (
+        f'<img id="logo-img" src="{logo_light_uri}" '
+        f'data-light="{logo_light_uri}" '
+        f'data-dark="{dark}" '
+        'class="logo-img" alt="" '
+        "onerror=\"this.style.display='none';this.nextElementSibling.style.display='grid';\">"
+        '<div class="logo-fallback">C</div>'
+    )
+    return HTML.replace("__LOGO_WRAP__", wrap)
+
+
+def _setup_qt_icon(logo_path: str) -> None:
+    """Create the QApplication early and set its window icon."""
+    if not logo_path:
+        return
+    try:
+        from PyQt6.QtGui import QIcon
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        icon = QIcon(str(logo_path))
+        if not icon.isNull():
+            app.setWindowIcon(icon)
+    except Exception as e:
+        print(f"[installer] Window icon setup failed (continuing): {e}", flush=True)
+
+
+# ============================================================
 # Helpers
 # ============================================================
 
@@ -299,6 +363,21 @@ def which(binary):
     return shutil.which(binary)
 
 
+def _webview_backend_ok() -> bool:
+    """Return True if a pywebview GUI backend can be imported."""
+    try:
+        from qtpy import QtCore  # noqa: F401
+        from PyQt6 import QtWebEngineWidgets  # noqa: F401
+        return True
+    except Exception:
+        pass
+    try:
+        import gi  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 class InstallerAPI:
     def __init__(self, repo_dir, backend_override, launch, integrate, headless):
         self.repo_dir = Path(repo_dir).resolve()
@@ -308,10 +387,10 @@ class InstallerAPI:
         self.headless = headless
         self.window = None
         self.cancelled = False
+        self.finished = False
         self.proc = None
         self.proc_lock = threading.Lock()
 
-        # Install state
         self.os_name = platform.system()
         self.arch = platform.machine().lower()
         self.backend = None
@@ -353,6 +432,7 @@ class InstallerAPI:
         self._js(f"window.onProgress({pct})")
 
     def finish(self, ok, title, body="", can_relaunch=False):
+        self.finished = True
         if self.headless:
             print(f"\n{'[DONE]' if ok else '[FAILED]'} {title}", flush=True)
             if body:
@@ -363,7 +443,6 @@ class InstallerAPI:
 
     # ---------- Process runner ----------
     def run(self, cmd, cwd=None, env=None, check=True, kind=""):
-        """Run a command, streaming output to the log."""
         self.log(f"$ {' '.join(str(c) for c in cmd)}", kind)
         if self.cancelled:
             raise RuntimeError("Cancelled by user")
@@ -427,7 +506,6 @@ class InstallerAPI:
         except RuntimeError as e:
             msg = str(e)
             self.log(msg, "err")
-            # Mark the currently-running step as failed
             self._mark_current_failed()
             self.finish(False, "Installation failed" if msg != "Cancelled by user" else "Cancelled", msg)
         except Exception as e:
@@ -437,7 +515,6 @@ class InstallerAPI:
             self.finish(False, "Installation failed", str(e))
 
     def _mark_current_failed(self):
-        # Walk all steps; the last "running" one is the failure
         if self.headless:
             return
         try:
@@ -465,19 +542,16 @@ class InstallerAPI:
             done += 1
             self.progress(done / total_steps * 100)
 
-        # ── 1. Check system ──
         _step_begin("check")
         self.subtitle("Checking system…")
         self.check_system()
         _step_end("check", f"{self.os_name}/{self.arch}")
 
-        # ── 2. Sync repo ──
         _step_begin("git")
         self.subtitle("Syncing repository…")
         self.sync_repo()
         _step_end("git")
 
-        # ── 3. Detect hardware ──
         _step_begin("detect")
         self.subtitle("Detecting hardware…")
         self.detect_backend()
@@ -486,37 +560,31 @@ class InstallerAPI:
         self.log(f"Torch index: {self.torch_index}", "ok")
         self.log(f"Note: {self.wheel_note}", "ok")
 
-        # ── 4. Create venv ──
         _step_begin("venv")
         self.subtitle("Creating virtual environment…")
         self.create_venv()
         _step_end("venv")
 
-        # ── 5. Install torch ──
         _step_begin("torch")
         self.subtitle("Installing PyTorch (this can take a few minutes)…")
         self.install_torch()
         _step_end("torch", self.torch_ver)
 
-        # ── 6. Install requirements ──
         _step_begin("reqs")
         self.subtitle("Installing project dependencies…")
         self.install_requirements()
         _step_end("reqs")
 
-        # ── 7. Extras (transformers pin, bitsandbytes) ──
         _step_begin("extras")
         self.subtitle("Installing extras…")
         self.install_extras()
         _step_end("extras")
 
-        # ── 8. Webview for the client ──
         _step_begin("webview")
         self.subtitle("Installing GUI backend…")
         self.install_webview_for_client()
         _step_end("webview")
 
-        # ── 9. Integration ──
         if self.integrate:
             _step_begin("integrate")
             self.subtitle("Installing desktop integration…")
@@ -527,7 +595,6 @@ class InstallerAPI:
             done += 1
             self.progress(done / total_steps * 100)
 
-        # ── 10. Finalize ──
         _step_begin("finalize")
         self.subtitle("Finalizing…")
         self.finalize()
@@ -540,13 +607,14 @@ class InstallerAPI:
         self.log(f"   Backend: {self.backend}", "ok")
         self.log(f"   Torch: {self.torch_ver}", "ok")
 
+        launch_hint = "crowdgpt" if self.integrate else f"{self.installed_venv_py} {self.installed_app_dir/'client.py'}"
         self.finish(
             True,
             "CrowdGPT is ready",
             f"Installed to {self.installed_app_dir}\n"
             f"Backend: {self.backend}\n"
             f"Torch: {self.torch_ver}\n"
-            f"Launch: crowdgpt" if self.integrate else f"Launch: {self.installed_venv_py} {self.installed_app_dir/'client.py'}",
+            f"Launch: {launch_hint}",
             can_relaunch=self.launch,
         )
 
@@ -558,12 +626,12 @@ class InstallerAPI:
         if which("nvidia-smi"):
             rc, out = run_capture(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
             if rc == 0:
-                self.log(f"nvidia-smi: {out.strip().splitlines()[0] if out.strip() else 'detected'}", "ok")
+                first = out.strip().splitlines()[0] if out.strip() else "detected"
+                self.log(f"nvidia-smi: {first}", "ok")
         if which("rocminfo") or Path("/opt/rocm").exists():
             self.log("ROCm: detected", "ok")
 
     def sync_repo(self):
-        # Bootstrap already synced; just verify.
         if not (self.repo_dir / "client.py").exists():
             raise RuntimeError(f"client.py not found in {self.repo_dir}")
         rc, out = run_capture(["git", "-C", str(self.repo_dir), "log", "-1", "--format=%h %s"])
@@ -571,7 +639,6 @@ class InstallerAPI:
             self.log(f"HEAD: {out.strip()}", "ok")
 
     def detect_backend(self):
-        """Port of the v12 detection logic (condensed)."""
         forced = self.backend_override
 
         if forced:
@@ -598,7 +665,6 @@ class InstallerAPI:
                 raise RuntimeError(f"Unknown --backend: {forced}")
             return
 
-        # Auto-detect
         if self.os_name == "Darwin":
             if self.arch == "arm64":
                 self.backend = "apple"
@@ -640,7 +706,6 @@ class InstallerAPI:
         is_aarch = self.arch in ("aarch64", "arm64")
 
         if is_bw and is_aarch:
-            # DGX Spark GB10 / GB200 — nightly cu128 for aarch64 kernels
             if major and major < 525:
                 raise RuntimeError(f"Blackwell aarch64 needs driver >= 525 (got {driver})")
             self.backend = "nvidia"
@@ -759,10 +824,7 @@ class InstallerAPI:
         else:
             app_dir = Path.home() / ".local" / "share" / "crowdgpt"
 
-        if self.integrate:
-            venv_dir = app_dir / ".venv"
-        else:
-            venv_dir = self.repo_dir / ".venv"
+        venv_dir = app_dir / ".venv" if self.integrate else self.repo_dir / ".venv"
         app_dir.mkdir(parents=True, exist_ok=True)
 
         if venv_dir.exists():
@@ -787,7 +849,6 @@ class InstallerAPI:
 
     def install_torch(self):
         py = str(self.installed_venv_py)
-        # Remove any prior torch
         subprocess.run([py, "-m", "pip", "uninstall", "-y", "torch", "torchvision", "torchaudio"],
                        capture_output=True, text=True)
 
@@ -813,7 +874,6 @@ class InstallerAPI:
         if not req.exists():
             self.log("requirements.txt not found — skipping", "warn")
             return
-        # Strip torch lines
         lines = req.read_text().splitlines()
         filtered = [l for l in lines if not re.match(r"^\s*(torch|torchvision|torchaudio)(\s*[<>=!~].*)?$", l)]
         tmp = self.repo_dir / ".requirements.stripped"
@@ -826,7 +886,6 @@ class InstallerAPI:
     def install_extras(self):
         py = str(self.installed_venv_py)
 
-        # Pin transformers to 4.x if torch < 2.5
         m = re.match(r"(\d+)\.(\d+)", self.torch_ver)
         if m:
             major, minor = int(m.group(1)), int(m.group(2))
@@ -834,7 +893,6 @@ class InstallerAPI:
                 self.log(f"torch {self.torch_ver} < 2.5 → pinning transformers 4.x")
                 self.run([py, "-m", "pip", "install", "transformers>=4.45,<5.0"])
 
-        # bitsandbytes on nvidia
         if self.backend == "nvidia":
             self.log("Installing bitsandbytes (8-bit optimizer)...")
             rc = self.run([py, "-m", "pip", "install", "bitsandbytes"], check=False)
@@ -844,7 +902,6 @@ class InstallerAPI:
     def install_webview_for_client(self):
         py = str(self.installed_venv_py)
 
-        # Try GTK first (system), then PyQt6 (self-contained)
         rc, _ = run_capture([py, "-c", "import gi"])
         if rc == 0:
             self.log("GTK bindings already available (system PyGObject)", "ok")
@@ -858,7 +915,6 @@ class InstallerAPI:
             if rc != 0:
                 raise RuntimeError("Could not install any Qt backend")
 
-        # Verify pywebview can find a backend
         self.log("Verifying webview import...")
         rc, out = run_capture([py, "-c", "import webview; print('ok')"])
         if rc != 0:
@@ -870,7 +926,6 @@ class InstallerAPI:
         src = self.repo_dir
         dst = self.installed_app_dir
 
-        # Copy tree (excluding venv, git, checkpoints)
         self.log(f"Copying app files to {dst}")
         self._copy_tree(src, dst)
 
@@ -893,7 +948,6 @@ class InstallerAPI:
             else:
                 shutil.copy2(item, target)
 
-        # Stamp provenance
         rc, out = run_capture(["git", "-C", str(src), "log", "-1", "--format=%H|%ci|%s"])
         if rc == 0:
             parts = out.strip().split("|", 2)
@@ -910,28 +964,47 @@ class InstallerAPI:
         for d in (bin_dir, desktop_dir, icon_dir, icon_scalable):
             d.mkdir(parents=True, exist_ok=True)
 
-        # Command launcher
         launcher = bin_dir / "crowdgpt"
         launcher.write_text(f'#!/usr/bin/env bash\nexec "{self.installed_venv_py}" "{self.installed_app_dir}/client.py" "$@"\n')
         launcher.chmod(0o755)
 
-        # Icon
+        # Icon — full-colour first, monochrome fallbacks, same order as v12
         icon_src = None
+        icon_note = ""
         for cand in ("docs/logo-app.svg", "docs/logo-app.png"):
             p = self.installed_app_dir / cand
             if p.exists(): icon_src = p; break
+        if icon_src is None:
+            for cand in ("docs/logo-black.svg", "docs/logo-white.svg"):
+                p = self.installed_app_dir / cand
+                if p.exists():
+                    icon_src = p
+                    icon_note = f" (monochrome fallback: {p.name})"
+                    self.log(
+                        f"logo-app.* not found; using {p.name}. "
+                        f"Add docs/logo-app.svg for a proper icon.",
+                        "warn",
+                    )
+                    break
+
         if icon_src:
             if icon_src.suffix == ".png":
                 shutil.copy2(icon_src, icon_dir / "crowdgpt.png")
+                self.log(f"Icon installed: {icon_dir/'crowdgpt.png'}{icon_note}", "ok")
             else:
-                # Try conversion, else copy SVG
                 png = icon_dir / "crowdgpt.png"
-                rc, _ = run_capture(["rsvg-convert", "-a", "-w", "256", "-h", "256",
-                                     str(icon_src), "-o", str(png)])
-                if rc != 0:
+                rc, _ = run_capture([
+                    "rsvg-convert", "-a", "-w", "256", "-h", "256",
+                    str(icon_src), "-o", str(png),
+                ])
+                if rc == 0 and png.exists():
+                    self.log(f"Icon installed (rasterised): {png}{icon_note}", "ok")
+                else:
                     shutil.copy2(icon_src, icon_scalable / "crowdgpt.svg")
+                    self.log(f"Icon installed (SVG): {icon_scalable/'crowdgpt.svg'}{icon_note}", "ok")
+        else:
+            self.log("No icon found under docs/ — generic icon will be used.", "warn")
 
-        # Desktop entry
         desktop = desktop_dir / "crowdgpt.desktop"
         desktop.write_text(f"""[Desktop Entry]
 Version=1.0
@@ -948,7 +1021,6 @@ StartupNotify=true
 """)
         desktop.chmod(0o755)
 
-        # Uninstall
         uninstall = bin_dir / "crowdgpt-uninstall"
         uninstall.write_text(f"""#!/usr/bin/env bash
 set -e
@@ -961,7 +1033,6 @@ echo "Done."
 """)
         uninstall.chmod(0o755)
 
-        # Refresh caches
         for cmd in (["update-desktop-database", str(desktop_dir)],
                     ["gtk-update-icon-cache", "-f", "-t", str(Path.home()/"icons"/"hicolor")]):
             run_capture(cmd)
@@ -986,7 +1057,6 @@ echo "Done."
         except PermissionError:
             self.log(f"Cannot write {launcher} (needs sudo). Skipping command launcher.", "warn")
 
-        # App bundle
         if app_bundle.exists(): shutil.rmtree(app_bundle)
         (app_bundle / "Contents" / "MacOS").mkdir(parents=True)
         (app_bundle / "Contents" / "Resources").mkdir(parents=True)
@@ -1011,12 +1081,11 @@ echo "Done."
         self.log(f"App bundle: {app_bundle}", "ok")
 
     def finalize(self):
-        # Quick sanity: verify transformers can import torch in the final venv
         py = str(self.installed_venv_py)
         rc, out = run_capture([py, "-c",
             "import torch; import transformers; "
             "assert transformers.utils.is_torch_available(); "
-            f"print(f'OK torch={{torch.__version__}} transformers={{transformers.__version__}}')"
+            "print(f'OK torch={torch.__version__} transformers={transformers.__version__}')"
         ])
         if rc != 0:
             raise RuntimeError(
@@ -1028,7 +1097,7 @@ echo "Done."
 
 
 # ============================================================
-# Headless mode (no GUI) — used when no display is available
+# Headless mode
 # ============================================================
 
 def run_headless(api):
@@ -1047,42 +1116,63 @@ def main():
     p.add_argument("--no-launch", action="store_true")
     p.add_argument("--no-integrate", action="store_true")
     p.add_argument("--headless", action="store_true")
+    p.add_argument("--logo", default="", help="Path to full-colour logo (SVG or PNG)")
+    p.add_argument("--logo-dark", default="", help="Path to dark-theme logo (optional)")
     args = p.parse_args()
+
+    headless = args.headless
+    if not headless:
+        has_display = (
+            platform.system() == "Darwin"
+            or os.environ.get("DISPLAY")
+            or os.environ.get("WAYLAND_DISPLAY")
+        )
+        if not has_display:
+            print("[installer] No DISPLAY / WAYLAND_DISPLAY — using headless mode.", flush=True)
+            headless = True
+        elif not _webview_backend_ok():
+            print("[installer] No pywebview GUI backend available — using headless mode.", flush=True)
+            headless = True
 
     api = InstallerAPI(
         repo_dir=args.repo_dir,
         backend_override=args.backend,
         launch=not args.no_launch,
         integrate=not args.no_integrate,
-        headless=args.headless,
+        headless=headless,
     )
 
-    if args.headless:
+    if headless:
         run_headless(api)
         return 0
 
+    logo_light_uri = _logo_data_uri(args.logo)
+    logo_dark_uri  = _logo_data_uri(args.logo_dark)
+    if not logo_light_uri:
+        print("[installer] No --logo supplied — using 'C' fallback.", flush=True)
+
+    _setup_qt_icon(args.logo)
+
     window = webview.create_window(
         title="CrowdGPT Installer",
-        html=HTML,
+        html=_render_installer_html(logo_light_uri, logo_dark_uri),
         width=720,
         height=780,
         resizable=True,
         js_api=api,
     )
     api.window = window
+    window.events.closing += lambda: (setattr(api, "cancelled", True), True)[1]
 
-    def on_closing():
-        api.cancelled = True
-        return True
-
-    window.events.closing += on_closing
-
-    # Force the Qt backend (we installed PyQt6 in the bootstrap venv)
     try:
         webview.start(gui="qt", debug=False)
-    except Exception:
-        # Fall back to auto-detect if PyQt6 isn't there (GTK might be)
-        webview.start(debug=False)
+    except Exception as e:
+        print(f"\n[installer] GUI failed to start: {e}", file=sys.stderr)
+        print("[installer] Falling back to headless mode...\n", file=sys.stderr)
+        api.headless = True
+        api.window = None
+        if not api.finished:
+            run_headless(api)
     return 0
 
 
