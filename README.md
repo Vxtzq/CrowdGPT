@@ -33,7 +33,7 @@
 </p>
 
 # ⚠️ About server crashes ⚠️
-I'm really sorry for anyone who attempted to train or register tonight, server had crashed...
+I'm really sorry for anyone who attempted to train or register tonight, server had crashed.
 
 **I'm trying to adress this problem by implementing these fixes:**
 - Server disk space bumped from 80GB to 150GB
