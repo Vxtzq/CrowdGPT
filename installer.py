@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI installer (pywebview + PyQt6).
+CrowdGPT GUI installer (pywebview).
 
-Same install logic as the v12 bash installer, streamed to a window
-styled exactly like the client. Batched log updates (150ms) so pip
-output doesn't lock up the GUI thread.
+Platform backends:
+  - Windows:  EdgeChromium (native WebView2, pythonnet; no Qt needed)
+  - macOS:    cocoa (bundled with pywebview; no Qt needed)
+  - Linux:    GTK (system PyGObject) or Qt (PyQt6-WebEngine fallback)
+
+Install logic mirrors the v12 bash installer; all steps stream to the GUI.
 """
 
 import argparse
@@ -24,7 +27,7 @@ from pathlib import Path
 try:
     import webview
 except ImportError:
-    print("ERROR: pywebview not installed. Run via install.sh (bootstrap).")
+    print("ERROR: pywebview not installed. Run via install.sh / install.bat (bootstrap).")
     sys.exit(1)
 
 
@@ -178,12 +181,10 @@ window.onStep = function(id, status, detail) {
   renderSteps();
 };
 
-// single-line log — still supported for legacy paths
 window.onLog = function(line, kind) {
   window.onLogBatch([[line, kind || ""]]);
 };
 
-// batched log — the hot path during pip output
 window.onLogBatch = function(batch) {
   const panel = document.getElementById('log-panel');
   for (let i = 0; i < batch.length; i++) {
@@ -293,7 +294,7 @@ window.addEventListener('keydown', e => {
 
 
 # ============================================================
-# Logo + icon helpers
+# Logo + window icon
 # ============================================================
 
 def _logo_data_uri(path: str) -> str:
@@ -329,31 +330,85 @@ def _render_installer_html(logo_light_uri: str, logo_dark_uri: str) -> str:
     return HTML.replace("__LOGO_WRAP__", wrap)
 
 
-def _setup_qt_icon(logo_path: str) -> None:
-    """Render SVG/PNG into a multi-size QIcon. QIcon(str(svg)) is
-    unreliable on Linux — SVG needs explicit QSvgRenderer."""
-    if not logo_path:
-        return
+def _build_multi_size_ico(svg_path, ico_path, sizes=(16, 24, 32, 48, 64, 128, 256)):
+    """Render an SVG at multiple sizes into a single multi-resolution ICO."""
     try:
-        from PyQt6.QtGui import QIcon, QPixmap, QPainter
-        from PyQt6.QtWidgets import QApplication
-        from PyQt6.QtCore import Qt
+        from PyQt6.QtGui import QImage, QPainter
+        from PyQt6.QtSvg import QSvgRenderer
+        from PyQt6.QtCore import QBuffer, QIODevice
+    except ImportError:
+        try:
+            from PySide6.QtGui import QImage, QPainter
+            from PySide6.QtSvg import QSvgRenderer
+            from PySide6.QtCore import QBuffer, QIODevice
+        except ImportError:
+            return False
+    try:
+        renderer = QSvgRenderer(str(svg_path))
+        if not renderer.isValid():
+            return False
+        pngs = []
+        for size in sizes:
+            img = QImage(size, size, QImage.Format.Format_ARGB32)
+            img.fill(0)
+            painter = QPainter(img)
+            renderer.render(painter)
+            painter.end()
+            buf = QBuffer()
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            img.save(buf, "PNG")
+            buf.close()
+            pngs.append(bytes(buf.data()))
+        import struct as _ico_struct
+        n = len(pngs)
+        offset = 6 + 16 * n
+        parts = [_ico_struct.pack("<HHH", 0, 1, n)]
+        for size, png in zip(sizes, pngs):
+            w = size if size < 256 else 0
+            h = size if size < 256 else 0
+            parts.append(_ico_struct.pack("<BBBBHHII", w, h, 0, 0, 1, 32, len(png), offset))
+            offset += len(png)
+        with open(ico_path, "wb") as f:
+            for p in parts: f.write(p)
+            for png in pngs: f.write(png)
+        return True
+    except Exception as e:
+        print(f"[installer] multi-size ICO build failed: {e}", flush=True)
+        return False
 
+
+def _prepare_qt_icon_early(source_path):
+    """Create QApplication with a multi-size QIcon BEFORE pywebview.start()
+    (only relevant for Linux/Qt backend — Windows uses EdgeChromium, macOS uses cocoa)."""
+    if not source_path: return False
+    p = Path(source_path)
+    if not p.exists(): return False
+    try:
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtGui import QIcon, QPixmap, QPainter
+        from PyQt6.QtCore import Qt
+    except ImportError:
+        try:
+            from PySide6.QtWidgets import QApplication
+            from PySide6.QtGui import QIcon, QPixmap, QPainter
+            from PySide6.QtCore import Qt
+        except ImportError:
+            return False
+    try:
         app = QApplication.instance() or QApplication(sys.argv[:1])
         app.setApplicationName("CrowdGPT")
-        app.setApplicationDisplayName("CrowdGPT Installer")
-        try:
-            app.setDesktopFileName("crowdgpt-installer")  # Wayland app_id
-        except AttributeError:
-            pass
-
-        path = Path(logo_path)
+        app.setApplicationDisplayName("CrowdGPT")
+        try: app.setDesktopFileName("crowdgpt")
+        except AttributeError: pass
         icon = QIcon()
-
-        if path.suffix.lower() == ".svg":
+        if p.suffix.lower() == ".svg":
             try:
                 from PyQt6.QtSvg import QSvgRenderer
-                renderer = QSvgRenderer(str(path))
+            except ImportError:
+                try: from PySide6.QtSvg import QSvgRenderer
+                except ImportError: QSvgRenderer = None
+            if QSvgRenderer is not None:
+                renderer = QSvgRenderer(str(p))
                 if renderer.isValid():
                     for size in (16, 24, 32, 48, 64, 128, 256):
                         pm = QPixmap(size, size)
@@ -362,22 +417,16 @@ def _setup_qt_icon(logo_path: str) -> None:
                         renderer.render(painter)
                         painter.end()
                         icon.addPixmap(pm)
-                    print(f"[installer] Window icon rendered from SVG ({path.name})", flush=True)
-            except Exception as e:
-                print(f"[installer] SVG render failed, trying direct: {e}", flush=True)
-
         if icon.isNull() or not icon.availableSizes():
-            icon = QIcon(str(path))
-            if not icon.isNull():
-                print(f"[installer] Window icon loaded directly ({path.name})", flush=True)
-
+            icon = QIcon(str(p))
         if icon.isNull():
-            print(f"[installer] Could not load icon from {path}", flush=True)
-            return
-
+            return False
         app.setWindowIcon(icon)
+        print(f"[installer] Pre-set QApplication window icon from {p.name}", flush=True)
+        return True
     except Exception as e:
-        print(f"[installer] Window icon setup failed (continuing): {e}", flush=True)
+        print(f"[installer] Early Qt setup failed: {e}", flush=True)
+        return False
 
 
 # ============================================================
@@ -391,7 +440,7 @@ def run_capture(cmd, **kw):
     except FileNotFoundError:
         return 127, f"{cmd[0]}: not found"
     except subprocess.TimeoutExpired:
-        return 124, f"{' '.join(cmd)}: timeout"
+        return 124, f"{' '.join(str(c) for c in cmd)}: timeout"
 
 
 def which(binary):
@@ -399,6 +448,21 @@ def which(binary):
 
 
 def _webview_backend_ok() -> bool:
+    """Return True if any pywebview GUI backend can be imported on this OS."""
+    _os = platform.system()
+    if _os == "Windows":
+        try:
+            from webview.platforms import edgechromium  # noqa: F401
+            return True
+        except Exception:
+            pass
+    if _os == "Darwin":
+        try:
+            import webview.platforms.cocoa  # noqa: F401
+            return True
+        except Exception:
+            pass
+    # Linux / fallback: Qt or GTK
     try:
         from qtpy import QtCore  # noqa: F401
         from PyQt6 import QtWebEngineWidgets  # noqa: F401
@@ -470,9 +534,7 @@ class InstallerAPI:
         batch = list(self._log_buffer)
         self._log_buffer.clear()
         try:
-            self.window.evaluate_js(
-                "window.onLogBatch(" + json.dumps(batch) + ");"
-            )
+            self.window.evaluate_js("window.onLogBatch(" + json.dumps(batch) + ");")
         except Exception:
             pass
 
@@ -543,7 +605,7 @@ class InstallerAPI:
             raise RuntimeError(f"Command failed (exit {rc}): {' '.join(str(c) for c in cmd)}")
         return rc
 
-    # ---------- Public API (called from JS) ----------
+    # ---------- Public API ----------
     def start_install(self):
         self.cancelled = False
         self.finished = False
@@ -566,7 +628,20 @@ class InstallerAPI:
             sys.exit(0)
 
     def launch_client(self):
-        if self.installed_venv_py and self.installed_app_dir:
+        if not (self.installed_venv_py and self.installed_app_dir):
+            self.close_window()
+            return
+        if self.os_name == "Windows":
+            launcher = self.installed_app_dir / "CrowdGPT.pyw"
+            if launcher.exists():
+                pyw = self.installed_venv_py.parent / "pythonw.exe"
+                exe = pyw if pyw.exists() else self.installed_venv_py
+                subprocess.Popen([str(exe), str(launcher)], cwd=str(self.installed_app_dir))
+            else:
+                client = self.installed_app_dir / "client.py"
+                if client.exists():
+                    subprocess.Popen([str(self.installed_venv_py), str(client)], cwd=str(self.installed_app_dir))
+        else:
             client = self.installed_app_dir / "client.py"
             if client.exists():
                 subprocess.Popen([str(self.installed_venv_py), str(client)])
@@ -615,18 +690,18 @@ class InstallerAPI:
             done += 1
             self.progress(done / total_steps * 100)
 
-        _begin("check");   self.subtitle("Checking system…");              self.check_system();             _end("check", f"{self.os_name}/{self.arch}")
-        _begin("git");     self.subtitle("Syncing repository…");           self.sync_repo();                _end("git")
-        _begin("detect");  self.subtitle("Detecting hardware…");           self.detect_backend();           _end("detect", self.backend or "cpu")
+        _begin("check");   self.subtitle("Checking system…");             self.check_system();             _end("check", f"{self.os_name}/{self.arch}")
+        _begin("git");     self.subtitle("Syncing repository…");          self.sync_repo();                _end("git")
+        _begin("detect");  self.subtitle("Detecting hardware…");          self.detect_backend();           _end("detect", self.backend or "cpu")
         self.log(f"Backend: {self.backend}", "ok")
         self.log(f"Torch index: {self.torch_index}", "ok")
         self.log(f"Note: {self.wheel_note}", "ok")
 
-        _begin("venv");    self.subtitle("Creating virtual environment…"); self.create_venv();              _end("venv")
+        _begin("venv");    self.subtitle("Creating virtual environment…"); self.create_venv();             _end("venv")
         _begin("torch");   self.subtitle("Installing PyTorch (few minutes)…"); self.install_torch();       _end("torch", self.torch_ver)
         _begin("reqs");    self.subtitle("Installing project dependencies…"); self.install_requirements(); _end("reqs")
-        _begin("extras");  self.subtitle("Installing extras…");            self.install_extras();           _end("extras")
-        _begin("webview"); self.subtitle("Installing GUI backend…");       self.install_webview_for_client(); _end("webview")
+        _begin("extras");  self.subtitle("Installing extras…");           self.install_extras();           _end("extras")
+        _begin("webview"); self.subtitle("Installing GUI backend…");      self.install_webview_for_client(); _end("webview")
 
         if self.integrate:
             _begin("integrate"); self.subtitle("Installing desktop integration…"); self.install_integration(); _end("integrate")
@@ -642,7 +717,15 @@ class InstallerAPI:
         self.log(f"   Backend: {self.backend}", "ok")
         self.log(f"   Torch: {self.torch_ver}", "ok")
 
-        launch_hint = "crowdgpt" if self.integrate else f"{self.installed_venv_py} {self.installed_app_dir/'client.py'}"
+        if self.os_name == "Windows":
+            launch_hint = "Start Menu > CrowdGPT"
+        elif self.os_name == "Darwin":
+            launch_hint = "Spotlight > CrowdGPT"
+        elif self.integrate:
+            launch_hint = "crowdgpt"
+        else:
+            launch_hint = f"{self.installed_venv_py} {self.installed_app_dir/'client.py'}"
+
         self.finish(
             True, "CrowdGPT is ready",
             f"Installed to {self.installed_app_dir}\n"
@@ -748,8 +831,6 @@ class InstallerAPI:
                 self.torch_index = "https://download.pytorch.org/whl/cpu"
                 self.wheel_note = "Jetson (Tegra) — generic CUDA wheels incompatible, using CPU"
                 self.log("Jetson detected — PyTorch installs CPU wheel.", "warn")
-                self.log("For GPU on Jetson, install NVIDIA's wheel manually:", "warn")
-                self.log("  https://developer.download.nvidia.com/compute/redist/jp/", "warn")
                 return
             self.backend = "nvidia"
             self.torch_index = "https://download.pytorch.org/whl/cu124"
@@ -857,10 +938,15 @@ class InstallerAPI:
     def create_venv(self):
         if self.os_name == "Darwin":
             app_dir = Path.home() / "Library" / "Application Support" / "CrowdGPT"
+        elif self.os_name == "Windows":
+            base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+            app_dir = Path(base) / "CrowdGPT"
         else:
             app_dir = Path.home() / ".local" / "share" / "crowdgpt"
+
         venv_dir = app_dir / ".venv" if self.integrate else self.repo_dir / ".venv"
         app_dir.mkdir(parents=True, exist_ok=True)
+
         if venv_dir.exists():
             self.log(f"Removing existing venv at {venv_dir}")
             shutil.rmtree(venv_dir, ignore_errors=True)
@@ -883,17 +969,16 @@ class InstallerAPI:
 
     # ---------- Torch ----------
     def _index_has_wheel_for(self) -> bool:
-        """Check whether the torch index actually has wheels for our python
-        version and cpu arch. Avoids the pip 'no matching distribution'
-        error on Python 3.12+ with older indexes (e.g. rocm6.0 → torch 2.4.1)."""
         if not self.torch_index.startswith("https://download.pytorch.org/whl/"):
-            return True  # pypi.org/simple always carries pure-python + wheels
+            return True
         py = str(self.installed_venv_py)
         rc, out = run_capture([py, "-c", "import sys; print('%d%d' % sys.version_info[:2])"])
         if rc != 0:
-            return True  # can't determine; let pip decide
+            return True
         tag = f"cp{out.strip()}"
         arch_tag = "linux_aarch64" if self.arch in ("aarch64", "arm64") else "linux_x86_64"
+        if self.os_name == "Windows":
+            arch_tag = "win_amd64"
         try:
             import urllib.request
             url = self.torch_index.rstrip("/") + "/torch/"
@@ -901,7 +986,7 @@ class InstallerAPI:
                 page = r.read().decode("utf-8", "replace")
             return tag in page and arch_tag in page
         except Exception:
-            return True  # network issue — let pip try
+            return True
 
     def install_torch(self):
         py = str(self.installed_venv_py)
@@ -911,19 +996,15 @@ class InstallerAPI:
         if not self._index_has_wheel_for():
             self.log(
                 f"{self.torch_index} has no torch wheels for python "
-                f"{sys.version.split()[0]} on {self.arch} — installing Python 3.11",
+                f"{sys.version.split()[0]} on {self.arch} — switching to Python 3.11",
                 "warn",
             )
             self.run(["uv", "python", "install", "3.11"])
-            rc, out = run_capture(["uv", "python", "find", "3.11"])
-            py311 = out.strip() if rc == 0 else ""
-            if not py311:
-                raise RuntimeError("Could not find Python 3.11 after uv install")
-            # Rebuild the venv with 3.11
             venv_dir = self.installed_app_dir / ".venv"
             shutil.rmtree(venv_dir, ignore_errors=True)
             self.run(["uv", "venv", "--system-site-packages", "--python", "3.11", str(venv_dir)])
-            self.installed_venv_py = venv_dir / "bin" / "python"
+            sub = "Scripts/python.exe" if self.os_name == "Windows" else "bin/python"
+            self.installed_venv_py = venv_dir / sub
             py = str(self.installed_venv_py)
             self.run([py, "-m", "pip", "install", "--upgrade", "pip"])
 
@@ -974,10 +1055,40 @@ class InstallerAPI:
 
     def install_webview_for_client(self):
         py = str(self.installed_venv_py)
+
+        # Windows: use pywebview's native EdgeChromium backend (via pythonnet).
+        # No Qt needed. This is the default on Windows.
+        if self.os_name == "Windows":
+            self.log("Installing pywebview + pythonnet (native WebView2, no Qt)...")
+            rc = self.run([py, "-m", "pip", "install", "pywebview", "pythonnet"], check=False)
+            if rc == 0:
+                rc2, out = run_capture([py, "-c",
+                    "from webview.platforms import edgechromium; print('EDGE_OK')"])
+                if rc2 == 0 and "EDGE_OK" in out:
+                    self.log("EdgeChromium backend OK (no Qt needed)", "ok")
+                    return
+                self.log(f"EdgeChromium check failed: {out[:200]}", "warn")
+            self.log("Falling back to PyQt6 for Windows...", "warn")
+            rc = self.run([py, "-m", "pip", "install", "QtPy", "PyQt6", "PyQt6-WebEngine"], check=False)
+            if rc != 0:
+                raise RuntimeError("Could not install any webview backend on Windows")
+            return
+
+        # macOS: cocoa backend ships with pywebview, no extra packages needed.
+        if self.os_name == "Darwin":
+            rc = self.run([py, "-m", "pip", "install", "pywebview"], check=False)
+            if rc == 0:
+                self.log("pywebview cocoa backend is built-in (no Qt needed)", "ok")
+            else:
+                self.log("pywebview install failed (should already be in requirements)", "warn")
+            return
+
+        # Linux: try GTK (system PyGObject) first, then Qt fallback.
         rc, _ = run_capture([py, "-c", "import gi"])
         if rc == 0:
             self.log("GTK bindings already available (system PyGObject)", "ok")
             return
+
         self.log("Installing Qt backend (PyQt6 + WebEngine)...")
         rc = self.run([py, "-m", "pip", "install", "QtPy", "PyQt6", "PyQt6-WebEngine"], check=False)
         if rc != 0:
@@ -985,6 +1096,7 @@ class InstallerAPI:
             rc = self.run([py, "-m", "pip", "install", "QtPy", "PyQt5", "PyQtWebEngine"], check=False)
             if rc != 0:
                 raise RuntimeError("Could not install any Qt backend")
+
         rc, out = run_capture([py, "-c", "import webview; print('ok')"])
         if rc != 0:
             self.log(f"pywebview import failed: {out}", "warn")
@@ -998,7 +1110,6 @@ class InstallerAPI:
         self.log(f"Copying app files to {dst}")
         self._copy_tree(src, dst)
 
-        # Sanity: did the copy actually happen?
         src_client = src / "client.py"
         dst_client = dst / "client.py"
         if src_client.exists() and dst_client.exists():
@@ -1007,14 +1118,15 @@ class InstallerAPI:
                     raise RuntimeError(
                         f"Installed client.py does not match source — copy_tree failed.\n"
                         f"  Source:    {src_client}\n"
-                        f"  Installed: {dst_client}\n"
-                        f"Delete {dst} and rerun."
+                        f"  Installed: {dst_client}"
                     )
             except OSError:
                 pass
 
         if self.os_name == "Darwin":
             self._install_macos_integration()
+        elif self.os_name == "Windows":
+            self._install_windows_integration()
         else:
             self._install_linux_integration()
 
@@ -1113,8 +1225,100 @@ echo "Done."
         if str(bin_dir) not in os.environ.get("PATH", "").split(":"):
             self.log(f"⚠ {bin_dir} not on PATH — add: export PATH=\"$HOME/.local/bin:$PATH\"", "warn")
 
+    def _install_windows_integration(self):
+        """Windows: .pyw launcher + Start Menu + Desktop shortcut + Add/Remove Programs."""
+        import winreg
+
+        app_dir = self.installed_app_dir
+        venv_py = self.installed_venv_py
+        venv_pyw = venv_py.parent / "pythonw.exe"
+        if not venv_pyw.exists():
+            venv_pyw = venv_py
+
+        # .pyw launcher: no console window, no cwd dependency
+        launcher = app_dir / "CrowdGPT.pyw"
+        client_py = app_dir / "client.py"
+        launcher.write_text(
+            "import runpy, sys, os\n"
+            f"os.chdir(r'{app_dir}')\n"
+            f"sys.argv = [r'{client_py}'] + sys.argv[1:]\n"
+            f"runpy.run_path(r'{client_py}', run_name='__main__')\n",
+            encoding="utf-8",
+        )
+
+        # Icon (optional)
+        ico_src = None
+        for cand in ("docs/icon.ico", "icon.ico", "docs/logo-app.png"):
+            p = app_dir / cand
+            if p.exists():
+                ico_src = p
+                break
+
+        def _ps_shortcut(path):
+            ps = (
+                f'$s = (New-Object -COM WScript.Shell).CreateShortcut("{path}")\n'
+                f'$s.TargetPath = "{venv_pyw}"\n'
+                f"$s.Arguments = '\"{launcher}\"'\n"
+                f'$s.WorkingDirectory = "{app_dir}"\n'
+                f'$s.Description = "CrowdGPT - Decentralized AI Training Client"\n'
+                f'$s.WindowStyle = 1\n'
+            )
+            if ico_src:
+                ps += f'$s.IconLocation = "{ico_src}"\n'
+            ps += '$s.Save()\n'
+            return run_capture(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps])
+
+        # Start Menu shortcut
+        start_menu = Path(os.environ.get("APPDATA", str(Path.home()))) \
+                     / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        start_menu.mkdir(parents=True, exist_ok=True)
+        lnk = start_menu / "CrowdGPT.lnk"
+        rc, out = _ps_shortcut(lnk)
+        if rc == 0 and lnk.exists():
+            self.log(f"Start Menu shortcut: {lnk}", "ok")
+        else:
+            self.log(f"Start Menu shortcut failed: {out[:200]}", "warn")
+
+        # Desktop shortcut
+        try:
+            desktop = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
+            if desktop.exists():
+                desk = desktop / "CrowdGPT.lnk"
+                rc, _ = _ps_shortcut(desk)
+                if desk.exists():
+                    self.log(f"Desktop shortcut: {desk}", "ok")
+        except Exception:
+            pass
+
+        # Add/Remove Programs entry + uninstaller
+        try:
+            uninstall_key = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\CrowdGPT"
+            uninstaller = app_dir / "uninstall.bat"
+            uninstaller.write_text(
+                "@echo off\r\n"
+                "echo Uninstalling CrowdGPT...\r\n"
+                f'rmdir /s /q "{app_dir}"\r\n'
+                f'del /q "{lnk}"\r\n'
+                f'reg delete "HKCU\\{uninstall_key}" /f >nul 2>&1\r\n'
+                "echo Done.\r\n"
+                "pause\r\n",
+                encoding="ascii",
+            )
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, uninstall_key) as k:
+                winreg.SetValueEx(k, "DisplayName",     0, winreg.REG_SZ,    "CrowdGPT")
+                winreg.SetValueEx(k, "DisplayVersion",  0, winreg.REG_SZ,    "1.0")
+                winreg.SetValueEx(k, "Publisher",       0, winreg.REG_SZ,    "CrowdGPT")
+                winreg.SetValueEx(k, "InstallLocation", 0, winreg.REG_SZ,    str(app_dir))
+                winreg.SetValueEx(k, "UninstallString", 0, winreg.REG_SZ,    str(uninstaller))
+                winreg.SetValueEx(k, "NoModify",        0, winreg.REG_DWORD, 1)
+                winreg.SetValueEx(k, "NoRepair",        0, winreg.REG_DWORD, 1)
+            self.log("Registered in Add/Remove Programs", "ok")
+        except Exception as e:
+            self.log(f"Registry entry failed (continuing): {e}", "warn")
+
+        self.log(f"Launch: Start Menu > CrowdGPT, or double-click {launcher}", "ok")
+
     def _make_icns(self, src: Path, icns_out: Path) -> bool:
-        """Render PNGs and package as .icns with macOS's iconutil."""
         if not which("iconutil"):
             self.log("iconutil not found (not macOS?) — skipping icns", "warn")
             return False
@@ -1226,7 +1430,6 @@ echo "Done."
 def run_headless(api):
     print("\n=== CrowdGPT installer (text mode) ===\n")
     api.start_install()
-    # Wait for the worker thread to finish so the process exits cleanly
     while not api.finished and not api.cancelled:
         time.sleep(0.2)
 
@@ -1248,8 +1451,12 @@ def main():
 
     headless = args.headless
     if not headless:
+        _os = platform.system()
+        # Windows + macOS always have a GUI available — they do not set
+        # DISPLAY / WAYLAND_DISPLAY, which are X11/Wayland-only. This check
+        # used to force headless on every Windows install.
         has_display = (
-            platform.system() == "Darwin"
+            _os in ("Windows", "Darwin")
             or os.environ.get("DISPLAY")
             or os.environ.get("WAYLAND_DISPLAY")
         )
@@ -1277,7 +1484,13 @@ def main():
     if not logo_light_uri:
         print("[installer] No --logo supplied — using 'C' fallback.", flush=True)
 
-    _setup_qt_icon(args.logo)
+    # Linux/Qt: pre-create QApplication with a crisp icon before pywebview.start().
+    # Windows/macOS don't use Qt for pywebview; the window icon comes from the
+    # .ico in the shortcut or from Info.plist respectively.
+    if platform.system() == "Linux":
+        _icon_src = args.logo or args.logo_dark
+        if _icon_src and os.path.exists(_icon_src):
+            _prepare_qt_icon_early(_icon_src)
 
     window = webview.create_window(
         title="CrowdGPT Installer",
@@ -1291,7 +1504,7 @@ def main():
     window.events.closing += lambda: (setattr(api, "cancelled", True), True)[1]
 
     try:
-        webview.start(gui="qt", debug=False)
+        webview.start(debug=False)
     except Exception as e:
         print(f"\n[installer] GUI failed to start: {e}", file=sys.stderr)
         print("[installer] Falling back to headless mode...\n", file=sys.stderr)
