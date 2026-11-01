@@ -1,22 +1,10 @@
 #!/usr/bin/env bash
 # ============================================================
-# CrowdGPT GUI bootstrap installer — v4
+# CrowdGPT GUI bootstrap installer — v5
 #
-# Flow:
-#   1. Ensure git + uv
-#   2. Clone / sync repo (resolved from SCRIPT_DIR, not cwd)
-#   3. Locate logo files in docs/ and pass them to installer.py
-#   4. Download Python 3.11 (python-build-standalone, no compile)
-#   5. Installer venv + WebView (PyQt6 + WebEngine + qtpy)
-#   6. Verify the Qt backend imports; degrade to headless if not
-#   7. Launch installer.py (GUI) or fall back to headless
-#
-# v4 vs v3:
-#   - finds docs/logo-app.{svg,png} (light) and docs/logo-white.svg
-#     (dark) and passes them as --logo / --logo-dark to installer.py,
-#     which uses them for BOTH the window icon and the web UI header
-#   - resolves repo from script location (avoids accidental double
-#     clone when `bash /path/to/install.sh` is run from $HOME)
+# v5 vs v4:
+#   - SCRIPT_DIR resolution no longer crashes under `set -u`
+#     when BASH_SOURCE[0] is unbound (falls back to $0, then PWD)
 # ============================================================
 
 if [ -z "${BASH_VERSION:-}" ]; then
@@ -125,8 +113,11 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 ok "git: $(git --version | awk '{print $3}')"
 
-# ── 2. resolve repo (script-dir first, then cwd, then clone) ──
-SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+# ── 2. resolve repo (safe under set -u) ──
+_self="${BASH_SOURCE[0]:-$0}"
+_self="${_self:-install.sh}"
+SCRIPT_DIR="$( cd -- "$( dirname -- "$_self" )" >/dev/null 2>&1 && pwd )"
+SCRIPT_DIR="${SCRIPT_DIR:-$PWD}"
 
 if [[ -f "$SCRIPT_DIR/client.py" && -d "$SCRIPT_DIR/.git" ]]; then
     REPO_DIR="$SCRIPT_DIR"
@@ -157,6 +148,18 @@ if [[ ! -f installer.py ]]; then
 fi
 ok "installer.py found"
 
+# Verify installer.py actually has the --logo flag (protects against
+# someone pulling an older installer.py that doesn't know about it).
+if ! grep -q '\-\-logo-dark' installer.py; then
+    die "installer.py is an outdated version (no --logo-dark flag).
+
+  This installer passes --logo / --logo-dark to installer.py.
+  Update installer.py from the repo (it must contain:
+    p.add_argument(\"--logo\", ...)
+    p.add_argument(\"--logo-dark\", ...)
+  ) then rerun."
+fi
+
 LOGO_LIGHT=""
 LOGO_DARK=""
 for cand in docs/logo-app.svg docs/logo-app.png docs/logo-black.svg; do
@@ -171,7 +174,6 @@ if [[ -z "$LOGO_LIGHT" ]]; then
     warn "Expected: docs/logo-app.svg (or .png), or docs/logo-black/white.svg"
 elif [[ "$LOGO_LIGHT" == *"logo-black"* || "$LOGO_LIGHT" == *"logo-white"* ]]; then
     warn "Only monochrome logo found ($(basename "$LOGO_LIGHT"))."
-    warn "The installer window and the desktop icon will look wrong on some backgrounds."
     warn "Add docs/logo-app.svg for a proper full-colour logo."
 else
     ok "Logo: ${LOGO_LIGHT#$PWD/}"
