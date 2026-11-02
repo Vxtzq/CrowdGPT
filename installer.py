@@ -1582,19 +1582,23 @@ echo "Done."
             return rc == 0 and icns_out.exists()
 
     def _install_macos_integration(self):
-        bin_dir = Path("/usr/local/bin")
         apps_dir = Path.home() / "Applications"
         apps_dir.mkdir(parents=True, exist_ok=True)
         app_bundle = apps_dir / "CrowdGPT.app"
 
+        bin_dir = Path.home() / ".local" / "bin"
+        try:
+            bin_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            bin_dir = Path("/usr/local/bin")
         launcher = bin_dir / "crowdgpt"
         script = (f'#!/usr/bin/env bash\nexec "{self.installed_venv_py}" '
                   f'"{self.installed_app_dir}/client.py" "$@"\n')
         try:
             launcher.write_text(script)
             launcher.chmod(0o755)
-        except PermissionError:
-            self.log(f"Cannot write {launcher} (needs sudo). Skipping command launcher.", "warn")
+        except OSError as exc:
+            self.log(f"Cannot write {launcher} ({exc}). Add {bin_dir} to PATH manually.", "warn")
 
         if app_bundle.exists():
             shutil.rmtree(app_bundle)
