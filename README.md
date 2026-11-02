@@ -96,11 +96,26 @@ crowdgpt --headless --anon               # train without an account
 crowdgpt --headless --rounds 5           # stop after 5 rounds
 ```
 
+Create an account without opening the desktop app:
+
+```bash
+crowdgpt --register --user NAME --email you@example.com
+# prompts for the password without echoing it
+
+crowdgpt --register --user NAME --email you@example.com --password '...'
+```
+
+Prefer the hidden prompt. Passing `--password` is intended for automation and may
+leave the value in shell history or the process list. Registration saves the session
+token in `checkpoints/auth_token.json`, so the next `crowdgpt --headless` run can
+reuse it. Registration exits without training.
+
 `crowdgpt --help` lists all options. A few settings can also be set through environment variables:
 
 | Variable | Description |
 |---|---|
 | `CROWDGPT_TOKEN` / `CROWDGPT_PASSWORD` | Credentials for headless runs |
+| `CROWDGPT_EMAIL` | Email for `--register` |
 | `CROWDGPT_VRAM_GB` | Same as `--vram-gb` |
 | `CROWDGPT_ENGRAM=0` | Don't train the engram table (same as `--no-engram`) |
 
