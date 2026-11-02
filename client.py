@@ -282,18 +282,43 @@ def _load_or_create_device_id() -> str:
     devices running the same account are treated as distinct training clients
     (separate pools, delta slots, quotas). The UUID part is still used for
     user-level bans / trust / token accounting."""
-    try:
-        if DEVICE_ID_FILE.exists():
+    def _read_id():
+        try:
             v = json.loads(DEVICE_ID_FILE.read_text()).get("id")
-            if isinstance(v, str) and 8 <= len(v) <= 32:
-                return v
-    except Exception:
-        pass
+            if isinstance(v, str) and 8 <= len(v) <= 32: return v
+        except Exception:
+            pass
+        return None
+
+    winner = _read_id()
+    if winner: return winner
     new_id = uuid.uuid4().hex[:16]
-    try:
-        DEVICE_ID_FILE.write_text(json.dumps({"id": new_id, "created": time.time()}))
-    except Exception:
-        pass
+    payload = json.dumps({"id": new_id, "created": time.time()})
+    for _ in range(3):
+        try:
+            fd = os.open(str(DEVICE_ID_FILE), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            # Another process won the create race. Give it a moment to finish writing,
+            # then use its ID so both instances agree on one device identity.
+            for _ in range(20):
+                winner = _read_id()
+                if winner: return winner
+                time.sleep(0.05)
+            # A corrupt/empty file would otherwise make every launch generate a new
+            # ID; clear it and retry the exclusive create (bounded).
+            try: os.unlink(str(DEVICE_ID_FILE))
+            except OSError: break
+            continue
+        except OSError:
+            return new_id
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload); f.flush(); os.fsync(f.fileno())
+            return new_id
+        except Exception:
+            try: os.unlink(str(DEVICE_ID_FILE))
+            except OSError: pass
+            return new_id
     return new_id
 
 DEVICE_ID = _load_or_create_device_id()
@@ -1096,6 +1121,13 @@ def _is_accel_error(msg):
     m = msg.lower()
     return any(k in m for k in ("privateuse1", "unbox expects", "not implemented for", "not supported", "unsupported data type", "bfloat16", "internal assert", "dml", "scatter", "compilegraph", "out of memory", "allocation", "device_type", "not implemented for unique"))
 
+def _sdpa_supports_gqa():
+    """torch>=2.5 exposes enable_gqa on SDPA; older builds reject the kwarg."""
+    try: return "enable_gqa" in (F.scaled_dot_product_attention.__doc__ or "")
+    except Exception: return False
+
+_SDPA_GQA = _sdpa_supports_gqa()
+
 class GroupedQueryAttention(nn.Module):
     def __init__(self):
         super().__init__()
@@ -1113,18 +1145,29 @@ class GroupedQueryAttention(nn.Module):
         ct, st = cos[:, :, :T, :], sin[:, :, :T, :]
         q = q * ct + rotate_half(q) * st
         k = k * ct + rotate_half(k) * st
-        k = k.unsqueeze(2).expand(B, self.nkv, self.nrep, T, HEAD_DIM).reshape(B, self.nh, T, HEAD_DIM)
-        v = v.unsqueeze(2).expand(B, self.nkv, self.nrep, T, HEAD_DIM).reshape(B, self.nh, T, HEAD_DIM)
+
+        def _expand_kv(t):
+            if t.size(1) == self.nh: return t
+            return t.unsqueeze(2).expand(B, self.nkv, self.nrep, T, HEAD_DIM).reshape(B, self.nh, T, HEAD_DIM)
+
+        # SDPA can broadcast grouped KV heads, so keep K/V unexpanded on torch>=2.5.
+        gqa = _SDPA_GQA and self.nkv != self.nh
+        if not gqa: k, v = _expand_kv(k), _expand_kv(v)
         if q.dtype != v.dtype or k.dtype != v.dtype: q, k = q.to(v.dtype), k.to(v.dtype)
-        if _is_directml(q): o = F.scaled_dot_product_attention(q.contiguous().cpu(), k.contiguous().cpu(), v.contiguous().cpu(), is_causal=True).to(q.device)
+        gk = {"enable_gqa": True} if gqa else {}
+        if _is_directml(q): o = F.scaled_dot_product_attention(q.contiguous().cpu(), k.contiguous().cpu(), v.contiguous().cpu(), is_causal=True, **gk).to(q.device)
         elif q.device.type == 'cuda' and getattr(torch.version, 'hip', None):
             if os.environ.get('CROWDGPT_ROCM_SDPA', '1') != '0':
-                try: o = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=True)
+                try: o = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=True, **gk)
                 except RuntimeError as exc:
                     if _is_oom(exc): raise
-                    o = self._chunked_attn(q, k, v, T)
-            else: o = self._chunked_attn(q, k, v, T)
-        else: o = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+                    o = self._chunked_attn(q, _expand_kv(k), _expand_kv(v), T)
+            else: o = self._chunked_attn(q, _expand_kv(k), _expand_kv(v), T)
+        else:
+            try: o = F.scaled_dot_product_attention(q, k, v, is_causal=True, **gk)
+            except (TypeError, NotImplementedError, RuntimeError) as exc:
+                if not gqa or _is_oom(exc): raise
+                o = F.scaled_dot_product_attention(q, _expand_kv(k), _expand_kv(v), is_causal=True)
         return self.wo(o.transpose(1, 2).contiguous().view(B, T, C))
 
     def _chunked_attn(self, q, k, v, T, cs=64):
@@ -1479,45 +1522,55 @@ def _weight_cache_path(revision, filename):
 
 def _download_file_with_progress(url, dest, emit, stop_evt, expected_size=None, label="file"):
     dest.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        leftover = dest.with_suffix(dest.suffix + ".part")
-        if leftover.exists(): leftover.unlink()
-    except Exception: pass
+    expected = int(expected_size) if expected_size is not None else None
     if dest.exists():
         sz = dest.stat().st_size
-        if expected_size is not None and sz == int(expected_size): return dest
-        if expected_size is None and sz > 10_000_000: return dest
+        if expected is not None and sz == expected: return dest
+        if expected is None and sz > 10_000_000: return dest
         try: dest.unlink()
         except Exception: pass
+    tmp = dest.with_suffix(dest.suffix + ".part")
     last_err = None
     for attempt in range(3):
         if stop_evt.is_set(): raise KeyboardInterrupt("Stop requested")
-        tmp = dest.with_suffix(dest.suffix + ".part")
+        try: done = tmp.stat().st_size if tmp.exists() else 0
+        except OSError: done = 0
+        if expected is not None and done > expected:
+            # Stale/oversized fragment; a Range request would be unsatisfiable.
+            try: tmp.unlink()
+            except Exception: pass
+            done = 0
+        if expected is not None and done == expected:
+            os.replace(tmp, dest); return dest
         try:
-            if tmp.exists(): tmp.unlink()
-        except Exception: pass
-        try:
-            r = requests.get(url, stream=True, timeout=(15, 3600), allow_redirects=True); r.raise_for_status()
-            total = int(expected_size) if expected_size else int(r.headers.get("content-length", 0) or 0)
-            done = 0; last_emit = 0.0
-            with open(tmp, "wb") as f:
+            hdrs = {"Range": f"bytes={done}-"} if done > 0 else {}
+            r = requests.get(url, headers=hdrs, stream=True, timeout=(15, 3600), allow_redirects=True)
+            if r.status_code == 416:
+                if expected is not None and done >= expected:
+                    os.replace(tmp, dest); return dest
+                try: tmp.unlink()
+                except Exception: pass
+                done = 0
+                r.raise_for_status()
+            if r.status_code not in (200, 206): r.raise_for_status()
+            append = r.status_code == 206 and done > 0
+            if not append: done = 0  # server ignored Range (or we had nothing): rewrite
+            remaining = int(r.headers.get("content-length", 0) or 0)
+            total = expected if expected is not None else done + remaining
+            last_emit = 0.0
+            with open(tmp, "ab" if append else "wb") as f:
                 for chunk in r.iter_content(chunk_size=1024 * 1024):
                     if stop_evt.is_set(): raise KeyboardInterrupt("Stop requested")
                     if not chunk: continue
                     f.write(chunk); done += len(chunk); now = time.time()
                     if now - last_emit > 0.25: emit("overlay_progress", {"done": done, "total": total}); last_emit = now
-            if expected_size and done != int(expected_size): raise RuntimeError(f"Size mismatch for {label}: got {done}, expected {expected_size}")
+            if expected is not None and done != expected: raise RuntimeError(f"Size mismatch for {label}: got {done}, expected {expected}")
             os.replace(tmp, dest); return dest
         except KeyboardInterrupt:
-            try:
-                if tmp.exists(): tmp.unlink()
-            except Exception: pass
+            # Keep the partial file so a later run can resume from it.
             raise
         except Exception as e:
             last_err = e
-            try:
-                if tmp.exists(): tmp.unlink()
-            except Exception: pass
             if attempt < 2: emit("log", f"Download retry {attempt + 1} for {label}: {e}"); time.sleep(5 * (attempt + 1))
     raise RuntimeError(f"Failed to download {label}: {last_err}")
 
@@ -1659,9 +1712,23 @@ def fetch_weights_from_hf(md, se, emit):
     except Exception: pass
     return iw, ie
 
-def _chunk_ce(xs, w, ys):
-    logits = F.linear(xs.to(w.dtype), w)
-    return F.cross_entropy(logits.reshape(-1, VOCAB_SIZE).float(), ys.reshape(-1))
+def _chunk_ce(xs, w, ys, pos_step=64):
+    """Cross-entropy without materialising the whole logits chunk in fp32.
+
+    The fp32 upcast is the peak-memory hotspot ([B, chunk, vocab] doubles in
+    size), so project a slice of positions at a time and accumulate the fp32
+    sum. The final divide reproduces cross_entropy(reduction='mean') numerics.
+    """
+    B, T, _ = xs.shape
+    total = torch.zeros((), dtype=torch.float32, device=xs.device)
+    for i in range(0, T, pos_step):
+        logits = F.linear(xs[:, i:i + pos_step].to(w.dtype), w)
+        total = total + F.cross_entropy(
+            logits.reshape(-1, VOCAB_SIZE).float(),
+            ys[:, i:i + pos_step].reshape(-1),
+            reduction="sum",
+        )
+    return total / (B * T)
 
 def _fwl(m, x, y, sl, ua, ad, ls=1.0, preview=False, loss_chunk=LOSS_CHUNK):
     sd = ad if ua else None; nc = max(1, math.ceil(sl / loss_chunk))
@@ -1752,6 +1819,11 @@ def _train_step_safe(model, x, y, sl, ua, ad, ls, preview, ladder, emit):
         except RuntimeError as e:
             if not _is_oom(e): raise
             emit('log', f"💥 OOM detected: {str(e).splitlines()[0]}"); _clear_accel_cache(model.accel_device)
+            # A backward that died mid-flight can leave partially written grads. Drop every
+            # parameter's grad (including sparse engram rows) before retrying; optimizers keep
+            # their Adam moments, so no rebuild is needed. This also discards grads accumulated
+            # earlier in the window — correctness beats reusing a contaminated accumulator.
+            for p in model.parameters(): p.grad = None
             if not ladder.step_down(emit): emit('log', "💀 OOM even at CPU-only"); raise
             emit('log', f"   retrying same batch at ladder stage {ladder.stage}")
 
@@ -1860,6 +1932,13 @@ def _build_optimizers(model, lr=1e-4, force_mode=None):
     try: oe = torch.optim.SparseAdam(ep, lr=lr)
     except Exception: oe = torch.optim.AdamW(ep, lr=lr, weight_decay=0.01)
     return ob, oe
+
+def _clip_base_grads(model, max_norm=1.0):
+    """Clip only dense base-model grads; engram rows are sparse and coalesce in SparseAdam."""
+    torch.nn.utils.clip_grad_norm_(
+        [p for n, p in model.named_parameters() if p.requires_grad and not n.startswith('engram.')],
+        max_norm,
+    )
 
 def _trim_heap():
     gc.collect()
@@ -2082,10 +2161,11 @@ def run_single_round_wrapper(srv, at, se, emit):
                     remaining = max(60, (rh * 3600) - eta_elapsed - (UPLOAD_BUFFER_MIN * 60))
                     target_micro_steps = micro_step + int(remaining / sps_micro)
                 emit('cal_stats', {'step': micro_step, 'total': target_micro_steps, 'loss': safe_float(lval * as_, 10.0), 'tps': safe_float(current_tps), 'time_left': safe_float((remaining if micro_step >= CAL_MIN_MICRO else 0) / 60.0)})
-                oe.step(); oe.zero_grad(set_to_none=True); tt += step_x.numel(); del lo, x, y, step_x, step_y
+                tt += step_x.numel(); del lo, x, y, step_x, step_y
             if hb.should_stop() or se.is_set(): return
-            torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 1.0)
-            ob.step(); ob.zero_grad(set_to_none=True); gc.collect()
+            _clip_base_grads(model)
+            ob.step(); ob.zero_grad(set_to_none=True)
+            oe.step(); oe.zero_grad(set_to_none=True); gc.collect()
 
         if se.is_set(): return
         if cohort_mode: dl = float('inf'); target_micro_steps = int(cc_steps)
@@ -2111,7 +2191,7 @@ def run_single_round_wrapper(srv, at, se, emit):
                 want_preview = (model.main_device.type != 'cpu') and ((micro_step == 0) or ((micro_step + 1) % PREVIEW_EVERY == 0))
                 try: lo, cards = _train_step_safe(model, x, y, sl, ua, ad, ls, preview=want_preview, ladder=ladder, emit=emit)
                 except CohortAbort: return
-                lval = float(lo.item()) * as_; oe.step(); oe.zero_grad(set_to_none=True)
+                lval = float(lo.item()) * as_
                 als += lval; tt += x.numel(); accum_count += 1; micro_step += 1
                 round_loss_sum += lval; round_loss_sq_sum += lval * lval; round_loss_count += 1
                 last_step_loss = lval
@@ -2126,7 +2206,9 @@ def run_single_round_wrapper(srv, at, se, emit):
                     emit('stats', {'step': micro_step, 'target': target_micro_steps, 'loss': safe_float(als / max(1, accum_count), 10.0), 'tps': safe_float(tt / max(elapsed_total, 1)), 'global_step': gs, 'round': cr, 'time_left': safe_float(max(0, rem_time / 60))})
                 del lo, x, y
             if hb.should_stop() or se.is_set() or accum_count == 0: break
-            torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 1.0); ob.step(); ob.zero_grad(set_to_none=True)
+            _clip_base_grads(model)
+            ob.step(); ob.zero_grad(set_to_none=True)
+            oe.step(); oe.zero_grad(set_to_none=True)
 
         if se.is_set(): emit('log', "Stopped by user. Skipping upload."); return
         if hb.should_stop(): emit('log', f"Stopped mid-training (round {cr} ended or task gone); discarding partial delta, no upload."); return
@@ -2523,6 +2605,27 @@ def _headless_emit(verbose=False):
         elif verbose: log.debug(f"[{ev}] {data}")
     return emit
 
+def _install_stop_signal_handlers(stop_event):
+    """First SIGINT/SIGTERM requests a graceful stop; a second one hard-exits.
+
+    No logging from the handler: logging can block on locks held by the thread
+    the signal interrupted, which is exactly how the old handler ended up
+    ignoring repeated Ctrl-C presses.
+    """
+    seen = []
+    def _on_signal(signum, frame):
+        if seen:
+            try: signal.signal(signum, signal.SIG_DFL)
+            except (ValueError, OSError): pass
+            os._exit(130)
+        seen.append(signum); stop_event.set()
+    for sig_name in ("SIGINT", "SIGTERM"):
+        s = getattr(signal, sig_name, None)
+        if s is not None:
+            try: signal.signal(s, _on_signal)
+            except (ValueError, OSError): pass
+    return _on_signal
+
 def run_headless(args):
     emit = _headless_emit(verbose=args.debug); password = args.password or os.environ.get("CROWDGPT_PASSWORD"); token = args.token or os.environ.get("CROWDGPT_TOKEN")
     if args.anon: auth_token = None
@@ -2552,12 +2655,7 @@ def run_headless(args):
 
     if not args.no_tokenizer: _load_tokenizer_worker()
     stop_event = threading.Event()
-    def _on_signal(signum, frame): stop_event.set()
-    for sig_name in ("SIGINT", "SIGTERM"):
-        s = getattr(signal, sig_name, None)
-        if s is not None:
-            try: signal.signal(s, _on_signal)
-            except (ValueError, OSError): pass
+    _install_stop_signal_handlers(stop_event)
 
     if args.dry_run:
         try: md = fetch_task_metadata(args.server, {"Authorization": f"Bearer {auth_token}"} if auth_token else {}, stop_event, emit)
