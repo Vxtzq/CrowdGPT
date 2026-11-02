@@ -1123,7 +1123,7 @@ class InstallerAPI:
         ).returncode
         if rc != 0:
             self.log("venv failed, falling back to uv...", "warn")
-            self.run(["uv", "venv", "--clear", "--system-site-packages",
+            self.run(["uv", "venv", "--clear", "--seed", "--system-site-packages",
                       "--python", "3.11", str(venv_dir)])
         sub = "Scripts/python.exe" if self.os_name == "Windows" else "bin/python"
         venv_py = venv_dir / sub
@@ -1200,7 +1200,7 @@ class InstallerAPI:
             self.run(["uv", "python", "install", "3.11"])
             venv_dir = self.installed_app_dir / ".venv"
             shutil.rmtree(venv_dir, ignore_errors=True)
-            self.run(["uv", "venv", "--clear", "--system-site-packages",
+            self.run(["uv", "venv", "--clear", "--seed", "--system-site-packages",
                       "--python", "3.11", str(venv_dir)])
             sub = "Scripts/python.exe" if self.os_name == "Windows" else "bin/python"
             self.installed_venv_py = venv_dir / sub
