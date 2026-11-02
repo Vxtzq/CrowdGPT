@@ -139,6 +139,7 @@ def ed25519_verify(public_key, message, signature):
 class AuthRejected(Exception): pass
 class CohortAbort(Exception): pass
 class ArchIncompatible(Exception): pass
+class CoordinatorRejected(Exception): pass
 
 def _parse_version(v):
     try: return tuple(int(x) for x in str(v).strip().split("-")[0].split(".")[:4])
@@ -1014,6 +1015,37 @@ def _detect_optim_capability():
     can_8bit = (native == "adamw8bit")
     return native, True, can_8bit
 
+def _http_detail(response, limit=180):
+    """Return a short, redacted error detail for a coordinator response."""
+    detail = ""
+    try:
+        body = response.json()
+        if isinstance(body, dict):
+            detail = str(body.get("detail") or body.get("message") or body.get("status") or "")
+        else:
+            detail = str(body)
+    except Exception:
+        try: detail = response.text or ""
+        except Exception: detail = ""
+    detail = re.sub(r"[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}", "<id>", detail)
+    detail = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "<ip>", detail)
+    detail = " ".join(detail.split())
+    return detail[:limit]
+
+def _clear_saved_token_if_matches(h):
+    """Delete the saved session only when this request actually used it."""
+    auth = (h or {}).get("Authorization", "")
+    if not auth.startswith("Bearer "): return
+    token = auth[7:].strip()
+    if not token: return
+    try:
+        saved = json.loads(AUTH_TOKEN_FILE.read_text()).get("token")
+    except Exception:
+        return
+    if saved and saved == token:
+        try: AUTH_TOKEN_FILE.unlink(missing_ok=True)
+        except OSError: pass
+
 def _hardware_headers(force_mode=None):
     try: bs = recommend_batch_size(MAX_SEQ_LEN, force_mode=force_mode)
     except Exception: bs = 1
@@ -1055,6 +1087,7 @@ def _hardware_headers(force_mode=None):
         "X-Client-Engram":    "1" if ENGRAM_ACTIVE else "0",
         "X-Client-Device":    DEVICE_ID,
         "X-Client-Compute-Cap": _cc,   # NEW
+        "X-Client-Version":   CLIENT_VERSION,
     }
 
 def _plan_placement(device, backend_name, budget_gb, bs=1, sl=MAX_SEQ_LEN,
@@ -1400,6 +1433,8 @@ class HeartbeatManager:
 
 def wait_for_round(srv, h, se, emit):
     overlay_on = False
+    last_error = None
+    next_error_log = 0.0
     def show_wait():
         nonlocal overlay_on
         if not overlay_on: emit('overlay_show', {'title_key': 'wait_coord', 'subtitle_key': 'wait_coord_sub', 'indeterminate': True}); overlay_on = True
@@ -1410,6 +1445,7 @@ def wait_for_round(srv, h, se, emit):
         try:
             r = requests.get(f"{srv}/fl/round_status", headers=h, timeout=30)
             if r.status_code == 200:
+                last_error = None
                 st = r.json()
                 if st.get("is_aggregating"):
                     emit('status', 'waiting'); show_wait()
@@ -1422,25 +1458,54 @@ def wait_for_round(srv, h, se, emit):
                 for _ in range(30):
                     if se.is_set(): hide(); return None
                     time.sleep(1)
-            else: time.sleep(10)
-        except Exception: time.sleep(10)
+            else:
+                now = time.time()
+                detail = _http_detail(r)
+                key = (r.status_code, detail)
+                if key != last_error or now >= next_error_log:
+                    msg = f"[wait] coordinator status HTTP {r.status_code}"
+                    if detail: msg += f": {detail}"
+                    emit('log', msg + " — retrying in 10s")
+                    next_error_log = now + 30
+                last_error = key
+                time.sleep(10)
+        except Exception as exc:
+            now = time.time()
+            detail = f"{type(exc).__name__}: {exc}"[:180]
+            key = ("exception", detail)
+            if key != last_error or now >= next_error_log:
+                emit('log', f"[wait] coordinator status request failed: {detail} — retrying in 10s")
+                next_error_log = now + 30
+            last_error = key
+            time.sleep(10)
     hide(); return None
 
 def fetch_task_metadata(srv, h, se, emit, hb=None):
+    bad_4xx = 0
     while not se.is_set() and (not hb or not hb.should_stop()):
         try:
             r = requests.get(f"{srv}/fl/task?format=bf16&skip_weights=true", headers={**(h or {}), **_hardware_headers()}, timeout=30)
-            if r.status_code in (401, 403):
-                emit('log', f"⚠️ auth rejected ({r.status_code}) — clearing session")
-                try: AUTH_TOKEN_FILE.unlink(missing_ok=True)
-                except Exception: pass
-                emit('login_error', {'code': 'session_expired'}); raise AuthRejected(f"auth rejected: HTTP {r.status_code}")
+            if r.status_code == 401:
+                emit('log', "⚠️ auth rejected (401) — clearing the saved session")
+                _clear_saved_token_if_matches(h)
+                emit('login_error', {'code': 'session_expired'}); raise AuthRejected("auth rejected: HTTP 401")
+            if r.status_code == 403:
+                detail = _http_detail(r)
+                emit('log', f"⛔ coordinator rejected the task request (403): {detail or 'forbidden'}")
+                emit('login_error', {'code': 'forbidden'})
+                raise CoordinatorRejected(f"coordinator rejected: HTTP 403{' — ' + detail if detail else ''}")
+            if r.status_code == 426:
+                detail = _http_detail(r)
+                emit('log', f"⬆️ update required by the coordinator: {detail or 'install a newer client'}")
+                raise CoordinatorRejected(f"update required: HTTP 426{' — ' + detail if detail else ''}")
             if r.headers.get("X-Status") == "wait":
                 pool_fill = r.headers.get("X-Pool-Fill"); pool_size_hdr = r.headers.get("X-Pool-Size")
                 if pool_fill:
                     msg = f"⏳ Pool matchmaking {pool_fill}"
                     if pool_size_hdr: msg += f"/{pool_size_hdr}"
                     emit('log', msg + " (waiting for peers)")
+                else:
+                    emit('log', f"⏳ {_http_detail(r) or 'waiting for available work'}")
                 try: r.close()
                 except Exception: pass
                 for _ in range(10):
@@ -1448,6 +1513,7 @@ def fetch_task_metadata(srv, h, se, emit, hb=None):
                     time.sleep(1)
                 continue
             if r.status_code == 200:
+                bad_4xx = 0
                 ct = (r.headers.get("content-type") or "").lower()
                 if "json" in ct:
                     md = r.json()
@@ -1465,9 +1531,21 @@ def fetch_task_metadata(srv, h, se, emit, hb=None):
                     ml = struct.unpack('<I', raw[:4])[0]
                     if len(raw) >= 4 + ml: return json.loads(raw[4:4 + ml].decode())
                 raise RuntimeError("Invalid task metadata response")
-            if r.status_code in (503, 504): time.sleep(10); continue
-            time.sleep(5)
-        except AuthRejected: raise
+            if r.status_code in (429, 503, 504):
+                detail = _http_detail(r)
+                emit('log', f"[wait] /fl/task HTTP {r.status_code}{': ' + detail if detail else ''} — retrying in 10s")
+                time.sleep(10); continue
+            if 400 <= r.status_code < 500:
+                bad_4xx += 1
+                detail = _http_detail(r)
+                emit('log', f"[wait] /fl/task HTTP {r.status_code}{': ' + detail if detail else ''} (attempt {bad_4xx}/3)")
+                if bad_4xx >= 3:
+                    return None
+                time.sleep(5); continue
+            detail = _http_detail(r)
+            emit('log', f"[wait] /fl/task HTTP {r.status_code}{': ' + detail if detail else ''} — retrying in 10s")
+            time.sleep(10)
+        except (AuthRejected, CoordinatorRejected): raise
         except Exception as e:
             if se.is_set() or (hb and hb.should_stop()): return None
             emit('log', f"Task metadata fetch failed: {e}"); time.sleep(10)
@@ -1542,15 +1620,24 @@ def fetch_task(srv, h, prec, se, emit, hb=None):
             emit('overlay_show', {'title_key': 'dl_weights', 'indeterminate': False})
             req_headers = {**(h or {}), **_hardware_headers()}
             r = requests.get(f"{srv}/fl/task?format={prec}", headers=req_headers, timeout=(15, 3600), stream=True)
-            if r.status_code in (401, 403):
+            if r.status_code == 401:
                 r.close()
-                emit('log', f"⚠️ auth rejected ({r.status_code}) — clearing session")
-                try: AUTH_TOKEN_FILE.unlink(missing_ok=True)
-                except Exception: pass
+                emit('log', "⚠️ auth rejected (401) — clearing the saved session")
+                _clear_saved_token_if_matches(h)
                 emit('login_error', {'code': 'session_expired'})
-                raise AuthRejected(f"auth rejected: HTTP {r.status_code}")
+                raise AuthRejected("auth rejected: HTTP 401")
+            if r.status_code == 403:
+                detail = _http_detail(r); r.close(); emit('overlay_hide', {})
+                emit('log', f"⛔ coordinator rejected the task request (403): {detail or 'forbidden'}")
+                emit('login_error', {'code': 'forbidden'})
+                raise CoordinatorRejected("coordinator rejected task request: HTTP 403")
+            if r.status_code == 426:
+                detail = _http_detail(r); r.close(); emit('overlay_hide', {})
+                emit('log', f"⬆️ update required by the coordinator: {detail or 'update the client'}")
+                raise CoordinatorRejected("coordinator requires a newer client")
             if r.status_code != 200:
-                r.close(); emit('overlay_hide', {}); emit('log', f"/fl/task HTTP {r.status_code}")
+                detail = _http_detail(r); r.close(); emit('overlay_hide', {})
+                emit('log', f"[wait] /fl/task HTTP {r.status_code}" + (f": {detail}" if detail else "") + " — retrying in 10s")
                 time.sleep(10); continue
             if r.headers.get("X-Status") == "wait":
                 pool_fill = r.headers.get("X-Pool-Fill")
@@ -2179,14 +2266,21 @@ def run_single_round_wrapper(srv, at, se, emit):
         r = None
         try:
             if delta_size <= MAX_DIRECT_UPLOAD_BYTES:
-                try:
-                    with open(delta_path, 'rb') as f: body = f.read()
-                    r = requests.post(f"{srv}/fl/submit", headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **h}, data=body, timeout=600); body = None
-                    if r.status_code == 413: r = chunked_submit_delta(srv, h, delta_path, meta, emit, se)
-                except Exception as e:
-                    body = None
-                    if delta_size > 8 * 1024 * 1024: r = chunked_submit_delta(srv, h, delta_path, meta, emit, se)
-                    else: raise
+                r = None
+                for attempt in range(3):
+                    try:
+                        with open(delta_path, 'rb') as f: body = f.read()
+                        r = requests.post(f"{srv}/fl/submit", headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **h}, data=body, timeout=600); body = None
+                        if r.status_code in (413, 429, 500, 502, 503, 504):
+                            r = chunked_submit_delta(srv, h, delta_path, meta, emit, se)
+                        break
+                    except Exception as e:
+                        body = None
+                        if attempt == 2:
+                            emit('log', f"Direct submit failed: {e}; trying chunked upload")
+                            r = chunked_submit_delta(srv, h, delta_path, meta, emit, se)
+                        else:
+                            time.sleep(2 ** attempt)
             else: r = chunked_submit_delta(srv, h, delta_path, meta, emit, se)
             if r is not None and r.status_code == 200:
                 try: j = r.json()
@@ -2530,12 +2624,21 @@ def run_headless(args):
     elif args.user and password:
         auth_token, err = do_login(args.server, args.user, password)
         if not auth_token: log.error(f"[auth] login failed: {err}"); return 2
+    elif args.user:
+        log.error("[auth] --user requires --password or CROWDGPT_PASSWORD.")
+        return 2
     else:
         auth_token = None
         try:
-            if AUTH_TOKEN_FILE.exists(): auth_token = json.loads(AUTH_TOKEN_FILE.read_text()).get("token")
+            if AUTH_TOKEN_FILE.exists():
+                saved = json.loads(AUTH_TOKEN_FILE.read_text())
+                saved_server = (saved.get("server") or "").rstrip("/")
+                if saved_server and saved_server == args.server.rstrip("/"):
+                    auth_token = saved.get("token")
         except Exception: pass
-        if not auth_token: return 2
+        if not auth_token:
+            log.error("[auth] no saved session for this server; run --register or pass --user/--password.")
+            return 2
 
     selected = args.backend if args.backend and args.backend != "auto" else None
     if selected is None:
@@ -2562,6 +2665,7 @@ def run_headless(args):
     if args.dry_run:
         try: md = fetch_task_metadata(args.server, {"Authorization": f"Bearer {auth_token}"} if auth_token else {}, stop_event, emit)
         except AuthRejected: return 2
+        except CoordinatorRejected: return 7
         if md is None: return 5
         return 0
 
@@ -2571,6 +2675,7 @@ def run_headless(args):
         log.info(f"Round {round_count}" + (f"/{max_rounds}" if max_rounds else ""))
         try: run_single_round_wrapper(args.server, auth_token, stop_event, emit)
         except AuthRejected: return 2
+        except CoordinatorRejected: return 7
         except ArchIncompatible: return 6
         except KeyboardInterrupt: stop_event.set(); break
         except Exception as e:
