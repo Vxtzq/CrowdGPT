@@ -104,6 +104,22 @@ crowdgpt --headless --rounds 5           # stop after 5 rounds
 | `CROWDGPT_VRAM_GB` | Same as `--vram-gb` |
 | `CROWDGPT_ENGRAM=0` | Don't train the engram table (same as `--no-engram`) |
 
+The headless client opens a full-screen terminal dashboard on a TTY. It shows the same
+training metrics as the desktop app: round, step progress, loss graph, tokens/sec, ETA,
+download/upload state, recent model predictions, and an activity log. Use `--no-tui`
+for plain log lines, or `--tui` to force the dashboard.
+
+While the dashboard is running:
+
+- `s` stops training at the next safe step; press `s` again to start a new round.
+- `q` or `Ctrl+C` quits.
+- The layout reflows when the terminal is resized. `s` and `q` are ordinary characters,
+  so they do not conflict with `tmux`/`screen` prefix bindings.
+- The dashboard needs a normal UTF-8 terminal. It falls back to plain logs on
+  `TERM=dumb`/`unknown` and on legacy Windows consoles without VT support; use
+  `--tui` to override the auto-fallback. Modern Windows Terminal is the
+  recommended Windows host.
+
 ### Updates
 
 The client checks for updates on start and between rounds. An update is only installed if its manifest is signed with the maintainer's key, so a compromised repository or account can't push code to clients. `--no-update` skips the check. Details in [SECURITY.md](./SECURITY.md).
