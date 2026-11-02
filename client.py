@@ -2287,7 +2287,7 @@ def run_single_round_wrapper(srv, at, se, emit):
                 except Exception: j = {}
                 if j.get("duplicate"): emit("log", f"⏭️ Not counted by server ({j.get('reason','duplicate')})")
                 else: emit("log", "✅ Submitted successfully!")
-            elif r is not None: emit("log", f"Submit failed: {r.text[:200]}")
+            elif r is not None: emit("log", f"❌ Round lost — submit failed (HTTP {r.status_code}): {_http_detail(r)}")
         except Exception as e: emit("log", f"Upload failed: {e}")
         finally:
             emit('overlay_hide', {})
