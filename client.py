@@ -50,6 +50,17 @@ import re, sys, io, json, time, struct, math, gc, threading, queue, base64, logg
 from pathlib import Path
 
 try:
+    import termios, tty, select
+    _POSIX_KEYS = True
+except Exception:
+    termios = tty = select = None
+    _POSIX_KEYS = False
+try:
+    import msvcrt
+except Exception:
+    msvcrt = None
+
+try:
     import webview
     _WEBVIEW_OK = True
     _WEBVIEW_ERR = None
@@ -68,6 +79,22 @@ import http.client
 from requests.exceptions import ChunkedEncodingError
 import gzip
 
+try:
+    from rich.console import Console, Group
+    from rich.layout import Layout
+    from rich.live import Live
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+    from rich import box as rich_box
+    _RICH_OK = True
+except Exception:
+    # Rich is optional; the client still runs with plain line logs.
+    Console = Group = Layout = Live = Panel = Table = Text = None
+    rich_box = None
+    _RICH_OK = False
+
+from collections import deque
 if _WEBVIEW_OK:
     logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -2481,6 +2508,562 @@ def _start_icon_kwargs():
         except Exception: path = _embedded_png(256) or path
     return {"icon": path}
 
+_TUI_STATUS = {
+    "idle": ("Idle", "dim"),
+    "waiting": ("Waiting for coordinator", "yellow"),
+    "downloading": ("Downloading weights", "cyan"),
+    "preparing": ("Preparing model", "cyan"),
+    "calibrating": ("Calibrating", "magenta"),
+    "training": ("Training", "bold green"),
+    "uploading": ("Uploading delta", "blue"),
+    "paused": ("Paused — press s to start", "bold yellow"),
+    "stopped": ("Stopped", "red"),
+    "error": ("Error", "bold red"),
+}
+_TUI_OVERLAY = {
+    "wait_coord": "Waiting for coordinator",
+    "dl_weights": "Downloading weights",
+    "uploading": "Uploading delta",
+}
+
+def _num_or_none(value):
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (TypeError, ValueError):
+        return None
+
+def _fmt_int(value):
+    return f"{int(value):,}" if value else "0"
+
+def _fmt_eta(minutes):
+    value = _num_or_none(minutes)
+    if value is None or value < 0:
+        return "—"
+    total = int(round(value * 60))
+    hours, rem = divmod(total, 3600)
+    mins, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {mins:02d}m"
+    if mins:
+        return f"{mins}m {secs:02d}s"
+    return f"{secs}s"
+
+def _bar_text(percent, width):
+    pct = max(0.0, min(100.0, float(percent or 0.0)))
+    usable = max(8, width)
+    filled = int(round(usable * pct / 100.0))
+    bar = Text()
+    bar.append("█" * filled, style="green")
+    bar.append("░" * (usable - filled), style="grey37")
+    return bar
+
+def _area_chart(values, width, rows=6):
+    """A compact filled loss chart that uses vertical terminal space."""
+    if not values:
+        return [Text("—", style="dim")]
+    points = list(values)[-max(8, width):]
+    low, high = min(points), max(points)
+    span = (high - low) or 1.0
+    flat = high == low
+    blocks = " ▁▂▃▄▅▆▇█"
+    chart = []
+    for row in range(rows - 1, -1, -1):
+        line = Text()
+        for value in points:
+            level = rows * 4 if flat else int(round((value - low) / span * rows * 8))
+            cell = max(0, min(8, level - row * 8))
+            line.append(blocks[cell], style="green" if cell else "grey19")
+        chart.append(line)
+    return chart
+
+class _DashboardLogHandler(logging.Handler):
+    def __init__(self, dashboard):
+        super().__init__()
+        self.dashboard = dashboard
+
+    def emit(self, record):
+        try:
+            self.dashboard.add_log(record.getMessage(), record.levelname)
+        except Exception:
+            pass  # a display failure must never break training
+
+class HeadlessRunControl:
+    """Coordinates the TUI keys with the headless training loop."""
+
+    def __init__(self, dashboard=None):
+        self.dashboard = dashboard
+        self.quit_event = threading.Event()
+        self.pause_event = threading.Event()
+        self.halt_event = threading.Event()
+
+    def request_quit(self, announce=True):
+        if self.quit_event.is_set():
+            return
+        self.quit_event.set()
+        self.halt_event.set()
+        if announce:  # never log from a signal handler; logging can deadlock
+            log.info("Stopping at the next safe step…")
+
+    def toggle(self):
+        if self.quit_event.is_set():
+            return
+        if self.pause_event.is_set():
+            self.pause_event.clear()
+            self.halt_event.clear()
+            if self.dashboard:
+                self.dashboard.set_paused(False)
+            log.info("Training started.")
+        else:
+            self.pause_event.set()
+            self.halt_event.set()
+            if self.dashboard:
+                self.dashboard.set_paused(True)
+            log.info("Training stopped at the next safe step. Press s to start again.")
+
+    def wait_while_paused(self):
+        while not self.quit_event.is_set() and self.pause_event.is_set():
+            self.quit_event.wait(0.2)
+
+class TerminalDashboard:
+    """Full-screen terminal view over the same events as the GUI."""
+
+    def __init__(self, console=None, refresh_per_second=8):
+        if not _RICH_OK:
+            raise RuntimeError("rich is not installed")
+        self.console = console or Console()
+        self.refresh_per_second = refresh_per_second
+        self._live = None
+        self._lock = threading.RLock()
+        self._key_thread = None
+        self._key_stop = threading.Event()
+        self._on_toggle = None
+        self._on_quit = None
+        self.paused = False
+        self._logs = deque(maxlen=300)
+        self._losses = deque(maxlen=240)
+        self._previews = []
+        self._preview_step = 0
+        self.username = "anonymous"
+        self.server = DEFAULT_SERVER
+        self.backend = "auto"
+        self.device = ""
+        self.status = "idle"
+        self.round = 0
+        self.step = 0
+        self.target = 0
+        self.loss = None
+        self.best_loss = None
+        self.tps = None
+        self.time_left = None
+        self.started_at = None
+        self.overlay_title = ""
+        self.overlay_done = 0
+        self.overlay_total = 0
+        self.overlay_indeterminate = False
+
+    def update_context(self, **values):
+        with self._lock:
+            for key, value in values.items():
+                if hasattr(self, key) and value is not None:
+                    setattr(self, key, value)
+
+    def set_paused(self, paused):
+        with self._lock:
+            self.paused = bool(paused)
+
+    def add_log(self, message, level="INFO"):
+        with self._lock:
+            self._logs.append((time.time(), str(level).upper(), str(message)))
+
+    def handle_event(self, event, data):
+        payload = data if isinstance(data, dict) else {}
+        with self._lock:
+            if event == "log":
+                self._logs.append((time.time(), "INFO", str(data)))
+            elif event == "status":
+                self.status = str(data).lower()
+            elif event in ("stats", "cal_stats"):
+                step = _num_or_none(payload.get("step"))
+                target = _num_or_none(payload.get("target", payload.get("total")))
+                loss = _num_or_none(payload.get("loss"))
+                tps = _num_or_none(payload.get("tps"))
+                time_left = _num_or_none(payload.get("time_left"))
+                round_no = _num_or_none(payload.get("round"))
+                if step is not None:
+                    self.step = int(step)
+                if target is not None:
+                    self.target = int(target)
+                if loss is not None and loss > 0:
+                    self.loss = loss
+                    self._losses.append(loss)
+                    if self.best_loss is None or loss < self.best_loss:
+                        self.best_loss = loss
+                if tps is not None:
+                    self.tps = tps
+                if time_left is not None:
+                    self.time_left = time_left
+                if round_no is not None:
+                    self.round = int(round_no)
+            elif event == "model_preview":
+                cards = payload.get("cards") or []
+                self._previews = [dict(card) for card in cards if isinstance(card, dict)][:8]
+                step = _num_or_none(payload.get("step"))
+                if step is not None:
+                    self._preview_step = int(step)
+            elif event == "overlay_show":
+                self.overlay_title = str(payload.get("title_key") or "")
+                self.overlay_indeterminate = bool(payload.get("indeterminate"))
+                self.overlay_done = 0
+                self.overlay_total = 0
+            elif event == "overlay_progress":
+                self.overlay_done = _num_or_none(payload.get("done")) or 0
+                self.overlay_total = _num_or_none(payload.get("total")) or 0
+            elif event == "overlay_hide":
+                self.overlay_title = ""
+                self.overlay_done = 0
+                self.overlay_total = 0
+            elif event == "meta":
+                self.backend = str(payload.get("backend") or self.backend)
+            elif event == "login_success":
+                self.username = str(payload.get("username") or self.username)
+            elif event == "login_error":
+                self.status = "error"
+                self._logs.append((time.time(), "ERROR", f"Authentication failed: {payload.get('code', 'unknown')}"))
+            elif event == "started":
+                self.started_at = time.time()
+            elif event == "stopped":
+                self.status = "stopped"
+            elif event == "backends":
+                self.backend = str(payload.get("current") or self.backend)
+
+    def emit(self, event, data):
+        self.handle_event(event, data)
+
+    def snapshot(self):
+        with self._lock:
+            return {
+                "username": self.username,
+                "server": self.server,
+                "backend": self.backend,
+                "status": self.status,
+                "paused": self.paused,
+                "round": self.round,
+                "step": self.step,
+                "target": self.target,
+                "loss": self.loss,
+                "best_loss": self.best_loss,
+                "tps": self.tps,
+                "time_left": self.time_left,
+                "losses": list(self._losses),
+                "previews": list(self._previews),
+                "logs": list(self._logs),
+                "overlay_title": self.overlay_title,
+                "overlay_done": self.overlay_done,
+                "overlay_total": self.overlay_total,
+            }
+
+    def _header_panel(self, snap, width):
+        status_key = "paused" if snap["paused"] else snap["status"]
+        status_text, status_style = _TUI_STATUS.get(status_key, (status_key.title(), "white"))
+        if snap["overlay_title"] and not snap["paused"]:
+            overlay = _TUI_OVERLAY.get(snap["overlay_title"], snap["overlay_title"])
+            if snap["overlay_total"] > 0:
+                overlay += f" {100.0 * snap['overlay_done'] / snap['overlay_total']:.0f}%"
+            status_text = overlay
+        title = Text()
+        title.append("CrowdGPT", style="bold cyan")
+        title.append("  terminal trainer", style="dim")
+        title.append(f"   {snap['username']}", style="bold")
+        if width >= 100:
+            title.append(f" · {snap['server']}", style="dim")
+        if snap["backend"]:
+            title.append(f" · {snap['backend']}", style="dim")
+        row = Table.grid(expand=True)
+        row.add_column(ratio=1)
+        row.add_column(justify="right")
+        row.add_row(title, Text(f"● {status_text}", style=status_style))
+        return Panel(row, box=rich_box.ROUNDED, border_style="cyan", padding=(0, 1))
+
+    def _training_panel(self, snap, width):
+        target = snap["target"]
+        step = snap["step"]
+        pct = (100.0 * step / target) if target > 0 else 0.0
+        step_line = Text()
+        step_line.append("Step ", style="dim")
+        step_line.append(_fmt_int(step), style="bold")
+        step_line.append(f" / {_fmt_int(target)}", style="dim")
+        step_line.append(f"   {pct:5.1f}%", style="bold green")
+        if snap["round"]:
+            step_line.append(f"   round {snap['round']}", style="dim")
+        bar = _bar_text(pct, max(12, width - 8))
+        metrics = Text()
+        metrics.append("loss ", style="dim")
+        metrics.append(f"{snap['loss']:.4f}" if snap["loss"] is not None else "—", style="bold yellow")
+        if snap["best_loss"] is not None:
+            metrics.append("   best ", style="dim")
+            metrics.append(f"{snap['best_loss']:.4f}", style="yellow")
+        metrics.append("   tps ", style="dim")
+        metrics.append(f"{snap['tps']:.0f}" if snap["tps"] is not None else "—", style="cyan")
+        metrics.append("   eta ", style="dim")
+        metrics.append(_fmt_eta(snap["time_left"]), style="cyan")
+        if target <= 0 and not snap["losses"]:
+            body = Group(Text("Waiting for a training assignment…", style="dim italic"), bar)
+        else:
+            body = Group(step_line, bar, metrics)
+        return Panel(body, title="Training", box=rich_box.ROUNDED, border_style="green", padding=(0, 1))
+
+    def _graph_panel(self, snap, width, rows=6):
+        losses = snap["losses"]
+        if losses:
+            chart = _area_chart(losses, max(16, width - 4), rows=rows)
+            axis = Text()
+            axis.append(f"min {min(losses):.4f}", style="dim")
+            axis.append(f"   max {max(losses):.4f}", style="dim")
+            axis.append(f"   latest {losses[-1]:.4f}", style="bold yellow")
+            body = Group(*chart, axis)
+        else:
+            body = Text("Waiting for the first loss value…", style="dim italic")
+        point_label = "point" if len(losses) == 1 else "points"
+        return Panel(body, title=f"Loss history · {len(losses)} {point_label}", box=rich_box.ROUNDED, border_style="yellow", padding=(0, 1))
+
+    @staticmethod
+    def _clip(text, limit, *, tail=False):
+        text = " ".join(str(text).split())
+        if limit <= 0:
+            return ""
+        if len(text) <= limit:
+            return text
+        if tail and limit > 1:
+            return "…" + text[-(limit - 1):]
+        return text[: max(0, limit - 1)] + "…"
+
+    def _predictions_panel(self, snap, wide, width):
+        content_width = max(20, width - 4)
+        context_limit = max(10, content_width - 31)
+        lines = []
+        limit = 8 if wide else 2
+        for card in snap["previews"][:limit]:
+            context = self._clip(card.get("context", ""), context_limit, tail=True)
+            prediction = self._clip(card.get("pred", ""), 10)
+            target = self._clip(card.get("target", ""), 10)
+            match = bool(card.get("match"))
+            prob = _num_or_none(card.get("prob"))
+            line = Text(no_wrap=True, overflow="ellipsis")
+            line.append("✓ " if match else "✗ ", style="bold green" if match else "bold red")
+            line.append(context, style="white")
+            line.append(" → ", style="dim")
+            line.append(prediction, style="bold cyan" if match else "bold red")
+            if not match:
+                line.append(" ≠ ", style="dim")
+                line.append(target, style="yellow")
+            if prob is not None:
+                line.append(f" {prob * 100:.1f}%", style="cyan")
+            lines.append(line)
+        if not lines:
+            lines = [Text("Waiting for the first model prediction…", style="dim italic")]
+        title = "Model predictions"
+        if snap["previews"]:
+            title += f" · step {_fmt_int(self._preview_step)}"
+        return Panel(Group(*lines), title=title, box=rich_box.ROUNDED, border_style="magenta", padding=(0, 1))
+
+    def _activity_panel(self, snap, wide, width):
+        logs = snap["logs"]
+        limit = 10 if wide else 2
+        message_limit = max(12, width - 12)
+        lines = []
+        for timestamp, level, message in logs[-limit:]:
+            line = Text(no_wrap=True, overflow="ellipsis")
+            line.append(datetime.datetime.fromtimestamp(timestamp).strftime("%H:%M:%S "), style="dim")
+            style = "red" if level in ("ERROR", "CRITICAL") else "yellow" if level == "WARNING" else "white"
+            line.append(self._clip(message, message_limit, tail=True), style=style)
+            lines.append(line)
+        if not lines:
+            lines = [Text("No activity yet.", style="dim italic")]
+        return Panel(Group(*lines), title="Activity", box=rich_box.ROUNDED, border_style="blue", padding=(0, 1))
+
+    def render(self):
+        if not _RICH_OK:
+            return Text("rich is not installed", style="red")
+        try:
+            snap = self.snapshot()
+            width = self.console.width or 100
+            height = self.console.height or 24
+            wide = width >= 100 and height >= 28
+            column_width = max(20, int(width * 0.5)) if wide else width
+            panel_width = column_width - 4
+            header = self._header_panel(snap, width)
+            training = self._training_panel(snap, panel_width)
+            graph_rows = (10 if height >= 36 else 8) if wide else 3
+            graph = self._graph_panel(snap, panel_width, rows=graph_rows)
+            predictions = self._predictions_panel(snap, wide, column_width)
+            activity = self._activity_panel(snap, wide, column_width)
+            idle = snap["status"] in ("idle", "stopped", "error")
+            action = "start" if snap["paused"] or idle else "stop"
+            footer = Text(f"[s] {action} training   [q] quit   ·   Ctrl+C quit   ·   --no-tui for plain logs", style="dim")
+
+            layout = Layout()
+            layout.split_column(
+                Layout(header, name="header", size=3),
+                Layout(name="body"),
+                Layout(footer, name="footer", size=1),
+            )
+            if wide:
+                layout["body"].split_row(
+                    Layout(name="left", ratio=1),
+                    Layout(name="right", ratio=1),
+                )
+                layout["left"].split_column(
+                    Layout(training, name="training", ratio=1),
+                    Layout(graph, name="graph", ratio=2),
+                )
+                layout["right"].split_column(
+                    Layout(predictions, name="predictions", ratio=1),
+                    Layout(activity, name="activity", ratio=1),
+                )
+            else:
+                layout["body"].split_column(
+                    Layout(training, name="training", ratio=3),
+                    Layout(graph, name="graph", ratio=2),
+                    Layout(predictions, name="predictions", ratio=3),
+                    Layout(activity, name="activity", ratio=2),
+                )
+            return layout
+        except Exception as exc:
+            return Panel(Text(f"Dashboard render error: {exc}", style="red"), title="CrowdGPT")
+
+    def bind_controls(self, on_toggle, on_quit):
+        """Read single keys from the terminal without blocking Rich's refresh."""
+        self._on_toggle = on_toggle
+        self._on_quit = on_quit
+        try:
+            if not sys.stdin or not sys.stdin.isatty():
+                return False
+        except Exception:
+            return False
+        if self._key_thread is not None and self._key_thread.is_alive():
+            return True
+        self._key_stop.clear()
+        self._key_thread = threading.Thread(target=self._key_loop, name="crowdgpt-tui-keys", daemon=True)
+        self._key_thread.start()
+        return True
+
+    def unbind_controls(self):
+        self._key_stop.set()
+        thread, self._key_thread = self._key_thread, None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=0.5)
+
+    def _handle_key(self, key):
+        key = (key or "").lower()
+        if key in ("s", " "):
+            if self._on_toggle:
+                self._on_toggle()
+        elif key in ("q", "\x03"):
+            self._key_stop.set()
+            if self._on_quit:
+                self._on_quit()
+
+    def _key_loop(self):
+        try:
+            if msvcrt is not None:
+                self._key_loop_windows()
+            elif _POSIX_KEYS:
+                self._key_loop_posix()
+            else:
+                self.add_log("Keyboard controls are not supported on this platform.", "WARNING")
+        except Exception as exc:
+            self.add_log(f"Keyboard controls unavailable: {exc}", "WARNING")
+
+    def _key_loop_windows(self):
+        while not self._key_stop.is_set():
+            if msvcrt.kbhit():
+                self._handle_key(msvcrt.getwch())
+            else:
+                time.sleep(0.05)
+
+    def _key_loop_posix(self):
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            while not self._key_stop.is_set():
+                ready, _, _ = select.select([fd], [], [], 0.1)
+                if not ready:
+                    continue
+                data = os.read(fd, 1)
+                if not data:
+                    break
+                self._handle_key(data.decode("utf-8", "ignore"))
+        finally:
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            except Exception:
+                pass  # terminal may already be closed during shutdown
+
+    def start(self):
+        if self._live is not None:
+            return
+        self._live = Live(
+            get_renderable=self.render,
+            console=self.console,
+            refresh_per_second=self.refresh_per_second,
+            screen=True,
+            transient=False,
+        )
+        try:
+            self._live.start(refresh=True)
+        except Exception:
+            try:
+                self._live.stop()  # restore the alternate screen if start failed midway
+            except Exception:
+                pass
+            self._live = None
+            raise
+
+    def stop(self):
+        self.unbind_controls()
+        live, self._live = self._live, None
+        if live is not None:
+            try:
+                live.stop()
+            except Exception:
+                pass  # terminal may already be torn down or redirected
+        with self._lock:
+            losses = list(self._losses)
+            step, target, loss = self.step, self.target, self.loss
+            round_no = self.round
+        if step or target or losses:
+            summary = Text()
+            summary.append(f"Round {round_no} · ", style="dim")
+            summary.append(f"{_fmt_int(step)} / {_fmt_int(target)} steps", style="bold")
+            if loss is not None:
+                summary.append(f" · last loss {loss:.4f}", style="yellow")
+            self.console.print(Panel(summary, title="CrowdGPT session summary", box=rich_box.ROUNDED, border_style="cyan"))
+
+def _tui_enabled(args):
+    if getattr(args, "no_tui", False):
+        return False
+    if not _RICH_OK:
+        return False
+    if getattr(args, "tui", False):
+        return True
+    if getattr(args, "debug", False):
+        return False
+    if os.environ.get("TERM", "").lower() in ("dumb", "unknown"):
+        return False
+    try:
+        return bool(sys.stdout.isatty())
+    except Exception:
+        return False
+
+_HEADLESS_EXIT_MESSAGES = {
+    2: "Authentication failed or no saved session. Pass --user/--password or sign in with the desktop app.",
+    3: "Backend setup failed.",
+    5: "Could not fetch task metadata from the coordinator.",
+    6: "The coordinator rejected this client's architecture.",
+}
+
 def parse_args():
     p = argparse.ArgumentParser(prog="client.py", description="CrowdGPT client. Runs GUI by default; use --headless for SSH/servers.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--headless", action="store_true", help="no window; train in the terminal")
@@ -2497,6 +3080,8 @@ def parse_args():
     p.add_argument("--no-engram", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--debug", action="store_true")
+    p.add_argument("--tui", action="store_true", help="force the full-screen terminal dashboard in headless mode")
+    p.add_argument("--no-tui", action="store_true", help="use plain log lines instead of the dashboard")
     p.add_argument("--version", action="version", version=f"crowdgpt-client {CLIENT_VERSION}")
     return p.parse_args()
 
@@ -2524,7 +3109,50 @@ def _headless_emit(verbose=False):
     return emit
 
 def run_headless(args):
-    emit = _headless_emit(verbose=args.debug); password = args.password or os.environ.get("CROWDGPT_PASSWORD"); token = args.token or os.environ.get("CROWDGPT_TOKEN")
+    dashboard = None
+    if _tui_enabled(args):
+        try:
+            username = args.user
+            if not username and AUTH_TOKEN_FILE.exists():
+                try:
+                    username = json.loads(AUTH_TOKEN_FILE.read_text()).get("username")
+                except Exception:
+                    username = None  # corrupt token file; normal auth handling will decide
+            dashboard = TerminalDashboard()
+            if getattr(getattr(dashboard, "console", None), "legacy_windows", False) and not getattr(args, "tui", False):
+                log.warning("Legacy Windows console detected; using plain logs. Use Windows Terminal or enable VT processing for the dashboard.")
+                dashboard = None
+            if dashboard is not None:
+                dashboard.update_context(username=username or "saved session", server=args.server)
+                dashboard.start()
+        except Exception as exc:
+            log.warning(f"Terminal dashboard unavailable ({exc}); using plain logs.")
+            dashboard = None
+    if dashboard is None:
+        return _run_headless(args, _headless_emit(verbose=args.debug))
+
+    root = logging.getLogger()
+    old_handlers = root.handlers[:]
+    old_level = root.level
+    root.handlers = [_DashboardLogHandler(dashboard)]
+    root.setLevel(logging.DEBUG if args.debug else logging.INFO)
+    control = HeadlessRunControl(dashboard)
+    rc = 1
+    try:
+        if not dashboard.bind_controls(control.toggle, control.request_quit):
+            log.info("Keyboard controls unavailable; use Ctrl+C to quit.")
+        rc = _run_headless(args, dashboard.emit, dashboard, control)
+        return rc
+    finally:
+        root.handlers = old_handlers
+        root.setLevel(old_level)
+        dashboard.stop()
+        if rc:
+            log.error(_HEADLESS_EXIT_MESSAGES.get(rc, f"Headless run failed (exit {rc})."))
+
+def _run_headless(args, emit, dashboard=None, control=None):
+    control = control or HeadlessRunControl(dashboard)
+    password = args.password or os.environ.get("CROWDGPT_PASSWORD"); token = args.token or os.environ.get("CROWDGPT_TOKEN")
     if args.anon: auth_token = None
     elif token: auth_token = token
     elif args.user and password:
@@ -2535,7 +3163,9 @@ def run_headless(args):
         try:
             if AUTH_TOKEN_FILE.exists(): auth_token = json.loads(AUTH_TOKEN_FILE.read_text()).get("token")
         except Exception: pass
-        if not auth_token: return 2
+        if not auth_token:
+            log.error("[auth] no saved session; pass --user/--password or sign in with the desktop app")
+            return 2
 
     selected = args.backend if args.backend and args.backend != "auto" else None
     if selected is None:
@@ -2549,10 +3179,11 @@ def run_headless(args):
 
     try: _do_backend_setup(selected, args.vram_gb, emit)
     except Exception: return 3
+    if dashboard: dashboard.update_context(backend=selected)
 
     if not args.no_tokenizer: _load_tokenizer_worker()
-    stop_event = threading.Event()
-    def _on_signal(signum, frame): stop_event.set()
+    stop_event = control.halt_event
+    def _on_signal(signum, frame): control.request_quit(announce=False)
     for sig_name in ("SIGINT", "SIGTERM"):
         s = getattr(signal, sig_name, None)
         if s is not None:
@@ -2566,20 +3197,37 @@ def run_headless(args):
         return 0
 
     max_rounds = args.rounds if args.rounds and args.rounds > 0 else 0; round_count = 0
-    while not stop_event.is_set():
+    while not control.quit_event.is_set():
+        if control.pause_event.is_set():
+            control.wait_while_paused()
+            if control.quit_event.is_set(): break
+            continue
         round_count += 1; apply_vram_override(args.vram_gb)
         log.info(f"Round {round_count}" + (f"/{max_rounds}" if max_rounds else ""))
         try: run_single_round_wrapper(args.server, auth_token, stop_event, emit)
         except AuthRejected: return 2
         except ArchIncompatible: return 6
-        except KeyboardInterrupt: stop_event.set(); break
+        except KeyboardInterrupt:
+            if control.quit_event.is_set():
+                break
+            if control.pause_event.is_set():
+                control.wait_while_paused()
+                if control.quit_event.is_set():
+                    break
+                continue
+            control.request_quit()
+            break
         except Exception as e:
             import traceback; log.error(f"Round failed: {e}"); log.error(traceback.format_exc()[-2000:])
 
-        if stop_event.is_set(): break
+        if control.quit_event.is_set(): break
+        if control.pause_event.is_set():
+            control.wait_while_paused()
+            if control.quit_event.is_set(): break
+            continue
         if max_rounds and round_count >= max_rounds: break
         if not args.no_update: _check_updates_between_rounds(emit)
-        if stop_event.is_set(): break
+        if control.quit_event.is_set(): break
         stop_event.wait(timeout=10.0)
     return 0
 
