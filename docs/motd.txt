@@ -1,4 +1,4 @@
-CrowdGPT v2.9 changelog:
-- Fixed icon pixelation
-- Removed redundant downloads
+CrowdGPT v3.0 changelog:
+- Stabilized Engram training
+- Enhanced CLI client
 Check GitHub for more infos
