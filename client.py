@@ -46,7 +46,8 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("PYTORCH_HIP_ALLOC_CONF", "expandable_segments:False")
 os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
-import re, sys, io, json, time, struct, math, gc, threading, queue, base64, logging, tempfile, atexit, subprocess, hashlib, shutil, ctypes, signal, argparse, datetime, uuid, platform
+import re, sys, io, json, time, struct, math, gc, threading, queue, base64, logging, tempfile, atexit, subprocess, hashlib, shutil, ctypes, signal, argparse, datetime, uuid, getpass
+import platform
 import importlib.metadata as importlib_metadata
 from pathlib import Path
 
@@ -291,6 +292,14 @@ def _write_private(path, text):
     with os.fdopen(fd, "w", encoding="utf-8") as f: f.write(text)
     try: os.chmod(str(path), 0o600)
     except OSError: pass
+
+def _save_auth_token(server, username, token, remember=True):
+    _write_private(AUTH_TOKEN_FILE, json.dumps({
+        "token": token,
+        "username": username,
+        "server": server,
+        "remember": bool(remember),
+    }))
 
 def _migrate_cwd_checkpoints():
     old = Path.cwd() / "checkpoints"
@@ -1812,11 +1821,34 @@ def do_login(srv, u, p):
         return None, "invalid_credentials"
     except Exception: return None, "network"
 
+def _register_error_code(r):
+    """Map coordinator responses to stable codes the GUI and CLI can share."""
+    detail = ""
+    try:
+        body = r.json()
+        if isinstance(body, dict):
+            detail = " ".join(str(body.get(k, "")) for k in ("detail", "error", "code", "message")).lower()
+    except Exception:
+        pass
+    if "username" in detail and any(w in detail for w in ("exist", "taken", "already")): return "username_taken"
+    if "email" in detail and any(w in detail for w in ("exist", "taken", "already", "registered")): return "email_taken"
+    if "password" in detail and any(w in detail for w in ("weak", "short", "6", "length")): return "weak_password"
+    if r.status_code == 429: return "rate_limited"
+    if r.status_code == 409: return "account_conflict"
+    if r.status_code == 400: return "invalid_input"
+    if r.status_code >= 500: return "server_error"
+    return "register_failed"
+
 def do_register(srv, u, email, p):
     try:
         r = requests.post(f"{srv}/auth/register", json={"username": u, "password": p, "email": email}, timeout=30)
-        if r.status_code == 200: return r.json().get("token"), None
-        return None, "register_failed"
+        if r.status_code == 200:
+            try:
+                tok = r.json().get("token")
+            except Exception:
+                return None, "server_error"
+            return (tok, None) if tok else (None, "register_failed")
+        return None, _register_error_code(r)
     except Exception: return None, "network"
 
 class HeartbeatManager:
@@ -2893,7 +2925,7 @@ class Api:
         tok, err = do_login(self.server_url, u, p)
         if tok:
             self.auth_token = tok; self.username = u
-            try: _write_private(AUTH_TOKEN_FILE, json.dumps({"token": tok, "username": u, "server": self.server_url, "remember": bool(remember)}))
+            try: _save_auth_token(self.server_url, u, tok, remember)
             except Exception: pass
             self.emit('login_success', {'username': u})
         else: self.emit('login_error', {'code': err or 'login_failed'})
@@ -2906,10 +2938,10 @@ class Api:
         tok, err = do_register(self.server_url, u, email, p)
         if tok:
             self.auth_token = tok; self.username = u
-            try: _write_private(AUTH_TOKEN_FILE, json.dumps({"token": tok, "username": u, "server": self.server_url, "remember": bool(remember)}))
+            try: _save_auth_token(self.server_url, u, tok, remember)
             except Exception: pass
             self.emit('login_success', {'username': u})
-        else: self.emit('login_error', {'code': err or 'register_failed'})
+        else: self.emit('login_error', {'code': _GUI_REGISTER_CODES.get(err, err or 'register_failed')})
 
     def login_anon(self):
         self.auth_token = None; self.username = "anonymous"
@@ -3586,8 +3618,10 @@ _HEADLESS_EXIT_MESSAGES = {
 def parse_args():
     p = argparse.ArgumentParser(prog="client.py", description="CrowdGPT client. Runs GUI by default; use --headless for SSH/servers.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--headless", action="store_true", help="no window; train in the terminal")
+    p.add_argument("--register", action="store_true", help="create an account, save the session, and exit")
     p.add_argument("--server", default=DEFAULT_SERVER, help="coordinator URL")
     p.add_argument("--user", default=None, help="username")
+    p.add_argument("--email", default=None, help="email for --register (or env CROWDGPT_EMAIL)")
     p.add_argument("--password", default=None, help="password (or env CROWDGPT_PASSWORD)")
     p.add_argument("--token", default=None, help="auth token (or env CROWDGPT_TOKEN)")
     p.add_argument("--anon", action="store_true", help="train without an account")
@@ -3834,6 +3868,71 @@ def run_gui(args):
 
     try: webview.start(debug=False, **_start_icon_kwargs())
     except TypeError: webview.start(debug=False)
+    return 0
+
+# The desktop UI predates these codes; keep its generic registration message.
+_GUI_REGISTER_CODES = {
+    "account_conflict": "register_failed",
+    "rate_limited": "register_failed",
+    "server_error": "register_failed",
+}
+
+_REGISTER_ERRORS = {
+    "network": "cannot reach the coordinator",
+    "username_taken": "that username is already taken",
+    "email_taken": "that email is already registered",
+    "weak_password": "the password is too weak (use at least 6 characters)",
+    "invalid_input": "the username, email, or password was rejected",
+    "account_conflict": "that username or email is already registered",
+    "rate_limited": "too many attempts; try again later",
+    "server_error": "the coordinator had a server error",
+    "register_failed": "the coordinator rejected the registration",
+}
+
+def run_register(args):
+    username = (args.user or "").strip()
+    email = (getattr(args, "email", None) or os.environ.get("CROWDGPT_EMAIL") or "").strip()
+    password = args.password or os.environ.get("CROWDGPT_PASSWORD")
+    if not username:
+        log.error("Registration needs --user.")
+        return 2
+    if not email:
+        log.error("Registration needs --email (or CROWDGPT_EMAIL).")
+        return 2
+    if "@" not in email:
+        log.error("Registration email does not look valid.")
+        return 2
+    if password is None:
+        if not sys.stdin.isatty():
+            log.error("Registration needs --password or CROWDGPT_PASSWORD when stdin is not a terminal.")
+            return 2
+        try:
+            password = getpass.getpass("Password: ")
+            confirm = getpass.getpass("Confirm password: ")
+        except (EOFError, KeyboardInterrupt):
+            log.error("Registration cancelled.")
+            return 130
+        if password != confirm:
+            log.error("Passwords do not match.")
+            return 2
+    if len(password) < 6:
+        log.error("Password must be at least 6 characters.")
+        return 2
+    try:
+        token, err = do_register(args.server, username, email, password)
+    except KeyboardInterrupt:
+        log.error("Registration cancelled.")
+        return 130
+    if not token:
+        log.error(f"Registration failed: {_REGISTER_ERRORS.get(err, err or 'unknown error')}.")
+        return 1
+    try:
+        _save_auth_token(args.server, username, token, True)
+    except Exception as exc:
+        log.warning(f"Account created, but the session could not be saved: {exc}")
+        print(f"Registered {username} on {args.server}. Log in with --user/--password next time.")
+        return 0
+    print(f"Registered {username} on {args.server}. Session saved for headless training.")
     return 0
 
 if __name__ == "__main__":
