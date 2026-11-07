@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v2.9
+CrowdGPT GUI Client v3.0
+
+v3.0 changes
+  - Enhanced CLI client
+  - better Engram training
+  - Merged pull requests
 
 v2.9 changes
   - Crisp app icon: multi-size icon (16..256 px) rendered natively from the logo SVG and embedded in the client.
@@ -110,7 +115,7 @@ del _stream_name, _stream
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
 
-CLIENT_VERSION = "2.9"
+CLIENT_VERSION = "3.0"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
