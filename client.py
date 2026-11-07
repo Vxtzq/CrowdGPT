@@ -46,7 +46,8 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("PYTORCH_HIP_ALLOC_CONF", "expandable_segments:False")
 os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
-import re, sys, io, json, time, struct, math, gc, threading, queue, base64, logging, tempfile, atexit, subprocess, hashlib, shutil, ctypes, signal, argparse, datetime, uuid
+import re, sys, io, json, time, struct, math, gc, threading, queue, base64, logging, tempfile, atexit, subprocess, hashlib, shutil, ctypes, signal, argparse, datetime, uuid, platform
+import importlib.metadata as importlib_metadata
 from pathlib import Path
 
 try:
@@ -1120,6 +1121,342 @@ def _hardware_headers(force_mode=None):
         "X-Client-Compute-Cap": _cc,   # NEW
         "X-Client-Version":   CLIENT_VERSION,
     }
+
+def _doctor_package_version(name):
+    """Return an installed distribution version, or None. Optional packages are probed lazily."""
+    try:
+        return importlib_metadata.version(name)
+    except Exception:
+        try:
+            mod = __import__(name.replace("-", "_"))
+            value = getattr(mod, "__version__", None)
+            return str(value) if value else "installed"
+        except Exception:
+            return None
+
+def _doctor_sha256_local(path):
+    """Hash a shipped file after normalizing CRLF, matching the release manifest convention."""
+    try:
+        data = Path(path).read_bytes().replace(b"\r\n", b"\n")
+        return hashlib.sha256(data).hexdigest()
+    except OSError:
+        return None
+
+def _doctor_session_probe():
+    """Read the saved session without ever returning the token for display."""
+    result = {"present": False, "username": None, "server": None, "remember": None, "error": None}
+    try:
+        data = json.loads(AUTH_TOKEN_FILE.read_text(encoding="utf-8"))
+        token = data.get("token") if isinstance(data, dict) else None
+        if isinstance(token, str) and token.strip():
+            result.update({
+                "present": True,
+                "username": data.get("username"),
+                "server": data.get("server"),
+                "remember": data.get("remember"),
+            })
+            return result, token
+        result["error"] = "auth file has no usable token"
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        result["error"] = type(exc).__name__
+    return result, None
+
+def _doctor_update_probe():
+    """Fetch and verify the signed update manifest without applying an update."""
+    result = {
+        "checked": False,
+        "signature": None,
+        "remote_version": None,
+        "expires": None,
+        "client_present": None,
+        "html_present": None,
+        "client_matches": None,
+        "html_matches": None,
+        "error": None,
+    }
+    try:
+        response = requests.get(VERSION_URL, timeout=5)
+        response.raise_for_status()
+        signature = requests.get(VERSION_SIG_URL, timeout=5)
+        signature.raise_for_status()
+        manifest = _parse_manifest(response.content)
+        result["checked"] = True
+        result["remote_version"] = manifest.get("version")
+        result["expires"] = manifest.get("expires")
+        result["signature"] = bool(_verify_manifest(response.content, signature.text.strip()))
+        local_py = _doctor_sha256_local(Path(__file__).resolve())
+        local_html = _doctor_sha256_local(Path(__file__).resolve().parent / "client.html")
+        result["client_present"] = local_py is not None
+        result["html_present"] = local_html is not None
+        result["client_matches"] = bool(local_py and local_py == manifest.get("sha256_clientpy"))
+        result["html_matches"] = bool(local_html and local_html == manifest.get("sha256_clienthtml"))
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    return result
+
+def _doctor_http_probe(url, headers=None, timeout=3.0):
+    started = time.time()
+    try:
+        with requests.get(url, headers=headers or {}, timeout=timeout, stream=True, allow_redirects=True) as response:
+            status = response.status_code
+        return {
+            "ok": 200 <= status < 400,
+            "status": status,
+            "ms": int((time.time() - started) * 1000),
+            "error": None,
+        }
+    except Exception as exc:
+        return {"ok": False, "status": None, "ms": int((time.time() - started) * 1000), "error": f"{type(exc).__name__}: {exc}"}
+
+def _doctor_self_test(device, backend):
+    if device is None or backend == "DIRECTML":
+        return {"status": "info", "detail": "no supported torch device for this backend", "ms": None}
+    started = time.time()
+    try:
+        with torch.no_grad():
+            left = torch.ones((8, 8), device=device)
+            right = left @ left
+        if device.type == "cuda": torch.cuda.synchronize(device)
+        elif device.type == "mps" and hasattr(torch, "mps"): torch.mps.synchronize()
+        elif device.type == "xpu" and hasattr(torch, "xpu"): torch.xpu.synchronize()
+        elapsed = int((time.time() - started) * 1000)
+        del left, right
+        return {"status": "ok", "detail": f"8x8 matmul on {device} ({elapsed} ms)", "ms": elapsed}
+    except Exception as exc:
+        return {"status": "fail", "detail": f"{type(exc).__name__}: {exc}", "ms": None}
+
+def _doctor_add(checks, category, name, status, detail):
+    checks.append({"category": category, "name": name, "status": status, "detail": str(detail)})
+
+def _doctor_summary(checks):
+    counts = {"ok": 0, "warn": 0, "fail": 0, "info": 0}
+    for check in checks:
+        counts[check["status"]] = counts.get(check["status"], 0) + 1
+    return counts
+
+def _doctor_render_text(report):
+    lines = ["CrowdGPT doctor", ""]
+    category = None
+    for check in report["checks"]:
+        if check["category"] != category:
+            category = check["category"]
+            if len(lines) > 2: lines.append("")
+            lines.append(f"{category}:")
+        lines.append(f"  [{check['status']}] {check['name']}: {check['detail']}")
+    summary = report["summary"]
+    lines.extend([
+        "",
+        f"Summary: {summary['ok']} ok, {summary['warn']} warning(s), {summary['fail']} failure(s), {summary['info']} info",
+    ])
+    lines.append("No blocking problems found." if summary["fail"] == 0 else "Doctor found blocking problems. See [fail] entries above.")
+    return "\n".join(lines)
+
+def _doctor_collect_report(args):
+    checks = []
+    client_path = Path(__file__).resolve()
+    _doctor_add(checks, "Client", "version", "ok", f"{CLIENT_VERSION} at {client_path}")
+    _doctor_add(checks, "Client", "python", "ok", f"{platform.python_version()} ({platform.python_implementation()})")
+    _doctor_add(checks, "Client", "platform", "ok", f"{platform.system()} {platform.release()} {platform.machine()}")
+
+    cpu_count = os.cpu_count() or 0
+    ram_gb = None
+    try:
+        import psutil
+        ram_gb = psutil.virtual_memory().total / 1024**3
+    except Exception:
+        try:
+            if hasattr(os, "sysconf"):
+                ram_gb = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1024**3
+        except Exception:
+            ram_gb = None
+    if cpu_count:
+        _doctor_add(checks, "System", "cpu", "ok", f"{cpu_count} logical core(s)")
+    else:
+        _doctor_add(checks, "System", "cpu", "warn", "could not determine logical CPU count")
+    _doctor_add(checks, "System", "ram", "ok" if ram_gb else "warn", f"{ram_gb:.1f} GB" if ram_gb else "could not determine total RAM")
+
+    checkpoint_writable = False
+    checkpoint_error = "unknown error"
+    try:
+        with tempfile.NamedTemporaryFile(dir=CHECKPOINT_DIR, prefix=".doctor-", delete=True) as probe:
+            probe.write(b"ok")
+        checkpoint_writable = True
+    except Exception as exc:
+        checkpoint_error = f"{type(exc).__name__}: {exc}"
+    _doctor_add(checks, "Storage", "checkpoint", "ok" if checkpoint_writable else "fail",
+                f"{CHECKPOINT_DIR} is writable" if checkpoint_writable else f"{CHECKPOINT_DIR} is not writable ({checkpoint_error})")
+    try:
+        usage = shutil.disk_usage(str(CHECKPOINT_DIR))
+        _doctor_add(checks, "Storage", "disk", "ok", f"{usage.free / 1024**3:.1f} GB free of {usage.total / 1024**3:.1f} GB")
+    except Exception as exc:
+        _doctor_add(checks, "Storage", "disk", "warn", f"could not read disk usage: {type(exc).__name__}: {exc}")
+
+    required_packages = ["torch", "numpy", "requests", "transformers", "huggingface_hub", "safetensors"]
+    optional_packages = ["rich", "psutil", "pywebview", "bitsandbytes", "sentencepiece", "tiktoken", "torch-directml"]
+    package_versions = {}
+    for name in required_packages:
+        version = _doctor_package_version(name)
+        package_versions[name] = version
+        _doctor_add(checks, "Packages", name, "ok" if version else "fail", version or "not installed")
+    for name in optional_packages:
+        version = _doctor_package_version(name)
+        package_versions[name] = version
+        _doctor_add(checks, "Packages", name, "ok" if version else "info", version or "not installed (optional)")
+
+    available = get_available_backends()
+    available_names = [name for name, present in available.items() if present]
+    _doctor_add(checks, "Backend", "available", "ok" if available_names else "fail", ", ".join(available_names) or "none")
+    requested = (getattr(args, "backend", None) or "auto").lower()
+    if requested == "auto":
+        selected = get_best_default_backend()
+        _doctor_add(checks, "Backend", "requested", "ok", f"auto -> {selected}")
+    elif available.get(requested):
+        selected = requested
+        _doctor_add(checks, "Backend", "requested", "ok", f"{requested} is available")
+    else:
+        selected = get_best_default_backend()
+        _doctor_add(checks, "Backend", "requested", "fail", f"{requested} requested but not available; best fallback is {selected}")
+
+    device = None
+    gpu_index = 0
+    gpus = []
+    if selected in ("cuda", "rocm"):
+        gpus = get_gpu_list()
+        if gpus:
+            saved = _load_saved_gpu_idx()
+            gpu_index = saved if any(g["idx"] == saved for g in gpus) else gpus[0]["idx"]
+            chosen = next(g for g in gpus if g["idx"] == gpu_index)
+            if not chosen["arch_ok"]:
+                compatible = [g for g in gpus if g["arch_ok"]]
+                _doctor_add(checks, "Backend", "gpu-arch", "fail",
+                            f"{chosen['name']} needs {chosen['arch_needed']} but this build supports a different architecture")
+                if compatible: gpu_index = compatible[0]["idx"]
+            else:
+                _doctor_add(checks, "Backend", "gpu-arch", "ok", f"{chosen['name']} is supported")
+            for gpu in gpus:
+                _doctor_add(checks, "Backend", f"gpu-{gpu['idx']}", "ok" if gpu["arch_ok"] else "warn",
+                            f"{gpu['name']} ({gpu['vram_gb']:.1f} GB, {gpu['arch_needed']})")
+        else:
+            _doctor_add(checks, "Backend", "gpu", "warn", "no CUDA/ROCm GPU details reported")
+        device = torch.device(f"cuda:{gpu_index}")
+    elif selected == "mps":
+        device = torch.device("mps")
+    elif selected == "xpu":
+        device = torch.device("xpu")
+    elif selected == "cpu":
+        device = torch.device("cpu")
+
+    global train_backend, train_device
+    old_backend, old_device = train_backend, train_device
+    try:
+        train_backend, train_device = selected.upper(), device
+        auto_detect_vram_budget()
+        memory_config["auto_gb"] = memory_config["ram_gb"]
+        apply_vram_override(getattr(args, "vram_gb", 0.0) or 0.0)
+    except Exception as exc:
+        _doctor_add(checks, "Backend", "memory", "warn", f"could not estimate memory budget: {type(exc).__name__}: {exc}")
+    finally:
+        train_backend, train_device = old_backend, old_device
+
+    _doctor_add(checks, "Backend", "selected", "ok" if selected in available_names else "fail", f"{selected} on {device or 'directml'}")
+    _doctor_add(checks, "Backend", "budget", "ok", f"{memory_config.get('ram_gb', 0.0):.2f} GB")
+    batch_size = None
+    try:
+        batch_size = recommend_batch_size(MAX_SEQ_LEN)
+        _doctor_add(checks, "Backend", "batch-size", "ok" if batch_size else "warn", f"{batch_size} sequences of {MAX_SEQ_LEN} tokens")
+    except Exception as exc:
+        _doctor_add(checks, "Backend", "batch-size", "warn", f"could not estimate: {type(exc).__name__}: {exc}")
+    _doctor_add(checks, "Backend", "optimizer", "ok", _predict_optim(selected.upper()))
+
+    session, token = _doctor_session_probe()
+    if session["present"]:
+        _doctor_add(checks, "Session", "saved", "ok", f"{session['username'] or 'unknown user'} on {session['server'] or 'unknown server'}")
+    else:
+        _doctor_add(checks, "Session", "saved", "info", session["error"] or "no saved session; use --register or --user/--password")
+
+    update = _doctor_update_probe()
+    if not update["checked"]:
+        _doctor_add(checks, "Updates", "manifest", "warn", f"could not fetch update manifest: {update['error']}")
+    else:
+        signature_status = "ok" if update["signature"] else "fail"
+        _doctor_add(checks, "Updates", "signature", signature_status, "signed manifest verified" if update["signature"] else "signature did not verify")
+        _doctor_add(checks, "Updates", "version", "ok", f"local {CLIENT_VERSION}, remote {update['remote_version'] or 'unknown'}")
+        if update["expires"]:
+            try:
+                expired = datetime.date.fromisoformat(update["expires"]) < datetime.date.today()
+                _doctor_add(checks, "Updates", "expiry", "warn" if expired else "ok",
+                            f"manifest expires {update['expires']}" + (" (expired)" if expired else ""))
+            except ValueError:
+                _doctor_add(checks, "Updates", "expiry", "warn", f"unparseable expiry {update['expires']}")
+        if update["client_present"] is False:
+            _doctor_add(checks, "Updates", "client.py", "fail", "working file is missing")
+        elif update["client_matches"] is False:
+            _doctor_add(checks, "Updates", "client.py", "warn", "working file differs from the signed release manifest")
+        elif update["client_matches"] is True:
+            _doctor_add(checks, "Updates", "client.py", "ok", "matches the signed release manifest")
+        if update["html_present"] is False:
+            _doctor_add(checks, "Updates", "client.html", "warn", "working file is missing")
+        elif update["html_matches"] is False:
+            _doctor_add(checks, "Updates", "client.html", "warn", "working file differs from the signed release manifest")
+        elif update["html_matches"] is True:
+            _doctor_add(checks, "Updates", "client.html", "ok", "matches the signed release manifest")
+
+    hf = _doctor_http_probe(f"https://huggingface.co/api/models/{HF_MODEL_REPO_ID}")
+    _doctor_add(checks, "Network", "hugging-face", "ok" if hf["ok"] else "warn",
+                f"HTTP {hf['status']} in {hf['ms']} ms" if hf["status"] else hf["error"])
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    coordinator = _doctor_http_probe(args.server.rstrip("/") + "/fl/round_status", headers, timeout=5.0)
+    if coordinator["ok"]:
+        coordinator_detail = f"HTTP {coordinator['status']} in {coordinator['ms']} ms"
+    elif coordinator["status"] in (401, 403):
+        coordinator_detail = f"reachable, but HTTP {coordinator['status']}; saved session is not authorized"
+    else:
+        coordinator_detail = f"HTTP {coordinator['status']} in {coordinator['ms']} ms" if coordinator["status"] else coordinator["error"]
+    _doctor_add(checks, "Network", "coordinator", "ok" if coordinator["ok"] else "warn", coordinator_detail)
+
+    self_test = _doctor_self_test(device, selected.upper())
+    _doctor_add(checks, "Self-test", "matmul", self_test["status"], self_test["detail"])
+
+    report = {
+        "schema": "crowdgpt.doctor.v1",
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "client": {
+            "version": CLIENT_VERSION,
+            "path": str(client_path),
+            "python": platform.python_version(),
+            "implementation": platform.python_implementation(),
+            "platform": platform.platform(),
+        },
+        "system": {"cpu_count": cpu_count, "ram_gb": round(ram_gb, 1) if ram_gb else None},
+        "packages": package_versions,
+        "backend": {
+            "available": available,
+            "requested": requested,
+            "selected": selected,
+            "device": str(device) if device is not None else "directml",
+            "gpus": gpus,
+            "memory_budget_gb": memory_config.get("ram_gb"),
+            "batch_size": batch_size,
+            "optimizer": _predict_optim(selected.upper()),
+        },
+        "session": session,
+        "update": update,
+        "network": {"hugging_face": hf, "coordinator": coordinator},
+        "self_test": self_test,
+        "checks": checks,
+    }
+    report["summary"] = _doctor_summary(checks)
+    return report
+
+def run_doctor(args):
+    report = _doctor_collect_report(args)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(_doctor_render_text(report))
+    return 0 if report["summary"]["fail"] == 0 else 1
 
 def _plan_placement(device, backend_name, budget_gb, bs=1, sl=MAX_SEQ_LEN,
                     u8=False, loss_chunk=LOSS_CHUNK, act_bytes=None):
@@ -2679,8 +3016,13 @@ def parse_args():
     p.add_argument("--no-engram", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--debug", action="store_true")
+    p.add_argument("--doctor", action="store_true", help="run read-only environment diagnostics and exit")
+    p.add_argument("--json", action="store_true", help="with --doctor, print the report as JSON")
     p.add_argument("--version", action="version", version=f"crowdgpt-client {CLIENT_VERSION}")
-    return p.parse_args()
+    args = p.parse_args()
+    if args.json and not args.doctor:
+        p.error("--json requires --doctor")
+    return args
 
 def _headless_emit(verbose=False):
     _last = {"prog": 0.0, "last_stats": 0.0}
@@ -2850,6 +3192,8 @@ if __name__ == "__main__":
     if args.no_engram and ENGRAM_ACTIVE:
         os.environ["CROWDGPT_ENGRAM"] = "0"; ENGRAM_ACTIVE = False
 
+    if args.doctor:
+        sys.exit(run_doctor(args))
     if sys.platform == "win32":
         try: ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Vxtzq.CrowdGPT.1")
         except Exception: pass

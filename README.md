@@ -96,6 +96,23 @@ crowdgpt --headless --anon               # train without an account
 crowdgpt --headless --rounds 5           # stop after 5 rounds
 ```
 
+### Diagnostics
+
+Before reporting a launch or training problem, run the read-only environment check:
+
+```bash
+crowdgpt --doctor
+crowdgpt --doctor --json > doctor.json
+```
+
+It checks the client version and paths, OS/Python/architecture, CPU/RAM/disk and
+checkpoint writability, Python package versions, available and requested backends,
+GPU names/VRAM/architecture compatibility, the memory/batch/optimizer plan, whether a
+saved session is present, the signed update manifest, Hugging Face and coordinator
+reachability, and a tiny device matmul. Tokens and passwords are never printed.
+`--doctor` does not apply updates or start training. It exits `1` only for blocking
+failures; warnings are reported without failing the command. `--server`, `--backend`,
+and `--vram-gb` are honored for the checks.
 `crowdgpt --help` lists all options. A few settings can also be set through environment variables:
 
 | Variable | Description |
