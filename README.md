@@ -32,12 +32,9 @@
   <strong>The best 0$ AI.</strong>
 </p>
 
-# CrowdGPT v2.9 changelog
-- False flags should now be much rarer
-- Fixed UI bugs
-- Fixed XPU backend issues
-- Clarifier auto-login logic between updates
-- Removed redundant weight downloads
+# CrowdGPT v3.0 changelog
+- Enhanced CLI client version
+- Reduced weight decay and increased learning rate on server
  
 ## What is CrowdGPT?
 
