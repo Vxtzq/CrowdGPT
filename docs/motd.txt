@@ -1,4 +1,5 @@
 CrowdGPT v3.0 changelog:
 - Stabilized Engram training
 - Enhanced CLI client
+- Fixed server weight decay being WAY TOO HIGH
 Check GitHub for more infos
