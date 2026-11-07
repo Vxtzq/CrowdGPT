@@ -70,8 +70,14 @@ import gzip
 
 if _WEBVIEW_OK:
     logging.getLogger("pywebview").setLevel(logging.CRITICAL)
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+for _stream_name in ("stdout", "stderr"):
+    _stream = getattr(sys, _stream_name)
+    if _stream is None:
+        _stream = open(os.devnull, "w", encoding="utf-8")
+    elif getattr(_stream, "buffer", None) is not None:
+        _stream = io.TextIOWrapper(_stream.buffer, encoding="utf-8", errors="replace")
+    setattr(sys, _stream_name, _stream)
+del _stream_name, _stream
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
 
@@ -988,7 +994,7 @@ def estimate_vram_bytes(bs, sl, u8):
     head_bytes  = head_params * (4 + 4 + (2 if u8 else 8))
     blocks = N_LAYERS * per_block; opt_state_per_param = 2 if u8 else 8
     block_bytes = blocks * (4 + 4 + opt_state_per_param)
-    act = bs * sl * DIM * 4 * (2 + 1); loss = bs * LOSS_CHUNK * VOCAB_SIZE * 4
+    act = N_LAYERS * bs * sl * DIM * 4 + bs * sl * (DIM * 12 + MLP_HIDDEN * 3) * 4; loss = bs * LOSS_CHUNK * VOCAB_SIZE * 4
     workspace = int(ALLOCATOR_RESERVE_GB * 1024**3)
     return int(head_bytes + block_bytes + act + loss + workspace)
 
