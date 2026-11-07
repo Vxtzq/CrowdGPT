@@ -108,6 +108,8 @@ crowdgpt --headless --rounds 5           # stop after 5 rounds
 
 The client checks for updates on start and between rounds. An update is only installed if its manifest is signed with the maintainer's key, so a compromised repository or account can't push code to clients. `--no-update` skips the check. Details in [SECURITY.md](./SECURITY.md).
 
+When releasing a client change, bump `CLIENT_VERSION` in `client.py` to a strictly newer value and re-sign `docs/version.txt` (the client fetches `docs/version.txt.sig`). Clients ignore a version they already run, so re-signing the same version will not reach anyone.
+
 
 ## 🔧 Troubleshooting
 

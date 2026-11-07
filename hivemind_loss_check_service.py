@@ -31,6 +31,7 @@ except ImportError:  # copied next to it in the CrowdGPT repository
     import hivemind_loss_check as lc  # type: ignore[no-redef]
 
 JOB_SCHEMA = "hivemind.crowdgpt.loss_check_job.v1"
+MAX_RECEIPT_BYTES = 1_000_000
 
 
 @dataclass(frozen=True)
@@ -80,7 +81,7 @@ class LossCheckCoordinator:
     def __init__(self, *, evaluator_keys: Mapping[str, bytes], server_secret: bytes, state_path: Path | str, loader: WeightsLoader,
                  model_factory: Callable[[], Any] | None = None, k: int = 2, tol: float = 2e-3, max_regression_tolerance: float = 0.0,
                  min_windows: int = 8, required_receipts: int = 1, agreement_tol: float = 2e-3, job_ttl_s: float = 3600.0,
-                 clock: Callable[[], float] = time.time) -> None:
+                 max_receipts_per_minute: int = 60, clock: Callable[[], float] = time.time) -> None:
         if required_receipts < 1 or not evaluator_keys:
             raise ValueError("need at least one evaluator key and required_receipts >= 1")
         if required_receipts > len(evaluator_keys):
@@ -89,6 +90,8 @@ class LossCheckCoordinator:
         self.model_factory = model_factory or lc.CrowdV1
         self.k, self.tol, self.max_regression, self.min_windows = k, tol, max_regression_tolerance, min_windows
         self.required, self.agreement_tol, self.ttl, self.clock = required_receipts, agreement_tol, job_ttl_s, clock
+        self.max_receipts_per_minute = max(1, max_receipts_per_minute)
+        self._submit_times: dict[str, list[float]] = {}
         self.path = Path(state_path)
         self._lock = threading.Lock()
         self.state = self._load()
@@ -115,6 +118,8 @@ class LossCheckCoordinator:
         """One job per candidate. The seed is drawn here, after the candidate is fixed."""
         if n < self.min_windows:
             raise ValueError(f"n={n} is below min_windows={self.min_windows}: every receipt would be rejected")
+        if window < 1:
+            raise ValueError(f"window={window} must be a positive token count")
         now = self.clock()
         job = LossCheckJob(job_id=job_id or secrets.token_hex(8), base_url=base_url, base_sha256=base_sha256, candidate_url=candidate_url,
                            candidate_sha256=candidate_sha256, heldout_url=heldout_url, heldout_sha256=heldout_sha256, window=window, n=n,
@@ -155,6 +160,7 @@ class LossCheckCoordinator:
         if key is None or not r.verify_signature(key):
             reason = "REJECTED_UNKNOWN_EVALUATOR" if key is None else "REJECTED_BAD_SIGNATURE"
             return 200, {"recorded": False, "verdict": {"accepted": False, "reason": reason}}
+        now = self.clock()
         with self._lock:
             jd = self.state.jobs.get(r.round_id)
             if jd is None:
@@ -162,22 +168,37 @@ class LossCheckCoordinator:
             job = LossCheckJob.from_wire(jd)
             if r.round_id in self.state.decisions:
                 return 409, {"error": "job already decided", "decision": self.state.decisions[r.round_id]}
-            if job.expires_at < self.clock():
+            if job.expires_at < now:
                 return 410, {"error": "job expired"}
             if any(x["receipt"]["evaluator_id"] == r.evaluator_id for x in self.state.receipts.get(r.round_id, [])):
                 return 409, {"error": "this evaluator already answered this job"}
+            recent = [t for t in self._submit_times.get(r.evaluator_id, []) if t >= now - 60.0]
+            if len(recent) >= self.max_receipts_per_minute:
+                self._submit_times[r.evaluator_id] = recent
+                return 429, {"error": "too many receipts from this evaluator; retry later"}
+            recent.append(now)
+            self._submit_times[r.evaluator_id] = recent
             if (r.window, len(r.starts), r.seed) != (job.window, job.n, job.seed):
                 return 400, {"error": "receipt does not follow the job's window plan (window, n, seed)"}
-            base, cand, held = self.loader(job)
-            v = lc.verify_receipt(r, evaluator_keys=self.keys, server_secret=self.secret, expected_base_sha256=job.base_sha256,
-                                  expected_candidate_sha256=job.candidate_sha256, heldout=held,
-                                  recompute=lc.cpu_recompute_fn(self.model_factory, base, cand, held, job.window), k=self.k, tol=self.tol,
-                                  max_regression_tolerance=self.max_regression, min_windows=self.min_windows)
-            verdict = {"accepted": v.accepted, "reason": v.reason, "loss_before": _finite_or_none(v.loss_before),
-                       "loss_after": _finite_or_none(v.loss_after), "delta_loss": _finite_or_none(v.delta_loss), "checked": list(v.checked)}
-            if v.reason.startswith("REJECTED"):
-                # a receipt that fails verification never counts; a held candidate (honest numbers, loss went up) does count
-                return 200, {"recorded": False, "verdict": verdict}
+        # Fetching weights and recomputing losses can take seconds, so do it outside the
+        # coordinator lock and (through the FastAPI router) outside the event loop. The
+        # state is re-checked below before anything is recorded, so a concurrent duplicate
+        # cannot be counted twice.
+        base, cand, held = self.loader(job)
+        v = lc.verify_receipt(r, evaluator_keys=self.keys, server_secret=self.secret, expected_base_sha256=job.base_sha256,
+                              expected_candidate_sha256=job.candidate_sha256, heldout=held,
+                              recompute=lc.cpu_recompute_fn(self.model_factory, base, cand, held, job.window), k=self.k, tol=self.tol,
+                              max_regression_tolerance=self.max_regression, min_windows=self.min_windows)
+        verdict = {"accepted": v.accepted, "reason": v.reason, "loss_before": _finite_or_none(v.loss_before),
+                   "loss_after": _finite_or_none(v.loss_after), "delta_loss": _finite_or_none(v.delta_loss), "checked": list(v.checked)}
+        if v.reason.startswith("REJECTED"):
+            # a receipt that fails verification never counts; a held candidate (honest numbers, loss went up) does count
+            return 200, {"recorded": False, "verdict": verdict}
+        with self._lock:
+            if r.round_id in self.state.decisions:
+                return 409, {"error": "job already decided", "decision": self.state.decisions[r.round_id]}
+            if any(x["receipt"]["evaluator_id"] == r.evaluator_id for x in self.state.receipts.get(r.round_id, [])):
+                return 409, {"error": "this evaluator already answered this job"}
             self.state.receipts.setdefault(r.round_id, []).append({"receipt": json.loads(r.to_json()), "verdict": verdict})
             rs = self.state.receipts[r.round_id]
             out: dict[str, Any] = {"recorded": True, "verdict": verdict, "receipts": len(rs), "required": self.required}
@@ -220,7 +241,18 @@ def fastapi_router(coord: LossCheckCoordinator, prefix: str = "/fl/loss_check") 
 
     @router.post("/receipt")
     async def post_receipt(request: Request) -> Response:
-        status, body = coord.handle_post_receipt(await request.body())
+        from starlette.concurrency import run_in_threadpool
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > MAX_RECEIPT_BYTES:
+            return JSONResponse({"error": "receipt too large"}, status_code=413)
+        chunks = bytearray()
+        async for chunk in request.stream():
+            chunks.extend(chunk)
+            if len(chunks) > MAX_RECEIPT_BYTES:
+                return JSONResponse({"error": "receipt too large"}, status_code=413)
+        # Receipt verification downloads weights and recomputes losses; run it in a worker
+        # thread so a slow evaluator cannot stall the ASGI event loop.
+        status, body = await run_in_threadpool(coord.handle_post_receipt, bytes(chunks))
         return JSONResponse(body, status_code=status)
 
     return router
