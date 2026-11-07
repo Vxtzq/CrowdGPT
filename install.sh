@@ -220,7 +220,7 @@ uv venv --python 3.11 --clear "$INSTALLER_VENV" >/dev/null 2>&1 \
 log "Downloading WebView runtime (PyQt6 + WebEngine + qtpy, ~120 MB)..."
 uv pip install --python "$INSTALLER_VENV/bin/python" --quiet \
     pywebview "pywebview[qt]" qtpy pyqt6 pyqt6-webengine \
-    || die "Failed to install WebView dependencies"
+    || warn "WebView dependencies unavailable; continuing in headless mode"
 
 # ── 7. Verify Qt backend ──
 WEBVIEW_OK=0

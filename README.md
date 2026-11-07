@@ -96,6 +96,23 @@ crowdgpt --headless --anon               # train without an account
 crowdgpt --headless --rounds 5           # stop after 5 rounds
 ```
 
+### Diagnostics
+
+Before reporting a launch or training problem, run the read-only environment check:
+
+```bash
+crowdgpt --doctor
+crowdgpt --doctor --json > doctor.json
+```
+
+It checks the client version and paths, OS/Python/architecture, CPU/RAM/disk and
+checkpoint writability, Python package versions, available and requested backends,
+GPU names/VRAM/architecture compatibility, the memory/batch/optimizer plan, whether a
+saved session is present, the signed update manifest, Hugging Face and coordinator
+reachability, and a tiny device matmul. Tokens and passwords are never printed.
+`--doctor` does not apply updates or start training. It exits `1` only for blocking
+failures; warnings are reported without failing the command. `--server`, `--backend`,
+and `--vram-gb` are honored for the checks.
 `crowdgpt --help` lists all options. A few settings can also be set through environment variables:
 
 | Variable | Description |
@@ -123,6 +140,8 @@ While the dashboard is running:
 ### Updates
 
 The client checks for updates on start and between rounds. An update is only installed if its manifest is signed with the maintainer's key, so a compromised repository or account can't push code to clients. `--no-update` skips the check. Details in [SECURITY.md](./SECURITY.md).
+
+When releasing a client change, bump `CLIENT_VERSION` in `client.py` to a strictly newer value and re-sign `docs/version.txt` (the client fetches `docs/version.txt.sig`). Clients ignore a version they already run, so re-signing the same version will not reach anyone.
 
 
 ## 🔧 Troubleshooting

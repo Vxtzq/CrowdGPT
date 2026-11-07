@@ -46,7 +46,8 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("PYTORCH_HIP_ALLOC_CONF", "expandable_segments:False")
 os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
-import re, sys, io, json, time, struct, math, gc, threading, queue, base64, logging, tempfile, atexit, subprocess, hashlib, shutil, ctypes, signal, argparse, datetime, uuid
+import re, sys, io, json, time, struct, math, gc, threading, queue, base64, logging, tempfile, atexit, subprocess, hashlib, shutil, ctypes, signal, argparse, datetime, uuid, platform
+import importlib.metadata as importlib_metadata
 from pathlib import Path
 
 try:
@@ -97,8 +98,14 @@ except Exception:
 from collections import deque
 if _WEBVIEW_OK:
     logging.getLogger("pywebview").setLevel(logging.CRITICAL)
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+for _stream_name in ("stdout", "stderr"):
+    _stream = getattr(sys, _stream_name)
+    if _stream is None:
+        _stream = open(os.devnull, "w", encoding="utf-8")
+    elif getattr(_stream, "buffer", None) is not None:
+        _stream = io.TextIOWrapper(_stream.buffer, encoding="utf-8", errors="replace")
+    setattr(sys, _stream_name, _stream)
+del _stream_name, _stream
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
 
@@ -166,6 +173,7 @@ def ed25519_verify(public_key, message, signature):
 class AuthRejected(Exception): pass
 class CohortAbort(Exception): pass
 class ArchIncompatible(Exception): pass
+class CoordinatorRejected(Exception): pass
 
 def _parse_version(v):
     try: return tuple(int(x) for x in str(v).strip().split("-")[0].split(".")[:4])
@@ -309,18 +317,43 @@ def _load_or_create_device_id() -> str:
     devices running the same account are treated as distinct training clients
     (separate pools, delta slots, quotas). The UUID part is still used for
     user-level bans / trust / token accounting."""
-    try:
-        if DEVICE_ID_FILE.exists():
+    def _read_id():
+        try:
             v = json.loads(DEVICE_ID_FILE.read_text()).get("id")
-            if isinstance(v, str) and 8 <= len(v) <= 32:
-                return v
-    except Exception:
-        pass
+            if isinstance(v, str) and 8 <= len(v) <= 32: return v
+        except Exception:
+            pass
+        return None
+
+    winner = _read_id()
+    if winner: return winner
     new_id = uuid.uuid4().hex[:16]
-    try:
-        DEVICE_ID_FILE.write_text(json.dumps({"id": new_id, "created": time.time()}))
-    except Exception:
-        pass
+    payload = json.dumps({"id": new_id, "created": time.time()})
+    for _ in range(3):
+        try:
+            fd = os.open(str(DEVICE_ID_FILE), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            # Another process won the create race. Give it a moment to finish writing,
+            # then use its ID so both instances agree on one device identity.
+            for _ in range(20):
+                winner = _read_id()
+                if winner: return winner
+                time.sleep(0.05)
+            # A corrupt/empty file would otherwise make every launch generate a new
+            # ID; clear it and retry the exclusive create (bounded).
+            try: os.unlink(str(DEVICE_ID_FILE))
+            except OSError: break
+            continue
+        except OSError:
+            return new_id
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload); f.flush(); os.fsync(f.fileno())
+            return new_id
+        except Exception:
+            try: os.unlink(str(DEVICE_ID_FILE))
+            except OSError: pass
+            return new_id
     return new_id
 
 DEVICE_ID = _load_or_create_device_id()
@@ -989,7 +1022,7 @@ def estimate_vram_bytes(bs, sl, u8):
     head_bytes  = head_params * (4 + 4 + (2 if u8 else 8))
     blocks = N_LAYERS * per_block; opt_state_per_param = 2 if u8 else 8
     block_bytes = blocks * (4 + 4 + opt_state_per_param)
-    act = bs * sl * DIM * 4 * (2 + 1); loss = bs * LOSS_CHUNK * VOCAB_SIZE * 4
+    act = N_LAYERS * bs * sl * DIM * 4 + bs * sl * (DIM * 12 + MLP_HIDDEN * 3) * 4; loss = bs * LOSS_CHUNK * VOCAB_SIZE * 4
     workspace = int(ALLOCATOR_RESERVE_GB * 1024**3)
     return int(head_bytes + block_bytes + act + loss + workspace)
 
@@ -1041,6 +1074,37 @@ def _detect_optim_capability():
     can_8bit = (native == "adamw8bit")
     return native, True, can_8bit
 
+def _http_detail(response, limit=180):
+    """Return a short, redacted error detail for a coordinator response."""
+    detail = ""
+    try:
+        body = response.json()
+        if isinstance(body, dict):
+            detail = str(body.get("detail") or body.get("message") or body.get("status") or "")
+        else:
+            detail = str(body)
+    except Exception:
+        try: detail = response.text or ""
+        except Exception: detail = ""
+    detail = re.sub(r"[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}", "<id>", detail)
+    detail = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "<ip>", detail)
+    detail = " ".join(detail.split())
+    return detail[:limit]
+
+def _clear_saved_token_if_matches(h):
+    """Delete the saved session only when this request actually used it."""
+    auth = (h or {}).get("Authorization", "")
+    if not auth.startswith("Bearer "): return
+    token = auth[7:].strip()
+    if not token: return
+    try:
+        saved = json.loads(AUTH_TOKEN_FILE.read_text()).get("token")
+    except Exception:
+        return
+    if saved and saved == token:
+        try: AUTH_TOKEN_FILE.unlink(missing_ok=True)
+        except OSError: pass
+
 def _hardware_headers(force_mode=None):
     try: bs = recommend_batch_size(MAX_SEQ_LEN, force_mode=force_mode)
     except Exception: bs = 1
@@ -1082,7 +1146,344 @@ def _hardware_headers(force_mode=None):
         "X-Client-Engram":    "1" if ENGRAM_ACTIVE else "0",
         "X-Client-Device":    DEVICE_ID,
         "X-Client-Compute-Cap": _cc,   # NEW
+        "X-Client-Version":   CLIENT_VERSION,
     }
+
+def _doctor_package_version(name):
+    """Return an installed distribution version, or None. Optional packages are probed lazily."""
+    try:
+        return importlib_metadata.version(name)
+    except Exception:
+        try:
+            mod = __import__(name.replace("-", "_"))
+            value = getattr(mod, "__version__", None)
+            return str(value) if value else "installed"
+        except Exception:
+            return None
+
+def _doctor_sha256_local(path):
+    """Hash a shipped file after normalizing CRLF, matching the release manifest convention."""
+    try:
+        data = Path(path).read_bytes().replace(b"\r\n", b"\n")
+        return hashlib.sha256(data).hexdigest()
+    except OSError:
+        return None
+
+def _doctor_session_probe():
+    """Read the saved session without ever returning the token for display."""
+    result = {"present": False, "username": None, "server": None, "remember": None, "error": None}
+    try:
+        data = json.loads(AUTH_TOKEN_FILE.read_text(encoding="utf-8"))
+        token = data.get("token") if isinstance(data, dict) else None
+        if isinstance(token, str) and token.strip():
+            result.update({
+                "present": True,
+                "username": data.get("username"),
+                "server": data.get("server"),
+                "remember": data.get("remember"),
+            })
+            return result, token
+        result["error"] = "auth file has no usable token"
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        result["error"] = type(exc).__name__
+    return result, None
+
+def _doctor_update_probe():
+    """Fetch and verify the signed update manifest without applying an update."""
+    result = {
+        "checked": False,
+        "signature": None,
+        "remote_version": None,
+        "expires": None,
+        "client_present": None,
+        "html_present": None,
+        "client_matches": None,
+        "html_matches": None,
+        "error": None,
+    }
+    try:
+        response = requests.get(VERSION_URL, timeout=5)
+        response.raise_for_status()
+        signature = requests.get(VERSION_SIG_URL, timeout=5)
+        signature.raise_for_status()
+        manifest = _parse_manifest(response.content)
+        result["checked"] = True
+        result["remote_version"] = manifest.get("version")
+        result["expires"] = manifest.get("expires")
+        result["signature"] = bool(_verify_manifest(response.content, signature.text.strip()))
+        local_py = _doctor_sha256_local(Path(__file__).resolve())
+        local_html = _doctor_sha256_local(Path(__file__).resolve().parent / "client.html")
+        result["client_present"] = local_py is not None
+        result["html_present"] = local_html is not None
+        result["client_matches"] = bool(local_py and local_py == manifest.get("sha256_clientpy"))
+        result["html_matches"] = bool(local_html and local_html == manifest.get("sha256_clienthtml"))
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    return result
+
+def _doctor_http_probe(url, headers=None, timeout=3.0):
+    started = time.time()
+    try:
+        with requests.get(url, headers=headers or {}, timeout=timeout, stream=True, allow_redirects=True) as response:
+            status = response.status_code
+        return {
+            "ok": 200 <= status < 400,
+            "status": status,
+            "ms": int((time.time() - started) * 1000),
+            "error": None,
+        }
+    except Exception as exc:
+        return {"ok": False, "status": None, "ms": int((time.time() - started) * 1000), "error": f"{type(exc).__name__}: {exc}"}
+
+def _doctor_self_test(device, backend):
+    if device is None or backend == "DIRECTML":
+        return {"status": "info", "detail": "no supported torch device for this backend", "ms": None}
+    started = time.time()
+    try:
+        with torch.no_grad():
+            left = torch.ones((8, 8), device=device)
+            right = left @ left
+        if device.type == "cuda": torch.cuda.synchronize(device)
+        elif device.type == "mps" and hasattr(torch, "mps"): torch.mps.synchronize()
+        elif device.type == "xpu" and hasattr(torch, "xpu"): torch.xpu.synchronize()
+        elapsed = int((time.time() - started) * 1000)
+        del left, right
+        return {"status": "ok", "detail": f"8x8 matmul on {device} ({elapsed} ms)", "ms": elapsed}
+    except Exception as exc:
+        return {"status": "fail", "detail": f"{type(exc).__name__}: {exc}", "ms": None}
+
+def _doctor_add(checks, category, name, status, detail):
+    checks.append({"category": category, "name": name, "status": status, "detail": str(detail)})
+
+def _doctor_summary(checks):
+    counts = {"ok": 0, "warn": 0, "fail": 0, "info": 0}
+    for check in checks:
+        counts[check["status"]] = counts.get(check["status"], 0) + 1
+    return counts
+
+def _doctor_render_text(report):
+    lines = ["CrowdGPT doctor", ""]
+    category = None
+    for check in report["checks"]:
+        if check["category"] != category:
+            category = check["category"]
+            if len(lines) > 2: lines.append("")
+            lines.append(f"{category}:")
+        lines.append(f"  [{check['status']}] {check['name']}: {check['detail']}")
+    summary = report["summary"]
+    lines.extend([
+        "",
+        f"Summary: {summary['ok']} ok, {summary['warn']} warning(s), {summary['fail']} failure(s), {summary['info']} info",
+    ])
+    lines.append("No blocking problems found." if summary["fail"] == 0 else "Doctor found blocking problems. See [fail] entries above.")
+    return "\n".join(lines)
+
+def _doctor_collect_report(args):
+    checks = []
+    client_path = Path(__file__).resolve()
+    _doctor_add(checks, "Client", "version", "ok", f"{CLIENT_VERSION} at {client_path}")
+    _doctor_add(checks, "Client", "python", "ok", f"{platform.python_version()} ({platform.python_implementation()})")
+    _doctor_add(checks, "Client", "platform", "ok", f"{platform.system()} {platform.release()} {platform.machine()}")
+
+    cpu_count = os.cpu_count() or 0
+    ram_gb = None
+    try:
+        import psutil
+        ram_gb = psutil.virtual_memory().total / 1024**3
+    except Exception:
+        try:
+            if hasattr(os, "sysconf"):
+                ram_gb = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1024**3
+        except Exception:
+            ram_gb = None
+    if cpu_count:
+        _doctor_add(checks, "System", "cpu", "ok", f"{cpu_count} logical core(s)")
+    else:
+        _doctor_add(checks, "System", "cpu", "warn", "could not determine logical CPU count")
+    _doctor_add(checks, "System", "ram", "ok" if ram_gb else "warn", f"{ram_gb:.1f} GB" if ram_gb else "could not determine total RAM")
+
+    checkpoint_writable = False
+    checkpoint_error = "unknown error"
+    try:
+        with tempfile.NamedTemporaryFile(dir=CHECKPOINT_DIR, prefix=".doctor-", delete=True) as probe:
+            probe.write(b"ok")
+        checkpoint_writable = True
+    except Exception as exc:
+        checkpoint_error = f"{type(exc).__name__}: {exc}"
+    _doctor_add(checks, "Storage", "checkpoint", "ok" if checkpoint_writable else "fail",
+                f"{CHECKPOINT_DIR} is writable" if checkpoint_writable else f"{CHECKPOINT_DIR} is not writable ({checkpoint_error})")
+    try:
+        usage = shutil.disk_usage(str(CHECKPOINT_DIR))
+        _doctor_add(checks, "Storage", "disk", "ok", f"{usage.free / 1024**3:.1f} GB free of {usage.total / 1024**3:.1f} GB")
+    except Exception as exc:
+        _doctor_add(checks, "Storage", "disk", "warn", f"could not read disk usage: {type(exc).__name__}: {exc}")
+
+    required_packages = ["torch", "numpy", "requests", "transformers", "huggingface_hub", "safetensors"]
+    optional_packages = ["rich", "psutil", "pywebview", "bitsandbytes", "sentencepiece", "tiktoken", "torch-directml"]
+    package_versions = {}
+    for name in required_packages:
+        version = _doctor_package_version(name)
+        package_versions[name] = version
+        _doctor_add(checks, "Packages", name, "ok" if version else "fail", version or "not installed")
+    for name in optional_packages:
+        version = _doctor_package_version(name)
+        package_versions[name] = version
+        _doctor_add(checks, "Packages", name, "ok" if version else "info", version or "not installed (optional)")
+
+    available = get_available_backends()
+    available_names = [name for name, present in available.items() if present]
+    _doctor_add(checks, "Backend", "available", "ok" if available_names else "fail", ", ".join(available_names) or "none")
+    requested = (getattr(args, "backend", None) or "auto").lower()
+    if requested == "auto":
+        selected = get_best_default_backend()
+        _doctor_add(checks, "Backend", "requested", "ok", f"auto -> {selected}")
+    elif available.get(requested):
+        selected = requested
+        _doctor_add(checks, "Backend", "requested", "ok", f"{requested} is available")
+    else:
+        selected = get_best_default_backend()
+        _doctor_add(checks, "Backend", "requested", "fail", f"{requested} requested but not available; best fallback is {selected}")
+
+    device = None
+    gpu_index = 0
+    gpus = []
+    if selected in ("cuda", "rocm"):
+        gpus = get_gpu_list()
+        if gpus:
+            saved = _load_saved_gpu_idx()
+            gpu_index = saved if any(g["idx"] == saved for g in gpus) else gpus[0]["idx"]
+            chosen = next(g for g in gpus if g["idx"] == gpu_index)
+            if not chosen["arch_ok"]:
+                compatible = [g for g in gpus if g["arch_ok"]]
+                _doctor_add(checks, "Backend", "gpu-arch", "fail",
+                            f"{chosen['name']} needs {chosen['arch_needed']} but this build supports a different architecture")
+                if compatible: gpu_index = compatible[0]["idx"]
+            else:
+                _doctor_add(checks, "Backend", "gpu-arch", "ok", f"{chosen['name']} is supported")
+            for gpu in gpus:
+                _doctor_add(checks, "Backend", f"gpu-{gpu['idx']}", "ok" if gpu["arch_ok"] else "warn",
+                            f"{gpu['name']} ({gpu['vram_gb']:.1f} GB, {gpu['arch_needed']})")
+        else:
+            _doctor_add(checks, "Backend", "gpu", "warn", "no CUDA/ROCm GPU details reported")
+        device = torch.device(f"cuda:{gpu_index}")
+    elif selected == "mps":
+        device = torch.device("mps")
+    elif selected == "xpu":
+        device = torch.device("xpu")
+    elif selected == "cpu":
+        device = torch.device("cpu")
+
+    global train_backend, train_device
+    old_backend, old_device = train_backend, train_device
+    try:
+        train_backend, train_device = selected.upper(), device
+        auto_detect_vram_budget()
+        memory_config["auto_gb"] = memory_config["ram_gb"]
+        apply_vram_override(getattr(args, "vram_gb", 0.0) or 0.0)
+    except Exception as exc:
+        _doctor_add(checks, "Backend", "memory", "warn", f"could not estimate memory budget: {type(exc).__name__}: {exc}")
+    finally:
+        train_backend, train_device = old_backend, old_device
+
+    _doctor_add(checks, "Backend", "selected", "ok" if selected in available_names else "fail", f"{selected} on {device or 'directml'}")
+    _doctor_add(checks, "Backend", "budget", "ok", f"{memory_config.get('ram_gb', 0.0):.2f} GB")
+    batch_size = None
+    try:
+        batch_size = recommend_batch_size(MAX_SEQ_LEN)
+        _doctor_add(checks, "Backend", "batch-size", "ok" if batch_size else "warn", f"{batch_size} sequences of {MAX_SEQ_LEN} tokens")
+    except Exception as exc:
+        _doctor_add(checks, "Backend", "batch-size", "warn", f"could not estimate: {type(exc).__name__}: {exc}")
+    _doctor_add(checks, "Backend", "optimizer", "ok", _predict_optim(selected.upper()))
+
+    session, token = _doctor_session_probe()
+    if session["present"]:
+        _doctor_add(checks, "Session", "saved", "ok", f"{session['username'] or 'unknown user'} on {session['server'] or 'unknown server'}")
+    else:
+        _doctor_add(checks, "Session", "saved", "info", session["error"] or "no saved session; use --register or --user/--password")
+
+    update = _doctor_update_probe()
+    if not update["checked"]:
+        _doctor_add(checks, "Updates", "manifest", "warn", f"could not fetch update manifest: {update['error']}")
+    else:
+        signature_status = "ok" if update["signature"] else "fail"
+        _doctor_add(checks, "Updates", "signature", signature_status, "signed manifest verified" if update["signature"] else "signature did not verify")
+        _doctor_add(checks, "Updates", "version", "ok", f"local {CLIENT_VERSION}, remote {update['remote_version'] or 'unknown'}")
+        if update["expires"]:
+            try:
+                expired = datetime.date.fromisoformat(update["expires"]) < datetime.date.today()
+                _doctor_add(checks, "Updates", "expiry", "warn" if expired else "ok",
+                            f"manifest expires {update['expires']}" + (" (expired)" if expired else ""))
+            except ValueError:
+                _doctor_add(checks, "Updates", "expiry", "warn", f"unparseable expiry {update['expires']}")
+        if update["client_present"] is False:
+            _doctor_add(checks, "Updates", "client.py", "fail", "working file is missing")
+        elif update["client_matches"] is False:
+            _doctor_add(checks, "Updates", "client.py", "warn", "working file differs from the signed release manifest")
+        elif update["client_matches"] is True:
+            _doctor_add(checks, "Updates", "client.py", "ok", "matches the signed release manifest")
+        if update["html_present"] is False:
+            _doctor_add(checks, "Updates", "client.html", "warn", "working file is missing")
+        elif update["html_matches"] is False:
+            _doctor_add(checks, "Updates", "client.html", "warn", "working file differs from the signed release manifest")
+        elif update["html_matches"] is True:
+            _doctor_add(checks, "Updates", "client.html", "ok", "matches the signed release manifest")
+
+    hf = _doctor_http_probe(f"https://huggingface.co/api/models/{HF_MODEL_REPO_ID}")
+    _doctor_add(checks, "Network", "hugging-face", "ok" if hf["ok"] else "warn",
+                f"HTTP {hf['status']} in {hf['ms']} ms" if hf["status"] else hf["error"])
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    coordinator = _doctor_http_probe(args.server.rstrip("/") + "/fl/round_status", headers, timeout=5.0)
+    if coordinator["ok"]:
+        coordinator_detail = f"HTTP {coordinator['status']} in {coordinator['ms']} ms"
+    elif coordinator["status"] in (401, 403):
+        coordinator_detail = f"reachable, but HTTP {coordinator['status']}; saved session is not authorized"
+    else:
+        coordinator_detail = f"HTTP {coordinator['status']} in {coordinator['ms']} ms" if coordinator["status"] else coordinator["error"]
+    _doctor_add(checks, "Network", "coordinator", "ok" if coordinator["ok"] else "warn", coordinator_detail)
+
+    self_test = _doctor_self_test(device, selected.upper())
+    _doctor_add(checks, "Self-test", "matmul", self_test["status"], self_test["detail"])
+
+    report = {
+        "schema": "crowdgpt.doctor.v1",
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "client": {
+            "version": CLIENT_VERSION,
+            "path": str(client_path),
+            "python": platform.python_version(),
+            "implementation": platform.python_implementation(),
+            "platform": platform.platform(),
+        },
+        "system": {"cpu_count": cpu_count, "ram_gb": round(ram_gb, 1) if ram_gb else None},
+        "packages": package_versions,
+        "backend": {
+            "available": available,
+            "requested": requested,
+            "selected": selected,
+            "device": str(device) if device is not None else "directml",
+            "gpus": gpus,
+            "memory_budget_gb": memory_config.get("ram_gb"),
+            "batch_size": batch_size,
+            "optimizer": _predict_optim(selected.upper()),
+        },
+        "session": session,
+        "update": update,
+        "network": {"hugging_face": hf, "coordinator": coordinator},
+        "self_test": self_test,
+        "checks": checks,
+    }
+    report["summary"] = _doctor_summary(checks)
+    return report
+
+def run_doctor(args):
+    report = _doctor_collect_report(args)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(_doctor_render_text(report))
+    return 0 if report["summary"]["fail"] == 0 else 1
 
 def _plan_placement(device, backend_name, budget_gb, bs=1, sl=MAX_SEQ_LEN,
                     u8=False, loss_chunk=LOSS_CHUNK, act_bytes=None):
@@ -1123,6 +1524,13 @@ def _is_accel_error(msg):
     m = msg.lower()
     return any(k in m for k in ("privateuse1", "unbox expects", "not implemented for", "not supported", "unsupported data type", "bfloat16", "internal assert", "dml", "scatter", "compilegraph", "out of memory", "allocation", "device_type", "not implemented for unique"))
 
+def _sdpa_supports_gqa():
+    """torch>=2.5 exposes enable_gqa on SDPA; older builds reject the kwarg."""
+    try: return "enable_gqa" in (F.scaled_dot_product_attention.__doc__ or "")
+    except Exception: return False
+
+_SDPA_GQA = _sdpa_supports_gqa()
+
 class GroupedQueryAttention(nn.Module):
     def __init__(self):
         super().__init__()
@@ -1140,18 +1548,29 @@ class GroupedQueryAttention(nn.Module):
         ct, st = cos[:, :, :T, :], sin[:, :, :T, :]
         q = q * ct + rotate_half(q) * st
         k = k * ct + rotate_half(k) * st
-        k = k.unsqueeze(2).expand(B, self.nkv, self.nrep, T, HEAD_DIM).reshape(B, self.nh, T, HEAD_DIM)
-        v = v.unsqueeze(2).expand(B, self.nkv, self.nrep, T, HEAD_DIM).reshape(B, self.nh, T, HEAD_DIM)
+
+        def _expand_kv(t):
+            if t.size(1) == self.nh: return t
+            return t.unsqueeze(2).expand(B, self.nkv, self.nrep, T, HEAD_DIM).reshape(B, self.nh, T, HEAD_DIM)
+
+        # SDPA can broadcast grouped KV heads, so keep K/V unexpanded on torch>=2.5.
+        gqa = _SDPA_GQA and self.nkv != self.nh
+        if not gqa: k, v = _expand_kv(k), _expand_kv(v)
         if q.dtype != v.dtype or k.dtype != v.dtype: q, k = q.to(v.dtype), k.to(v.dtype)
-        if _is_directml(q): o = F.scaled_dot_product_attention(q.contiguous().cpu(), k.contiguous().cpu(), v.contiguous().cpu(), is_causal=True).to(q.device)
+        gk = {"enable_gqa": True} if gqa else {}
+        if _is_directml(q): o = F.scaled_dot_product_attention(q.contiguous().cpu(), k.contiguous().cpu(), v.contiguous().cpu(), is_causal=True, **gk).to(q.device)
         elif q.device.type == 'cuda' and getattr(torch.version, 'hip', None):
             if os.environ.get('CROWDGPT_ROCM_SDPA', '1') != '0':
-                try: o = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=True)
+                try: o = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=True, **gk)
                 except RuntimeError as exc:
                     if _is_oom(exc): raise
-                    o = self._chunked_attn(q, k, v, T)
-            else: o = self._chunked_attn(q, k, v, T)
-        else: o = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+                    o = self._chunked_attn(q, _expand_kv(k), _expand_kv(v), T)
+            else: o = self._chunked_attn(q, _expand_kv(k), _expand_kv(v), T)
+        else:
+            try: o = F.scaled_dot_product_attention(q, k, v, is_causal=True, **gk)
+            except (TypeError, NotImplementedError, RuntimeError) as exc:
+                if not gqa or _is_oom(exc): raise
+                o = F.scaled_dot_product_attention(q, _expand_kv(k), _expand_kv(v), is_causal=True)
         return self.wo(o.transpose(1, 2).contiguous().view(B, T, C))
 
     def _chunked_attn(self, q, k, v, T, cs=64):
@@ -1427,6 +1846,8 @@ class HeartbeatManager:
 
 def wait_for_round(srv, h, se, emit):
     overlay_on = False
+    last_error = None
+    next_error_log = 0.0
     def show_wait():
         nonlocal overlay_on
         if not overlay_on: emit('overlay_show', {'title_key': 'wait_coord', 'subtitle_key': 'wait_coord_sub', 'indeterminate': True}); overlay_on = True
@@ -1437,6 +1858,7 @@ def wait_for_round(srv, h, se, emit):
         try:
             r = requests.get(f"{srv}/fl/round_status", headers=h, timeout=30)
             if r.status_code == 200:
+                last_error = None
                 st = r.json()
                 if st.get("is_aggregating"):
                     emit('status', 'waiting'); show_wait()
@@ -1449,25 +1871,54 @@ def wait_for_round(srv, h, se, emit):
                 for _ in range(30):
                     if se.is_set(): hide(); return None
                     time.sleep(1)
-            else: time.sleep(10)
-        except Exception: time.sleep(10)
+            else:
+                now = time.time()
+                detail = _http_detail(r)
+                key = (r.status_code, detail)
+                if key != last_error or now >= next_error_log:
+                    msg = f"[wait] coordinator status HTTP {r.status_code}"
+                    if detail: msg += f": {detail}"
+                    emit('log', msg + " — retrying in 10s")
+                    next_error_log = now + 30
+                last_error = key
+                time.sleep(10)
+        except Exception as exc:
+            now = time.time()
+            detail = f"{type(exc).__name__}: {exc}"[:180]
+            key = ("exception", detail)
+            if key != last_error or now >= next_error_log:
+                emit('log', f"[wait] coordinator status request failed: {detail} — retrying in 10s")
+                next_error_log = now + 30
+            last_error = key
+            time.sleep(10)
     hide(); return None
 
 def fetch_task_metadata(srv, h, se, emit, hb=None):
+    bad_4xx = 0
     while not se.is_set() and (not hb or not hb.should_stop()):
         try:
             r = requests.get(f"{srv}/fl/task?format=bf16&skip_weights=true", headers={**(h or {}), **_hardware_headers()}, timeout=30)
-            if r.status_code in (401, 403):
-                emit('log', f"⚠️ auth rejected ({r.status_code}) — clearing session")
-                try: AUTH_TOKEN_FILE.unlink(missing_ok=True)
-                except Exception: pass
-                emit('login_error', {'code': 'session_expired'}); raise AuthRejected(f"auth rejected: HTTP {r.status_code}")
+            if r.status_code == 401:
+                emit('log', "⚠️ auth rejected (401) — clearing the saved session")
+                _clear_saved_token_if_matches(h)
+                emit('login_error', {'code': 'session_expired'}); raise AuthRejected("auth rejected: HTTP 401")
+            if r.status_code == 403:
+                detail = _http_detail(r)
+                emit('log', f"⛔ coordinator rejected the task request (403): {detail or 'forbidden'}")
+                emit('login_error', {'code': 'forbidden'})
+                raise CoordinatorRejected(f"coordinator rejected: HTTP 403{' — ' + detail if detail else ''}")
+            if r.status_code == 426:
+                detail = _http_detail(r)
+                emit('log', f"⬆️ update required by the coordinator: {detail or 'install a newer client'}")
+                raise CoordinatorRejected(f"update required: HTTP 426{' — ' + detail if detail else ''}")
             if r.headers.get("X-Status") == "wait":
                 pool_fill = r.headers.get("X-Pool-Fill"); pool_size_hdr = r.headers.get("X-Pool-Size")
                 if pool_fill:
                     msg = f"⏳ Pool matchmaking {pool_fill}"
                     if pool_size_hdr: msg += f"/{pool_size_hdr}"
                     emit('log', msg + " (waiting for peers)")
+                else:
+                    emit('log', f"⏳ {_http_detail(r) or 'waiting for available work'}")
                 try: r.close()
                 except Exception: pass
                 for _ in range(10):
@@ -1475,6 +1926,7 @@ def fetch_task_metadata(srv, h, se, emit, hb=None):
                     time.sleep(1)
                 continue
             if r.status_code == 200:
+                bad_4xx = 0
                 ct = (r.headers.get("content-type") or "").lower()
                 if "json" in ct:
                     md = r.json()
@@ -1492,9 +1944,21 @@ def fetch_task_metadata(srv, h, se, emit, hb=None):
                     ml = struct.unpack('<I', raw[:4])[0]
                     if len(raw) >= 4 + ml: return json.loads(raw[4:4 + ml].decode())
                 raise RuntimeError("Invalid task metadata response")
-            if r.status_code in (503, 504): time.sleep(10); continue
-            time.sleep(5)
-        except AuthRejected: raise
+            if r.status_code in (429, 503, 504):
+                detail = _http_detail(r)
+                emit('log', f"[wait] /fl/task HTTP {r.status_code}{': ' + detail if detail else ''} — retrying in 10s")
+                time.sleep(10); continue
+            if 400 <= r.status_code < 500:
+                bad_4xx += 1
+                detail = _http_detail(r)
+                emit('log', f"[wait] /fl/task HTTP {r.status_code}{': ' + detail if detail else ''} (attempt {bad_4xx}/3)")
+                if bad_4xx >= 3:
+                    return None
+                time.sleep(5); continue
+            detail = _http_detail(r)
+            emit('log', f"[wait] /fl/task HTTP {r.status_code}{': ' + detail if detail else ''} — retrying in 10s")
+            time.sleep(10)
+        except (AuthRejected, CoordinatorRejected): raise
         except Exception as e:
             if se.is_set() or (hb and hb.should_stop()): return None
             emit('log', f"Task metadata fetch failed: {e}"); time.sleep(10)
@@ -1506,45 +1970,55 @@ def _weight_cache_path(revision, filename):
 
 def _download_file_with_progress(url, dest, emit, stop_evt, expected_size=None, label="file"):
     dest.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        leftover = dest.with_suffix(dest.suffix + ".part")
-        if leftover.exists(): leftover.unlink()
-    except Exception: pass
+    expected = int(expected_size) if expected_size is not None else None
     if dest.exists():
         sz = dest.stat().st_size
-        if expected_size is not None and sz == int(expected_size): return dest
-        if expected_size is None and sz > 10_000_000: return dest
+        if expected is not None and sz == expected: return dest
+        if expected is None and sz > 10_000_000: return dest
         try: dest.unlink()
         except Exception: pass
+    tmp = dest.with_suffix(dest.suffix + ".part")
     last_err = None
     for attempt in range(3):
         if stop_evt.is_set(): raise KeyboardInterrupt("Stop requested")
-        tmp = dest.with_suffix(dest.suffix + ".part")
+        try: done = tmp.stat().st_size if tmp.exists() else 0
+        except OSError: done = 0
+        if expected is not None and done > expected:
+            # Stale/oversized fragment; a Range request would be unsatisfiable.
+            try: tmp.unlink()
+            except Exception: pass
+            done = 0
+        if expected is not None and done == expected:
+            os.replace(tmp, dest); return dest
         try:
-            if tmp.exists(): tmp.unlink()
-        except Exception: pass
-        try:
-            r = requests.get(url, stream=True, timeout=(15, 3600), allow_redirects=True); r.raise_for_status()
-            total = int(expected_size) if expected_size else int(r.headers.get("content-length", 0) or 0)
-            done = 0; last_emit = 0.0
-            with open(tmp, "wb") as f:
+            hdrs = {"Range": f"bytes={done}-"} if done > 0 else {}
+            r = requests.get(url, headers=hdrs, stream=True, timeout=(15, 3600), allow_redirects=True)
+            if r.status_code == 416:
+                if expected is not None and done >= expected:
+                    os.replace(tmp, dest); return dest
+                try: tmp.unlink()
+                except Exception: pass
+                done = 0
+                r.raise_for_status()
+            if r.status_code not in (200, 206): r.raise_for_status()
+            append = r.status_code == 206 and done > 0
+            if not append: done = 0  # server ignored Range (or we had nothing): rewrite
+            remaining = int(r.headers.get("content-length", 0) or 0)
+            total = expected if expected is not None else done + remaining
+            last_emit = 0.0
+            with open(tmp, "ab" if append else "wb") as f:
                 for chunk in r.iter_content(chunk_size=1024 * 1024):
                     if stop_evt.is_set(): raise KeyboardInterrupt("Stop requested")
                     if not chunk: continue
                     f.write(chunk); done += len(chunk); now = time.time()
                     if now - last_emit > 0.25: emit("overlay_progress", {"done": done, "total": total}); last_emit = now
-            if expected_size and done != int(expected_size): raise RuntimeError(f"Size mismatch for {label}: got {done}, expected {expected_size}")
+            if expected is not None and done != expected: raise RuntimeError(f"Size mismatch for {label}: got {done}, expected {expected}")
             os.replace(tmp, dest); return dest
         except KeyboardInterrupt:
-            try:
-                if tmp.exists(): tmp.unlink()
-            except Exception: pass
+            # Keep the partial file so a later run can resume from it.
             raise
         except Exception as e:
             last_err = e
-            try:
-                if tmp.exists(): tmp.unlink()
-            except Exception: pass
             if attempt < 2: emit("log", f"Download retry {attempt + 1} for {label}: {e}"); time.sleep(5 * (attempt + 1))
     raise RuntimeError(f"Failed to download {label}: {last_err}")
 
@@ -1569,15 +2043,24 @@ def fetch_task(srv, h, prec, se, emit, hb=None):
             emit('overlay_show', {'title_key': 'dl_weights', 'indeterminate': False})
             req_headers = {**(h or {}), **_hardware_headers()}
             r = requests.get(f"{srv}/fl/task?format={prec}", headers=req_headers, timeout=(15, 3600), stream=True)
-            if r.status_code in (401, 403):
+            if r.status_code == 401:
                 r.close()
-                emit('log', f"⚠️ auth rejected ({r.status_code}) — clearing session")
-                try: AUTH_TOKEN_FILE.unlink(missing_ok=True)
-                except Exception: pass
+                emit('log', "⚠️ auth rejected (401) — clearing the saved session")
+                _clear_saved_token_if_matches(h)
                 emit('login_error', {'code': 'session_expired'})
-                raise AuthRejected(f"auth rejected: HTTP {r.status_code}")
+                raise AuthRejected("auth rejected: HTTP 401")
+            if r.status_code == 403:
+                detail = _http_detail(r); r.close(); emit('overlay_hide', {})
+                emit('log', f"⛔ coordinator rejected the task request (403): {detail or 'forbidden'}")
+                emit('login_error', {'code': 'forbidden'})
+                raise CoordinatorRejected("coordinator rejected task request: HTTP 403")
+            if r.status_code == 426:
+                detail = _http_detail(r); r.close(); emit('overlay_hide', {})
+                emit('log', f"⬆️ update required by the coordinator: {detail or 'update the client'}")
+                raise CoordinatorRejected("coordinator requires a newer client")
             if r.status_code != 200:
-                r.close(); emit('overlay_hide', {}); emit('log', f"/fl/task HTTP {r.status_code}")
+                detail = _http_detail(r); r.close(); emit('overlay_hide', {})
+                emit('log', f"[wait] /fl/task HTTP {r.status_code}" + (f": {detail}" if detail else "") + " — retrying in 10s")
                 time.sleep(10); continue
             if r.headers.get("X-Status") == "wait":
                 pool_fill = r.headers.get("X-Pool-Fill")
@@ -1686,9 +2169,23 @@ def fetch_weights_from_hf(md, se, emit):
     except Exception: pass
     return iw, ie
 
-def _chunk_ce(xs, w, ys):
-    logits = F.linear(xs.to(w.dtype), w)
-    return F.cross_entropy(logits.reshape(-1, VOCAB_SIZE).float(), ys.reshape(-1))
+def _chunk_ce(xs, w, ys, pos_step=64):
+    """Cross-entropy without materialising the whole logits chunk in fp32.
+
+    The fp32 upcast is the peak-memory hotspot ([B, chunk, vocab] doubles in
+    size), so project a slice of positions at a time and accumulate the fp32
+    sum. The final divide reproduces cross_entropy(reduction='mean') numerics.
+    """
+    B, T, _ = xs.shape
+    total = torch.zeros((), dtype=torch.float32, device=xs.device)
+    for i in range(0, T, pos_step):
+        logits = F.linear(xs[:, i:i + pos_step].to(w.dtype), w)
+        total = total + F.cross_entropy(
+            logits.reshape(-1, VOCAB_SIZE).float(),
+            ys[:, i:i + pos_step].reshape(-1),
+            reduction="sum",
+        )
+    return total / (B * T)
 
 def _fwl(m, x, y, sl, ua, ad, ls=1.0, preview=False, loss_chunk=LOSS_CHUNK):
     sd = ad if ua else None; nc = max(1, math.ceil(sl / loss_chunk))
@@ -1779,6 +2276,11 @@ def _train_step_safe(model, x, y, sl, ua, ad, ls, preview, ladder, emit):
         except RuntimeError as e:
             if not _is_oom(e): raise
             emit('log', f"💥 OOM detected: {str(e).splitlines()[0]}"); _clear_accel_cache(model.accel_device)
+            # A backward that died mid-flight can leave partially written grads. Drop every
+            # parameter's grad (including sparse engram rows) before retrying; optimizers keep
+            # their Adam moments, so no rebuild is needed. This also discards grads accumulated
+            # earlier in the window — correctness beats reusing a contaminated accumulator.
+            for p in model.parameters(): p.grad = None
             if not ladder.step_down(emit): emit('log', "💀 OOM even at CPU-only"); raise
             emit('log', f"   retrying same batch at ladder stage {ladder.stage}")
 
@@ -1887,6 +2389,13 @@ def _build_optimizers(model, lr=1e-4, force_mode=None):
     try: oe = torch.optim.SparseAdam(ep, lr=lr)
     except Exception: oe = torch.optim.AdamW(ep, lr=lr, weight_decay=0.01)
     return ob, oe
+
+def _clip_base_grads(model, max_norm=1.0):
+    """Clip only dense base-model grads; engram rows are sparse and coalesce in SparseAdam."""
+    torch.nn.utils.clip_grad_norm_(
+        [p for n, p in model.named_parameters() if p.requires_grad and not n.startswith('engram.')],
+        max_norm,
+    )
 
 def _trim_heap():
     gc.collect()
@@ -2109,10 +2618,11 @@ def run_single_round_wrapper(srv, at, se, emit):
                     remaining = max(60, (rh * 3600) - eta_elapsed - (UPLOAD_BUFFER_MIN * 60))
                     target_micro_steps = micro_step + int(remaining / sps_micro)
                 emit('cal_stats', {'step': micro_step, 'total': target_micro_steps, 'loss': safe_float(lval * as_, 10.0), 'tps': safe_float(current_tps), 'time_left': safe_float((remaining if micro_step >= CAL_MIN_MICRO else 0) / 60.0)})
-                oe.step(); oe.zero_grad(set_to_none=True); tt += step_x.numel(); del lo, x, y, step_x, step_y
+                tt += step_x.numel(); del lo, x, y, step_x, step_y
             if hb.should_stop() or se.is_set(): return
-            torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 1.0)
-            ob.step(); ob.zero_grad(set_to_none=True); gc.collect()
+            _clip_base_grads(model)
+            ob.step(); ob.zero_grad(set_to_none=True)
+            oe.step(); oe.zero_grad(set_to_none=True); gc.collect()
 
         if se.is_set(): return
         if cohort_mode: dl = float('inf'); target_micro_steps = int(cc_steps)
@@ -2138,7 +2648,7 @@ def run_single_round_wrapper(srv, at, se, emit):
                 want_preview = (model.main_device.type != 'cpu') and ((micro_step == 0) or ((micro_step + 1) % PREVIEW_EVERY == 0))
                 try: lo, cards = _train_step_safe(model, x, y, sl, ua, ad, ls, preview=want_preview, ladder=ladder, emit=emit)
                 except CohortAbort: return
-                lval = float(lo.item()) * as_; oe.step(); oe.zero_grad(set_to_none=True)
+                lval = float(lo.item()) * as_
                 als += lval; tt += x.numel(); accum_count += 1; micro_step += 1
                 round_loss_sum += lval; round_loss_sq_sum += lval * lval; round_loss_count += 1
                 last_step_loss = lval
@@ -2153,7 +2663,9 @@ def run_single_round_wrapper(srv, at, se, emit):
                     emit('stats', {'step': micro_step, 'target': target_micro_steps, 'loss': safe_float(als / max(1, accum_count), 10.0), 'tps': safe_float(tt / max(elapsed_total, 1)), 'global_step': gs, 'round': cr, 'time_left': safe_float(max(0, rem_time / 60))})
                 del lo, x, y
             if hb.should_stop() or se.is_set() or accum_count == 0: break
-            torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 1.0); ob.step(); ob.zero_grad(set_to_none=True)
+            _clip_base_grads(model)
+            ob.step(); ob.zero_grad(set_to_none=True)
+            oe.step(); oe.zero_grad(set_to_none=True)
 
         if se.is_set(): emit('log', "Stopped by user. Skipping upload."); return
         if hb.should_stop(): emit('log', f"Stopped mid-training (round {cr} ended or task gone); discarding partial delta, no upload."); return
@@ -2206,21 +2718,28 @@ def run_single_round_wrapper(srv, at, se, emit):
         r = None
         try:
             if delta_size <= MAX_DIRECT_UPLOAD_BYTES:
-                try:
-                    with open(delta_path, 'rb') as f: body = f.read()
-                    r = requests.post(f"{srv}/fl/submit", headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **h}, data=body, timeout=600); body = None
-                    if r.status_code == 413: r = chunked_submit_delta(srv, h, delta_path, meta, emit, se)
-                except Exception as e:
-                    body = None
-                    if delta_size > 8 * 1024 * 1024: r = chunked_submit_delta(srv, h, delta_path, meta, emit, se)
-                    else: raise
+                r = None
+                for attempt in range(3):
+                    try:
+                        with open(delta_path, 'rb') as f: body = f.read()
+                        r = requests.post(f"{srv}/fl/submit", headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **h}, data=body, timeout=600); body = None
+                        if r.status_code in (413, 429, 500, 502, 503, 504):
+                            r = chunked_submit_delta(srv, h, delta_path, meta, emit, se)
+                        break
+                    except Exception as e:
+                        body = None
+                        if attempt == 2:
+                            emit('log', f"Direct submit failed: {e}; trying chunked upload")
+                            r = chunked_submit_delta(srv, h, delta_path, meta, emit, se)
+                        else:
+                            time.sleep(2 ** attempt)
             else: r = chunked_submit_delta(srv, h, delta_path, meta, emit, se)
             if r is not None and r.status_code == 200:
                 try: j = r.json()
                 except Exception: j = {}
                 if j.get("duplicate"): emit("log", f"⏭️ Not counted by server ({j.get('reason','duplicate')})")
                 else: emit("log", "✅ Submitted successfully!")
-            elif r is not None: emit("log", f"Submit failed: {r.text[:200]}")
+            elif r is not None: emit("log", f"❌ Round lost — submit failed (HTTP {r.status_code}): {_http_detail(r)}")
         except Exception as e: emit("log", f"Upload failed: {e}")
         finally:
             emit('overlay_hide', {})
@@ -3082,8 +3601,13 @@ def parse_args():
     p.add_argument("--debug", action="store_true")
     p.add_argument("--tui", action="store_true", help="force the full-screen terminal dashboard in headless mode")
     p.add_argument("--no-tui", action="store_true", help="use plain log lines instead of the dashboard")
+    p.add_argument("--doctor", action="store_true", help="run read-only environment diagnostics and exit")
+    p.add_argument("--json", action="store_true", help="with --doctor, print the report as JSON")
     p.add_argument("--version", action="version", version=f"crowdgpt-client {CLIENT_VERSION}")
-    return p.parse_args()
+    args = p.parse_args()
+    if args.json and not args.doctor:
+        p.error("--json requires --doctor")
+    return args
 
 def _headless_emit(verbose=False):
     _last = {"prog": 0.0, "last_stats": 0.0}
@@ -3107,6 +3631,27 @@ def _headless_emit(verbose=False):
             log.info(f"[progress] {pct:.1f}% ({done:.0f}/{total:.0f} MB)")
         elif verbose: log.debug(f"[{ev}] {data}")
     return emit
+
+def _install_stop_signal_handlers(stop_event):
+    """First SIGINT/SIGTERM requests a graceful stop; a second one hard-exits.
+
+    No logging from the handler: logging can block on locks held by the thread
+    the signal interrupted, which is exactly how the old handler ended up
+    ignoring repeated Ctrl-C presses.
+    """
+    seen = []
+    def _on_signal(signum, frame):
+        if seen:
+            try: signal.signal(signum, signal.SIG_DFL)
+            except (ValueError, OSError): pass
+            os._exit(130)
+        seen.append(signum); stop_event.set()
+    for sig_name in ("SIGINT", "SIGTERM"):
+        s = getattr(signal, sig_name, None)
+        if s is not None:
+            try: signal.signal(s, _on_signal)
+            except (ValueError, OSError): pass
+    return _on_signal
 
 def run_headless(args):
     dashboard = None
@@ -3158,13 +3703,20 @@ def _run_headless(args, emit, dashboard=None, control=None):
     elif args.user and password:
         auth_token, err = do_login(args.server, args.user, password)
         if not auth_token: log.error(f"[auth] login failed: {err}"); return 2
+    elif args.user:
+        log.error("[auth] --user requires --password or CROWDGPT_PASSWORD.")
+        return 2
     else:
         auth_token = None
         try:
-            if AUTH_TOKEN_FILE.exists(): auth_token = json.loads(AUTH_TOKEN_FILE.read_text()).get("token")
+            if AUTH_TOKEN_FILE.exists():
+                saved = json.loads(AUTH_TOKEN_FILE.read_text())
+                saved_server = (saved.get("server") or "").rstrip("/")
+                if saved_server and saved_server == args.server.rstrip("/"):
+                    auth_token = saved.get("token")
         except Exception: pass
         if not auth_token:
-            log.error("[auth] no saved session; pass --user/--password or sign in with the desktop app")
+            log.error("[auth] no saved session for this server; run --register or pass --user/--password.")
             return 2
 
     selected = args.backend if args.backend and args.backend != "auto" else None
@@ -3193,6 +3745,7 @@ def _run_headless(args, emit, dashboard=None, control=None):
     if args.dry_run:
         try: md = fetch_task_metadata(args.server, {"Authorization": f"Bearer {auth_token}"} if auth_token else {}, stop_event, emit)
         except AuthRejected: return 2
+        except CoordinatorRejected: return 7
         if md is None: return 5
         return 0
 
@@ -3206,6 +3759,7 @@ def _run_headless(args, emit, dashboard=None, control=None):
         log.info(f"Round {round_count}" + (f"/{max_rounds}" if max_rounds else ""))
         try: run_single_round_wrapper(args.server, auth_token, stop_event, emit)
         except AuthRejected: return 2
+        except CoordinatorRejected: return 7
         except ArchIncompatible: return 6
         except KeyboardInterrupt:
             if control.quit_event.is_set():
@@ -3289,6 +3843,8 @@ if __name__ == "__main__":
     if args.no_engram and ENGRAM_ACTIVE:
         os.environ["CROWDGPT_ENGRAM"] = "0"; ENGRAM_ACTIVE = False
 
+    if args.doctor:
+        sys.exit(run_doctor(args))
     if sys.platform == "win32":
         try: ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Vxtzq.CrowdGPT.1")
         except Exception: pass
