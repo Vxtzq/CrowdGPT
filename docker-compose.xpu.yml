@@ -1,0 +1,18 @@
+services:
+  crowdgpt:
+    image: crowdgpt:xpu
+    build:
+      args:
+        BASE_IMAGE: "${BASE_IMAGE:-python:3.11-slim-bookworm}"
+        BACKEND: xpu
+        TORCH_INDEX: "https://download.pytorch.org/whl/xpu"
+        INSTALL_BITSANDBYTES: "0"
+    devices:
+      - /dev/dri
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      ONEAPI_DEVICE_SELECTOR:
+      SYCL_CACHE_PERSISTENT: "1"
+      SYCL_CACHE_DIR: /data/cache/sycl
+      ZE_AFFINITY_MASK:

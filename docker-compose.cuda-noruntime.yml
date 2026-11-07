@@ -1,0 +1,25 @@
+services:
+  crowdgpt:
+    image: crowdgpt:cuda
+    build:
+      args:
+        BASE_IMAGE: "${BASE_IMAGE:-pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime}"
+        BACKEND: cuda
+        TORCH_INDEX: ""
+        INSTALL_BITSANDBYTES: "1"
+    environment:
+      CROWDGPT_MKNOD_NVIDIA: "1"
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+      CUDA_VISIBLE_DEVICES:
+    volumes:
+      - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
+      - /usr/lib/x86_64-linux-gnu/libcuda.so:/usr/lib/x86_64-linux-gnu/libcuda.so:ro
+      - /usr/lib/x86_64-linux-gnu/libcuda.so.1:/usr/lib/x86_64-linux-gnu/libcuda.so.1:ro
+      - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so:ro
+      - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
+      - /usr/lib/x86_64-linux-gnu/libnvidia-ptxjitcompiler.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ptxjitcompiler.so.1:ro
+      - /usr/lib/x86_64-linux-gnu/libnvidia-nvvm.so.4:/usr/lib/x86_64-linux-gnu/libnvidia-nvvm.so.4:ro
+      - /usr/lib/x86_64-linux-gnu/libnvidia-cfg.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-cfg.so.1:ro
+      - /usr/lib/x86_64-linux-gnu/libcudadebugger.so.1:/usr/lib/x86_64-linux-gnu/libcudadebugger.so.1:ro
+    privileged: true

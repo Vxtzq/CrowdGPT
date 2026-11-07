@@ -23,7 +23,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img src="https://img.shields.io/badge/License-GPL--3.0-green?style=for-the-badge">
-  <img src="https://img.shields.io/badge/Version-v1.9-green?style=for-the-badge">
+  <img src="https://img.shields.io/badge/Version-v3.0-green?style=for-the-badge">
   <a href="https://discord.gg/2Shwqj3Xpx"><img src="https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
   <img src="https://img.shields.io/endpoint?style=for-the-badge&url=https%3A%2F%2Fhuggingface.co%2FVxtzq%2FCrowd-v1%2Fraw%2Fmain%2Fbadge_tokens.json" alt="Tokens Processed">
 </p>
@@ -78,6 +78,18 @@ For Windows
 ```
 cmd /c "curl.exe -fsSL -o install.bat https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/install.bat && install.bat"
 ```
+
+### 🐳 Docker (Linux — NVIDIA, AMD ROCm, Intel Arc, CPU)
+
+```bash
+git clone https://github.com/Vxtzq/CrowdGPT.git
+cd CrowdGPT
+./docker/run.sh auto build
+./docker/run.sh auto up -d
+./docker/run.sh auto logs -f
+```
+
+`./docker/run.sh` auto-detects NVIDIA CUDA, AMD ROCm, Intel XPU, or CPU and persists checkpoints and downloaded weights in a `/data` volume across image rebuilds. See [DOCKER.md](./DOCKER.md) for account configuration, non-toolkit NVIDIA hosts, and backend overrides.
 
 
 ## ▶️ Running

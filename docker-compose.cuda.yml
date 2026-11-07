@@ -1,0 +1,20 @@
+services:
+  crowdgpt:
+    image: crowdgpt:cuda
+    build:
+      args:
+        BASE_IMAGE: "${BASE_IMAGE:-pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime}"
+        BACKEND: cuda
+        TORCH_INDEX: ""
+        INSTALL_BITSANDBYTES: "1"
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+      CUDA_VISIBLE_DEVICES:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

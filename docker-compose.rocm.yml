@@ -1,0 +1,25 @@
+services:
+  crowdgpt:
+    image: crowdgpt:rocm
+    build:
+      args:
+        BASE_IMAGE: "${BASE_IMAGE:-rocm/pytorch:rocm6.2.4_ubuntu22.04_py3.10_pytorch_2.6}"
+        BACKEND: rocm
+        TORCH_INDEX: "${TORCH_INDEX:-https://download.pytorch.org/whl/rocm6.2}"
+        INSTALL_BITSANDBYTES: "1"
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    security_opt:
+      - seccomp=unconfined
+    ipc: host
+    ulimits:
+      memlock: -1
+    environment:
+      HIP_VISIBLE_DEVICES:
+      ROCR_VISIBLE_DEVICES:
+      HSA_OVERRIDE_GFX_VERSION:
+      PYTORCH_HIP_ALLOC_CONF: "expandable_segments:False"
+      MIOPEN_CUSTOM_CACHE_DIR: /data/cache/miopen
+      HIP_CACHE_DIR: /data/cache/hip
+      CROWDGPT_ROCM_AUTOUPDATE: "${CROWDGPT_ROCM_AUTOUPDATE:-0}"
