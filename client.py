@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v3.0
-
+CrowdGPT GUI Client v3.1
+v3.1 changes
+  - Fixed register bugs
+  - Background upload: training continues while the previous delta uploads (max 1 upload in flight;
+    a finished delta waits for the running upload before starting its own)
 v3.0 changes
   - Enhanced CLI client
   - better Engram training
@@ -115,7 +118,7 @@ del _stream_name, _stream
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
 
-CLIENT_VERSION = "3.0"
+CLIENT_VERSION = "3.1"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
@@ -2501,6 +2504,95 @@ def _parse_task_meta(md, emit):
     else: emit('log', "[COHORT] disabled (server will use Krum for this shard)")
     return tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim
 
+# ---- v3.1: background uploader (max 1 upload in flight; training continues meanwhile) ----
+_upload_lock = threading.Lock()
+_upload_thread = None
+
+def _upload_active():
+    t = _upload_thread
+    return bool(t is not None and t.is_alive())
+
+def _wait_for_upload(se, emit=None, poll=0.5):
+    """Block until the in-flight upload (if any) finishes. Returns False if stopped first."""
+    announced = False
+    while _upload_active():
+        if se.is_set(): return False
+        if emit is not None and not announced:
+            emit('log', "⏳ Previous upload still in progress; this round's delta will upload right after it."); emit('status', 'waiting'); announced = True
+        time.sleep(poll)
+    return True
+
+def _bg_emit(emit):
+    """The uploader must not touch the live training UI: no overlay, no status changes."""
+    def _e(ev, *a, **k):
+        if ev in ('overlay_show', 'overlay_progress', 'overlay_hide', 'status'): return
+        return emit(ev, *a, **k)
+    return _e
+
+def _submit_delta_background(srv, h, delta_path, delta_size, meta, emit, se):
+    global _upload_thread
+    # Only one upload at a time: if the previous one is still running, hold this (already written) delta until it is done.
+    if not _wait_for_upload(se, emit):
+        emit('log', "Stopped while waiting to upload; delta discarded.")
+        try: os.unlink(delta_path)
+        except OSError: pass
+        return
+    with _upload_lock:
+        def _run():
+            try: _upload_delta_file(srv, h, delta_path, delta_size, meta, _bg_emit(emit), se)
+            except BaseException as e:
+                try: emit('log', f"Upload failed: {e}")
+                except Exception: pass
+                try: os.unlink(delta_path)
+                except OSError: pass
+        _upload_thread = threading.Thread(target=_run, daemon=True, name="crowdgpt-upload")
+        _upload_thread.start()
+
+def _join_upload(se=None, timeout=None):
+    """Wait for the background upload at shutdown / before a restart."""
+    t = _upload_thread
+    if t is None: return
+    end = None if timeout is None else time.time() + timeout
+    while t.is_alive():
+        if se is not None and se.is_set(): return
+        if end is not None and time.time() > end: return
+        t.join(0.5)
+
+def _upload_delta_file(srv, h, delta_path, delta_size, meta, emit, se):
+    """Upload one finished delta file and delete it. Runs in the background uploader thread."""
+    upload_size_mb = delta_size / (1024 * 1024)
+    emit('log', f"⬆️ Uploading {upload_size_mb:.1f} MB delta to server (in background)...")
+    r = None
+    try:
+        if delta_size <= MAX_DIRECT_UPLOAD_BYTES:
+            r = None
+            for attempt in range(3):
+                try:
+                    with open(delta_path, 'rb') as f: body = f.read()
+                    r = requests.post(f"{srv}/fl/submit", headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **h}, data=body, timeout=600); body = None
+                    if r.status_code in (413, 429, 500, 502, 503, 504):
+                        r = chunked_submit_delta(srv, h, delta_path, meta, emit, se)
+                    break
+                except Exception as e:
+                    body = None
+                    if attempt == 2:
+                        emit('log', f"Direct submit failed: {e}; trying chunked upload")
+                        r = chunked_submit_delta(srv, h, delta_path, meta, emit, se)
+                    else:
+                        time.sleep(2 ** attempt)
+        else: r = chunked_submit_delta(srv, h, delta_path, meta, emit, se)
+        if r is not None and r.status_code == 200:
+            try: j = r.json()
+            except Exception: j = {}
+            if j.get("duplicate"): emit("log", f"⏭️ Not counted by server ({j.get('reason','duplicate')})")
+            else: emit("log", "✅ Submitted successfully!")
+        elif r is not None: emit("log", f"❌ Round lost — submit failed (HTTP {r.status_code}): {_http_detail(r)}")
+    except Exception as e: emit("log", f"Upload failed: {e}")
+    finally:
+        try: os.unlink(delta_path)
+        except OSError: pass
+        gc.collect()
+
 def run_single_round_wrapper(srv, at, se, emit):
     global train_device, train_backend
     h = {"Authorization": f"Bearer {at}"} if at else {}
@@ -2751,38 +2843,7 @@ def run_single_round_wrapper(srv, at, se, emit):
         finally: iw = None; model = None; del si, sv, pl; _clear_accel_cache(train_device); _trim_heap()
         
         upload_size_mb = delta_size / (1024 * 1024); meta = {"taskId": tid, "loss": fl, "localSteps": micro_step, "tokensProcessed": tt, "loraRank": 0, "isDelta": True, "weightFormat": "bf16", "hasEngram": has_engram, "engramSparseCount": engram_sparse_count, **submit_extra}
-        emit('overlay_show', {'title_key': 'uploading', 'indeterminate': False}); emit('log', f"Uploading {upload_size_mb:.1f} MB delta to server...")
-        r = None
-        try:
-            if delta_size <= MAX_DIRECT_UPLOAD_BYTES:
-                r = None
-                for attempt in range(3):
-                    try:
-                        with open(delta_path, 'rb') as f: body = f.read()
-                        r = requests.post(f"{srv}/fl/submit", headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **h}, data=body, timeout=600); body = None
-                        if r.status_code in (413, 429, 500, 502, 503, 504):
-                            r = chunked_submit_delta(srv, h, delta_path, meta, emit, se)
-                        break
-                    except Exception as e:
-                        body = None
-                        if attempt == 2:
-                            emit('log', f"Direct submit failed: {e}; trying chunked upload")
-                            r = chunked_submit_delta(srv, h, delta_path, meta, emit, se)
-                        else:
-                            time.sleep(2 ** attempt)
-            else: r = chunked_submit_delta(srv, h, delta_path, meta, emit, se)
-            if r is not None and r.status_code == 200:
-                try: j = r.json()
-                except Exception: j = {}
-                if j.get("duplicate"): emit("log", f"⏭️ Not counted by server ({j.get('reason','duplicate')})")
-                else: emit("log", "✅ Submitted successfully!")
-            elif r is not None: emit("log", f"❌ Round lost — submit failed (HTTP {r.status_code}): {_http_detail(r)}")
-        except Exception as e: emit("log", f"Upload failed: {e}")
-        finally:
-            emit('overlay_hide', {})
-            try: os.unlink(delta_path)
-            except OSError: pass
-            gc.collect()
+        _submit_delta_background(srv, h, delta_path, delta_size, meta, emit, se)
     finally:
         hb.stop(); model = ob = oe = x = y = lo = iw = ie = iew = ds = None; gc.collect()
         if train_backend in ("CUDA", "ROCM"):
@@ -2800,6 +2861,7 @@ def _do_backend_setup(selected_backend, vram_gb, emit):
 
 def _check_updates_between_rounds(emit):
     try:
+        if _upload_active(): return   # restarting would kill the in-flight upload; check again next round
         if check_for_update(): emit('log', "🔄 Updated to a new version — restarting..."); emit('status', 'idle'); time.sleep(2); _restart_self(resume_training=True)
     except Exception: pass
 
@@ -3822,6 +3884,7 @@ def _run_headless(args, emit, dashboard=None, control=None):
         if not args.no_update: _check_updates_between_rounds(emit)
         if control.quit_event.is_set(): break
         stop_event.wait(timeout=10.0)
+    _join_upload(stop_event)
     return 0
 
 def run_gui(args):
