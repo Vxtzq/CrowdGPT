@@ -1049,6 +1049,21 @@ def estimate_vram_bytes(bs, sl, u8):
     workspace = int(ALLOCATOR_RESERVE_GB * 1024**3)
     return int(head_bytes + block_bytes + act + loss + workspace)
 
+def _checkpoint_extra_bytes(bs, sl):
+    """Extra activation memory if checkpointing is disabled.
+
+    Checkpointing retains one block input per layer plus one layer's transient
+    working set. Without it every layer's working set stays live until backward.
+    The loss term is not included because `_chunk_ce` remains checkpointed.
+    """
+    per_layer = bs * sl * (DIM * 12 + MLP_HIDDEN * 3) * 4
+    return max(0, (N_LAYERS - 1) * per_layer)
+
+def _can_disable_checkpoint(bs, sl, u8, budget_gb, margin=1.25):
+    budget = int(max(0.0, float(budget_gb)) * 1024 ** 3)
+    spare = budget - estimate_vram_bytes(bs, sl, u8)
+    return spare > margin * _checkpoint_extra_bytes(bs, sl)
+
 def recommend_batch_size(sl=MAX_SEQ_LEN, force_mode=None):
     """force_mode: None = native (8bit if available, else 32); "adamw8bit" = force 8bit (2 bytes/param);
     "adamw32" = force fp32 (8 bytes/param). Forcing matters because 8bit<->fp32 changes the VRAM
@@ -1665,6 +1680,11 @@ class SotaGPT(nn.Module):
         self.gpu_layers = 0 if is_cpu else max(0, min(N_LAYERS, int(gpu_layers)))
         self.gpu_layer_set = set(range(self.gpu_layers))
         self.head_on_gpu = bool(head_gpu) and not is_cpu
+        _u8 = u8_override if u8_override is not None else (
+            has_bitsandbytes() and device is not None and device.type in ('cuda', 'rocm'))
+        self.use_ckpt = True
+        if not is_cpu and self.gpu_layers == N_LAYERS and self.head_on_gpu:
+            self.use_ckpt = not _can_disable_checkpoint(bs, sl, _u8, memory_config["ram_gb"])
         self.wte = nn.Embedding(VOCAB_SIZE, DIM); self.engram = EngramMemory(bn, device)
         self.blocks = nn.ModuleList([Block() for _ in range(N_LAYERS)])
         self.ln_f = nn.LayerNorm(DIM); self.lm_head = nn.Linear(DIM, VOCAB_SIZE, bias=False)
@@ -2291,7 +2311,7 @@ def _fwl(m, x, y, sl, ua, ad, ls=1.0, preview=False, loss_chunk=LOSS_CHUNK):
     sd = ad if ua else None; nc = max(1, math.ceil(sl / loss_chunk))
     def compute():
         w = m.head_weight(sd)
-        xe = m.forward_features(x, use_chunked=True, use_ckpt=True, stream_dtype=sd, head_w=w)
+        xe = m.forward_features(x, use_chunked=True, use_ckpt=bool(getattr(m, 'use_ckpt', True)), stream_dtype=sd, head_w=w)
         y_dev = y.to(xe.device)
         lo = sum(checkpoint(_chunk_ce, xe[:, i:i + loss_chunk, :], w, y_dev[:, i:i + loss_chunk], use_reentrant=False, preserve_rng_state=False) for i in range(0, sl, loss_chunk)) / nc
         return lo, xe, w
@@ -2376,6 +2396,13 @@ def _train_step_safe(model, x, y, sl, ua, ad, ls, preview, ladder, emit):
         except RuntimeError as e:
             if not _is_oom(e): raise
             emit('log', f"💥 OOM detected: {str(e).splitlines()[0]}"); _clear_accel_cache(model.accel_device)
+            # Checkpointing is the cheapest rung: restore it before giving up GPU
+            # residency or lowering the batch size.
+            if not getattr(model, 'use_ckpt', True):
+                model.use_ckpt = True
+                for p in model.parameters(): p.grad = None
+                emit('log', "   re-enabled activation checkpointing; retrying same batch")
+                continue
             # A backward that died mid-flight can leave partially written grads. Drop every
             # parameter's grad (including sparse engram rows) before retrying; optimizers keep
             # their Adam moments, so no rebuild is needed. This also discards grads accumulated
