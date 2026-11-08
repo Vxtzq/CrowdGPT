@@ -61,4 +61,4 @@ VOLUME ["/data"]
 COPY --chmod=0755 docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["--headless"]
+CMD []

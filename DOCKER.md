@@ -21,6 +21,8 @@ The Docker setup runs `client.py` in `--headless` mode with an unprivileged user
 | **Intel Arc / Data Center (XPU)** | `i915` or `xe` kernel driver exposing `/dev/dri` | `docker-compose.xpu.yml` |
 | **CPU** | Docker Engine + Compose v2 | `docker-compose.cpu.yml` |
 
+> ⚠️ **Security note:** The `cuda-noruntime` overlay runs the container in `--privileged` mode so it can create NVIDIA device nodes. Prefer installing [`nvidia-container-toolkit`](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and using the standard `cuda` overlay if possible.
+
 ---
 
 ## 2. Quickstart
@@ -168,3 +170,10 @@ Set these in `.env` or in your shell:
   `./docker/run.sh` automatically falls back to `docker-compose.cuda-noruntime.yml` when `nvidia-container-toolkit` is not detected. You can also force it explicitly with `CROWDGPT_CUDA_NORUNTIME=1 ./docker/run.sh cuda up -d`.
 - **AMD ROCm reports `ROCm reports no usable GPU` on consumer Radeon cards:**
   Set `HSA_OVERRIDE_GFX_VERSION` in `.env` (for example `10.3.0` for RX 6000 / RDNA2 or `11.0.0` for RX 7000 / RDNA3) and recreate the container.
+- **`cuda-noruntime` only exposes the first GPU (`/dev/nvidia0`):**
+  The noruntime fallback creates device nodes for a single GPU. Multi-GPU hosts should install `nvidia-container-toolkit` and use the standard `cuda` overlay, or run one container per GPU with explicit `CUDA_VISIBLE_DEVICES` values.
+- **ROCm base image override:**
+  The default ROCm image is pinned for reproducibility. If the pinned tag is unavailable, override it:
+  ```bash
+  BASE_IMAGE=your-image:tag ./docker/run.sh rocm build
+  ```

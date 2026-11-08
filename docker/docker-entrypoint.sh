@@ -17,6 +17,13 @@ for _var in CUDA_VISIBLE_DEVICES HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES \
 done
 unset _var
 
+# NOTE: The following variables are consumed directly by client.py and are NOT
+# translated into CLI flags below:
+#   CROWDGPT_ENGRAM      - enables/disables engram training (default: 1)
+#   CROWDGPT_PASSWORD    - password for --user login
+#   CROWDGPT_TOKEN       - pre-existing bearer token
+#   CROWDGPT_ROCM_AUTOUPDATE - allows auto-update on ROCm (default: 0)
+
 if [ "$(id -u)" = "0" ]; then
     # 1. Optional NVIDIA device node creation for hosts without nvidia-container-toolkit.
     if [ "${CROWDGPT_MKNOD_NVIDIA:-0}" = "1" ] && [ -e /proc/driver/nvidia/version ]; then

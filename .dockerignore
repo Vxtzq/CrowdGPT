@@ -12,4 +12,3 @@ __pycache__/
 *.new
 *.part
 *.gz
-.plan_docker_refactor.md

@@ -44,7 +44,7 @@ services:
     volumes:
       - crowdgpt-data:/data
 
-    command: ["--headless"]
+    command: []
 
 volumes:
   crowdgpt-data:

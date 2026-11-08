@@ -22,10 +22,27 @@ has_nvidia_runtime() {
     return 1
 }
 
-backend="${1:-auto}"
+usage() {
+    echo "Usage: $0 [auto|cuda|cuda-noruntime|rocm|xpu|cpu] <docker compose args...>" >&2
+    echo "Example: $0 auto up -d" >&2
+    exit 2
+}
+
+[ "$#" -gt 0 ] || usage
+
+backend="$1"
 case "$backend" in
-    auto|cuda|cuda-noruntime|rocm|xpu|cpu) shift || true ;;
-    *) backend=auto ;;
+    auto|cuda|cuda-noruntime|rocm|xpu|cpu)
+        shift
+        [ "$#" -gt 0 ] || usage
+        ;;
+    build|up|down|logs|run|config|ps|exec|pull|push|images|restart|stop|start|rm|top|events|kill|pause|unpause|port|ls|version)
+        # User passed a Compose subcommand without a backend; default to auto.
+        backend=auto
+        ;;
+    *)
+        usage
+        ;;
 esac
 
 if [ "$backend" = "auto" ]; then
