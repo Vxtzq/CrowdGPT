@@ -1,5 +1,4 @@
-CrowdGPT v3.1 changelog:
-- Allow training while uploading
-- Enhanced CLI client
-- Fixed server weight decay being WAY TOO HIGH
+CrowdGPT v3.2 changelog:
+- Merged Pull requests on GitHub
+- Many bug fixes
 Check GitHub for more infos
