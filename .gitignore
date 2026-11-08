@@ -2,3 +2,5 @@ checkpoints/
 __pycache__/
 *.pyc
 .installer-venv/
+
+.opencode/
