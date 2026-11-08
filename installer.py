@@ -46,8 +46,8 @@ from pathlib import Path
 try:
     import webview
 except ImportError:
-    print("ERROR: pywebview not installed. Run via install.sh / install.bat (bootstrap).")
-    sys.exit(1)
+    # Headless installs skip pywebview.
+    webview = None
 
 
 # ============================================================
@@ -1925,7 +1925,7 @@ def main():
         if not has_display:
             print("[installer] No DISPLAY / WAYLAND_DISPLAY — using headless mode.", flush=True)
             headless = True
-        elif not _webview_backend_ok():
+        elif webview is None or not _webview_backend_ok():
             print("[installer] No pywebview GUI backend available — using headless mode.", flush=True)
             headless = True
 
