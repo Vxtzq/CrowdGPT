@@ -182,7 +182,8 @@ def ed25519_verify(public_key, message, signature):
 class AuthRejected(Exception): pass
 class CohortAbort(Exception): pass
 class ArchIncompatible(Exception): pass
-class CoordinatorRejected(Exception): pass
+class CoordinatorRejected(Exception):
+    def __init__(self, message, status=None): super().__init__(message); self.status = status   # HTTP 403 or 426
 
 def _parse_version(v):
     try: return tuple(int(x) for x in str(v).strip().split("-")[0].split(".")[:4])
@@ -433,10 +434,12 @@ def prune_hf_cache(keep_revision: str = None, log_fn=None):
                 except Exception: pass
         except Exception: pass
         try:
-            for f in CHECKPOINT_DIR.glob("delta-*.gz"):
-                try:
-                    if now - f.stat().st_mtime > STALE_PART_AGE_SEC: f.unlink(); _log(f"[cache] removed stale {f.name}")
-                except Exception: pass
+            upload_active = globals().get("_upload_active")   # not defined yet when this runs at import
+            if not (upload_active and upload_active()):        # a running (slow) upload owns its delta file, however old
+                for f in CHECKPOINT_DIR.glob("delta-*.gz"):
+                    try:
+                        if now - f.stat().st_mtime > STALE_PART_AGE_SEC: f.unlink(); _log(f"[cache] removed stale {f.name}")
+                    except Exception: pass
         except Exception: pass
         try:
             here = Path(__file__).resolve().parent
@@ -1864,18 +1867,67 @@ class HeartbeatManager:
         self.srv = srv; self.h = h; self.cr = cr
         self.stop_training = threading.Event(); self.shutdown = threading.Event()
         self.se = se; self.emit = emit; self.tid = None
+        self.rejected = None   # reason text once the coordinator blocks this client; run_single_round_wrapper raises it
+        self._lock = threading.Lock()
+        self._closed = False        # set by close(): from then on a refusal can no longer change this round
+        self._handed_over = False   # set by commit(): this round's delta file now belongs to the uploader
         self._t = threading.Thread(target=self._r, daemon=True)
+    JOIN_TIMEOUT = 3.0
     def start(self): self._t.start()
     def stop(self): self.shutdown.set()
     def should_stop(self): return self.stop_training.is_set()
+    def _reject(self, reason):
+        """Heartbeat thread: record a refusal, unless the round was already closed (then the next round's
+        wait_for_round reports it). A refusal after the hand-over is still recorded. Returns whether it was."""
+        with self._lock:
+            if self._closed: return False
+            self.rejected = reason; self.stop_training.set(); return True
+    def commit(self):
+        """Main thread, before handing the delta to the uploader: True (and the file is the uploader's from now on)
+        if no refusal was recorded yet, False if one was (the caller discards the delta). This does not stop
+        refusals from being recorded: one arriving later still ends the client, it just doesn't touch the upload."""
+        with self._lock:
+            if self.rejected is None: self._handed_over = True
+            return self.rejected is None
+    def close(self):
+        """Main thread, end of round: stop polling, let an in-flight check finish, then close the round.
+        Returns the refusal recorded before closing. A check still running after JOIN_TIMEOUT can't record anything."""
+        self.shutdown.set()
+        if self._t.is_alive() and self._t is not threading.current_thread(): self._t.join(self.JOIN_TIMEOUT)
+        with self._lock:
+            self._closed = True; return self.rejected
+    def _log_refusal(self, detail):
+        tail = ("Stopping; the delta already handed to the uploader is left to finish." if self._handed_over
+                else "Stopping without upload.")
+        self.emit('log', f"⛔ coordinator refused this client during the round: {detail}. {tail}")
     def _r(self):
         while not self.shutdown.is_set() and not self.se.is_set():
             try:
                 tid = self.tid
                 r = requests.get(f"{self.srv}/fl/heartbeat", headers=self.h, timeout=10, params={"taskId": tid} if tid else None)
-                if tid and r.status_code == 200 and r.json().get("task") == "gone":
+                try: hj = r.json() if r.status_code == 200 else {}
+                except ValueError: hj = {}
+                if not isinstance(hj, dict): hj = {}
+                blocked = hj.get("status") == "blocked"
+                if tid and hj.get("task") == "gone":
                     self.emit('log', f"Task {tid} no longer exists on the server (restarted or pool closed). Stopping."); self.stop_training.set()
+                if blocked:
+                    # Record the block at once: the reason lookup below may fail or hang, and until the refusal is
+                    # recorded commit() would still hand this round's delta to the uploader.
+                    detail = "client blocked by the coordinator"
+                    recorded = self._reject(f"coordinator rejected: {detail}")
+                    try:   # heartbeat says only "blocked"; round_status carries the reason
+                        r = requests.get(f"{self.srv}/fl/round_status", headers=self.h, timeout=10)
+                        if r.status_code == 403 and _http_detail(r) and self._reject(f"coordinator rejected: HTTP 403 — {_http_detail(r)}"):
+                            detail = _http_detail(r)
+                    except Exception: pass
+                    if recorded: self._log_refusal(detail)
+                    return
                 r = requests.get(f"{self.srv}/fl/round_status", headers=self.h, timeout=10)
+                if r.status_code == 403:
+                    detail = _http_detail(r) or "forbidden"
+                    if self._reject(f"coordinator rejected: HTTP 403 — {detail}"): self._log_refusal(detail)
+                    return
                 if r.status_code == 200:
                     st = r.json()
                     if st.get("current_round", self.cr) != self.cr: self.emit('log', "Next round. Stopping."); self.stop_training.set()
@@ -1911,6 +1963,10 @@ def wait_for_round(srv, h, se, emit):
                 for _ in range(30):
                     if se.is_set(): hide(); return None
                     time.sleep(1)
+            elif r.status_code == 403:
+                detail = _http_detail(r); hide()
+                emit('log', f"⛔ coordinator refused the round status request (403): {detail or 'forbidden'}")
+                raise CoordinatorRejected(f"coordinator rejected: HTTP 403{' — ' + detail if detail else ''}", status=403)
             else:
                 now = time.time()
                 detail = _http_detail(r)
@@ -1922,6 +1978,7 @@ def wait_for_round(srv, h, se, emit):
                     next_error_log = now + 30
                 last_error = key
                 time.sleep(10)
+        except CoordinatorRejected: raise
         except Exception as exc:
             now = time.time()
             detail = f"{type(exc).__name__}: {exc}"[:180]
@@ -1946,11 +2003,11 @@ def fetch_task_metadata(srv, h, se, emit, hb=None):
                 detail = _http_detail(r)
                 emit('log', f"⛔ coordinator rejected the task request (403): {detail or 'forbidden'}")
                 emit('login_error', {'code': 'forbidden'})
-                raise CoordinatorRejected(f"coordinator rejected: HTTP 403{' — ' + detail if detail else ''}")
+                raise CoordinatorRejected(f"coordinator rejected: HTTP 403{' — ' + detail if detail else ''}", status=403)
             if r.status_code == 426:
                 detail = _http_detail(r)
                 emit('log', f"⬆️ update required by the coordinator: {detail or 'install a newer client'}")
-                raise CoordinatorRejected(f"update required: HTTP 426{' — ' + detail if detail else ''}")
+                raise CoordinatorRejected(f"update required: HTTP 426{' — ' + detail if detail else ''}", status=426)
             if r.headers.get("X-Status") == "wait":
                 pool_fill = r.headers.get("X-Pool-Fill"); pool_size_hdr = r.headers.get("X-Pool-Size")
                 if pool_fill:
@@ -2093,11 +2150,11 @@ def fetch_task(srv, h, prec, se, emit, hb=None):
                 detail = _http_detail(r); r.close(); emit('overlay_hide', {})
                 emit('log', f"⛔ coordinator rejected the task request (403): {detail or 'forbidden'}")
                 emit('login_error', {'code': 'forbidden'})
-                raise CoordinatorRejected("coordinator rejected task request: HTTP 403")
+                raise CoordinatorRejected(f"coordinator rejected: HTTP 403{' — ' + detail if detail else ''}", status=403)
             if r.status_code == 426:
                 detail = _http_detail(r); r.close(); emit('overlay_hide', {})
                 emit('log', f"⬆️ update required by the coordinator: {detail or 'update the client'}")
-                raise CoordinatorRejected("coordinator requires a newer client")
+                raise CoordinatorRejected(f"update required: HTTP 426{' — ' + detail if detail else ''}", status=426)
             if r.status_code != 200:
                 detail = _http_detail(r); r.close(); emit('overlay_hide', {})
                 emit('log', f"[wait] /fl/task HTTP {r.status_code}" + (f": {detail}" if detail else "") + " — retrying in 10s")
@@ -2139,7 +2196,7 @@ def fetch_task(srv, h, prec, se, emit, hb=None):
             if len(wb) < EXPECTED_WEIGHT_BYTES:
                 emit('log', f"⚠️ inline truncated at {len(wb):,}; retrying"); time.sleep(10); continue
             return md, wb
-        except AuthRejected:
+        except (AuthRejected, CoordinatorRejected):
             raise
         except KeyboardInterrupt:
             raise
@@ -2512,11 +2569,11 @@ def _upload_active():
     t = _upload_thread
     return bool(t is not None and t.is_alive())
 
-def _wait_for_upload(se, emit=None, poll=0.5):
-    """Block until the in-flight upload (if any) finishes. Returns False if stopped first."""
+def _wait_for_upload(se, emit=None, poll=0.5, hb=None):
+    """Block until the in-flight upload (if any) finishes. Returns False if stopped (or refused, via hb) first."""
     announced = False
     while _upload_active():
-        if se.is_set(): return False
+        if se.is_set() or (hb is not None and hb.rejected is not None): return False
         if emit is not None and not announced:
             emit('log', "⏳ Previous upload still in progress; this round's delta will upload right after it."); emit('status', 'waiting'); announced = True
         time.sleep(poll)
@@ -2529,11 +2586,13 @@ def _bg_emit(emit):
         return emit(ev, *a, **k)
     return _e
 
-def _submit_delta_background(srv, h, delta_path, delta_size, meta, emit, se):
+def _submit_delta_background(srv, h, delta_path, delta_size, meta, emit, se, hb=None):
     global _upload_thread
     # Only one upload at a time: if the previous one is still running, hold this (already written) delta until it is done.
-    if not _wait_for_upload(se, emit):
-        emit('log', "Stopped while waiting to upload; delta discarded.")
+    # The previous upload itself is never cancelled here. A refusal (hb) before the hand-over discards this delta.
+    if not _wait_for_upload(se, emit, hb=hb) or (hb is not None and not hb.commit()):
+        emit('log', "Coordinator refused this client; delta discarded, no upload." if hb is not None and hb.rejected is not None
+             else "Stopped while waiting to upload; delta discarded.")
         try: os.unlink(delta_path)
         except OSError: pass
         return
@@ -2606,6 +2665,7 @@ def run_single_round_wrapper(srv, at, se, emit):
     optim_mode = None
     round_loss_sum = 0.0; round_loss_sq_sum = 0.0; round_loss_count = 0
     last_step_loss = None
+    exc_type = None; exc_text = ""
     try:
         emit('log', "Fetching task metadata..."); md = fetch_task_metadata(srv, h, se, emit, hb=hb)
         if md is None: return
@@ -2843,14 +2903,23 @@ def run_single_round_wrapper(srv, at, se, emit):
         finally: iw = None; model = None; del si, sv, pl; _clear_accel_cache(train_device); _trim_heap()
         
         upload_size_mb = delta_size / (1024 * 1024); meta = {"taskId": tid, "loss": fl, "localSteps": micro_step, "tokensProcessed": tt, "loraRank": 0, "isDelta": True, "weightFormat": "bf16", "hasEngram": has_engram, "engramSparseCount": engram_sparse_count, **submit_extra}
-        _submit_delta_background(srv, h, delta_path, delta_size, meta, emit, se)
+        _submit_delta_background(srv, h, delta_path, delta_size, meta, emit, se, hb=hb)   # discards the delta if refused
+    except BaseException as e:
+        exc_type = type(e); exc_text = f"{type(e).__name__}: {e}"[:200] if isinstance(e, Exception) else ""; raise
     finally:
-        hb.stop(); model = ob = oe = x = y = lo = iw = ie = iew = ds = None; gc.collect()
+        rejected = hb.close(); model = ob = oe = x = y = lo = iw = ie = iew = ds = None; gc.collect()
         if train_backend in ("CUDA", "ROCM"):
             try: torch.cuda.empty_cache()
             except Exception: pass
         try: prune_hf_cache()
         except Exception: pass
+        # The heartbeat thread can't raise into this thread: turn the refusal recorded before close() into the
+        # exception the GUI/CLI loops handle (stop, keep the session, CLI exit 7). A user stop (se) and a login
+        # error still win. A KeyboardInterrupt without se is fetch_task aborting its download for hb.should_stop().
+        # Another round error is named in the message and stays chained as __context__.
+        if rejected is not None and not se.is_set():
+            if exc_type is None or issubclass(exc_type, KeyboardInterrupt) or (issubclass(exc_type, Exception) and not issubclass(exc_type, (AuthRejected, CoordinatorRejected))):
+                raise CoordinatorRejected(rejected + (f" (the round had also failed: {exc_text})" if exc_text else ""), status=403)
 
 def _do_backend_setup(selected_backend, vram_gb, emit):
     global train_device, train_backend
@@ -3052,6 +3121,13 @@ class Api:
                 try: AUTH_TOKEN_FILE.unlink(missing_ok=True)
                 except Exception: pass
                 self.emit('logged_out', {}); break
+            except CoordinatorRejected as e:
+                if e.status == 426:
+                    self.emit('log', f"⛔ This client version is no longer accepted ({e}). Training stopped — checking for an update; if none installs, update the client and press Start again.")
+                    self._check_updates_between_rounds()       # installs and restarts if a signed update exists
+                else:                                          # 403: the reason may be temporary (e.g. a timed subnet block)
+                    self.emit('log', f"⛔ The coordinator refused to hand out work ({e}). Training stopped — press Start again once this is resolved.")
+                self.emit('status', 'idle'); return            # idle last: Start must not be re-enabled while the check runs
             except ArchIncompatible as e:
                 self.emit('status', 'idle'); self.emit('log', f"⛔ Cannot train: {e}. Fix the PyTorch/GPU mismatch above, or pick a different GPU/backend, then press Start again."); break
             except KeyboardInterrupt: self.stop_event.set(); break
@@ -3860,7 +3936,8 @@ def _run_headless(args, emit, dashboard=None, control=None):
         log.info(f"Round {round_count}" + (f"/{max_rounds}" if max_rounds else ""))
         try: run_single_round_wrapper(args.server, auth_token, stop_event, emit)
         except AuthRejected: return 2
-        except CoordinatorRejected: return 7
+        except CoordinatorRejected:
+            _join_upload(stop_event); return 7   # don't let process exit kill an earlier round's upload (Ctrl+C still skips the wait)
         except ArchIncompatible: return 6
         except KeyboardInterrupt:
             if control.quit_event.is_set():
