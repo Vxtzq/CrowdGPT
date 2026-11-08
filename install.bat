@@ -95,12 +95,20 @@ if not defined BRANCH set "BRANCH=main"
 echo Syncing to origin/!BRANCH! ...
 git fetch --all --prune --tags
 if errorlevel 1 ( echo ERROR: git fetch failed & pause & exit /b 1 )
+set "DIRTY="
+for /f "tokens=*" %%s in ('git status --porcelain --untracked-files=no') do set "DIRTY=1"
+if defined DIRTY (
+    echo ERROR: local changes detected in %CD%. Commit or stash them before installing.
+    pause & exit /b 1
+)
 git reset --hard origin/!BRANCH!
 if errorlevel 1 ( echo ERROR: git reset failed & pause & exit /b 1 )
 if defined INSTALLER_BACKUP (
-    echo Preserving bundled installer.py ...
-    copy /y "!INSTALLER_BACKUP!" "%CD%\installer.py" >nul
-    if errorlevel 1 ( echo ERROR: could not restore installer.py & pause & exit /b 1 )
+    if not exist "installer.py" (
+        echo Restoring bundled installer.py ...
+        copy /y "!INSTALLER_BACKUP!" "%CD%\installer.py" >nul
+        if errorlevel 1 ( echo ERROR: could not restore installer.py & pause & exit /b 1 )
+    )
     del /q "!INSTALLER_BACKUP!" >nul 2>&1
 )
 for /f "tokens=*" %%c in ('git log -1 --format^="%%h %%s"') do echo Synced to %%c

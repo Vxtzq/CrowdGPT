@@ -699,7 +699,10 @@ class InstallerAPI:
         _begin("torch");   self.subtitle("Installing PyTorch (few minutes)…"); self.install_torch();            _end("torch", self.torch_ver)
         _begin("reqs");    self.subtitle("Installing project dependencies…");  self.install_requirements();     _end("reqs")
         _begin("extras");  self.subtitle("Installing extras…");                self.install_extras();           _end("extras")
-        _begin("webview"); self.subtitle("Installing GUI backend…");           self.install_webview_for_client(); _end("webview")
+        if self.headless:
+            _begin("webview"); self.log("Headless install: skipping GUI backend.", "ok"); _end("webview", "skipped")
+        else:
+            _begin("webview"); self.subtitle("Installing GUI backend…");       self.install_webview_for_client(); _end("webview")
 
         if self.integrate:
             _begin("integrate")
@@ -1222,12 +1225,12 @@ class InstallerAPI:
 
         self.log(f"Creating venv at {venv_dir}")
         rc = subprocess.run(
-            [sys.executable, "-m", "venv", str(venv_dir), "--system-site-packages"],
+            [sys.executable, "-m", "venv", str(venv_dir)],
             capture_output=True, text=True,
         ).returncode
         if rc != 0:
             self.log("venv failed, falling back to uv...", "warn")
-            self.run(["uv", "venv", "--clear", "--seed", "--system-site-packages",
+            self.run(["uv", "venv", "--clear", "--seed",
                       "--python", "3.11", str(venv_dir)])
         sub = "Scripts/python.exe" if self.os_name == "Windows" else "bin/python"
         venv_py = venv_dir / sub
@@ -1356,7 +1359,7 @@ class InstallerAPI:
             self.run(["uv", "python", "install", "3.11"])
             venv_dir = self.installed_app_dir / ".venv"
             shutil.rmtree(venv_dir, ignore_errors=True)
-            self.run(["uv", "venv", "--clear", "--seed", "--system-site-packages",
+            self.run(["uv", "venv", "--clear", "--seed",
                       "--python", "3.11", str(venv_dir)])
             sub = "Scripts/python.exe" if self.os_name == "Windows" else "bin/python"
             self.installed_venv_py = venv_dir / sub
@@ -1402,10 +1405,12 @@ class InstallerAPI:
         m = re.match(r"(\d+)\.(\d+)", self.torch_ver)
         if m:
             major, minor = int(m.group(1)), int(m.group(2))
-            if major == 2 and minor < 5:
-                self.log(f"torch {self.torch_ver} < 2.5 → pinning transformers 4.x")
+            # transformers 5 requires torch >= 2.6. cu124 aarch64 tops out at
+            # torch 2.5.1, so the old <2.5 check left that install broken.
+            if major < 2 or (major == 2 and minor < 6):
+                self.log(f"torch {self.torch_ver} < 2.6 → pinning transformers 4.x")
                 self.run([py, "-m", "pip", "install", "transformers>=4.45,<5.0"])
-        if self.backend == "nvidia":
+        if self.backend in ("nvidia", "amd") and not (self.os_name == "Windows" and self.backend == "amd"):
             self.log("Installing bitsandbytes (8-bit optimizer)...")
             rc = self.run([py, "-m", "pip", "install", "bitsandbytes"], check=False)
             if rc != 0:
@@ -1416,6 +1421,9 @@ class InstallerAPI:
                 )
 
     def install_webview_for_client(self):
+        if self.headless:
+            self.log("Headless install: skipping GUI backend.", "ok")
+            return
         py = str(self.installed_venv_py)
 
         # Windows: native EdgeChromium via pythonnet (pulled by pywebview).
@@ -1446,9 +1454,9 @@ class InstallerAPI:
             return
 
         # Linux: try GTK (system PyGObject) first, then Qt fallback.
-        rc, _ = run_capture([py, "-c", "import gi"])
-        if rc == 0:
-            self.log("GTK bindings already available (system PyGObject)", "ok")
+        rc, out = run_capture([py, "-c", "from gi.repository import Gtk, WebKit2; print('GTK_OK')"])
+        if rc == 0 and "GTK_OK" in out:
+            self.log("GTK/WebKit2 bindings already available (system PyGObject)", "ok")
             return
 
         self.log("Installing Qt backend (PyQt6 + WebEngine)...")
