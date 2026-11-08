@@ -1525,7 +1525,13 @@ def _plan_placement(device, backend_name, budget_gb, bs=1, sl=MAX_SEQ_LEN,
     fixed = fixed_cost(lc); remaining = budget - fixed; head_gpu, n = False, 0
     if remaining > head_stream:
         n = int((remaining - head_stream) // blk_res); n = max(0, min(N_LAYERS, n))
-        if n == N_LAYERS and remaining >= N_LAYERS * blk_res + head_res: head_gpu = True
+        if n == N_LAYERS and remaining >= N_LAYERS * blk_res + head_res:
+            head_gpu = True
+        elif remaining >= head_res + blk_res:
+            # Keeping the head on the GPU is cheaper than offloading it and
+            # copying it back every step; stream the blocks that do not fit.
+            n = max(0, min(N_LAYERS - 1, int((remaining - head_res) // blk_res)))
+            head_gpu = True
     if backend_name == "DIRECTML": head_gpu, n = False, min(n, 2)
     return head_gpu, n, lc
 
