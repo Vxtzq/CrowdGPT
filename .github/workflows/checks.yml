@@ -17,6 +17,10 @@ jobs:
       - name: Python files compile
         run: git ls-files '*.py' | xargs python -m py_compile
 
+      # Standard library only (torch/numpy/requests are stubbed): no GPU, no network, no extra installs.
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
       - name: Shell scripts parse
         run: |
           bash -n install.sh
