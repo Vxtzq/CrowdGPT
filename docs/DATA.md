@@ -22,6 +22,8 @@ To ensure the swarm trains efficiently without downloading massive text files or
 
 Just make a pull request on https://huggingface.co/datasets/Vxtzq/CrowdGPT-Pending with plain text (`.txt`) files.
 
+Or submit data at https://www.crowdgpt.net/#submit
+
 You don't need to tokenize anything yourself: your data will be tokenized, and merged to the global dataset eventually.
 
 
