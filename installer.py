@@ -14,6 +14,19 @@ Platform backends for the INSTALLED CLIENT:
 
 All install logic mirrors the v12 bash installer / v13 batch installer.
 Every step streams to the GUI in real time (batched every 150 ms).
+
+Windows AMD pipeline (patched):
+  - detect_amd_gpu.ps1 is located by ABSOLUTE path (repo dir first, installer
+    dir second) instead of a relative filename. This fixes the "cannot find
+    detect_amd_gpu.ps1 even though it's in the repo root" failure that made
+    AMD grey out in the client.
+  - If the .ps1 identifies a ROCm-capable gfx target, the installer uses the
+    AMD TheRock index (torch[device-gfxXXXX]==2.13.0+rocm10.1.0). If that
+    install or its runtime check fails, it falls back to DirectML. This mirrors
+    the v13 install.bat behaviour.
+  - --backend rocm is now accepted and forces the ROCm path.
+  - finalize() deep-verifies HIP or DirectML actually works on the installed
+    torch before the user opens the client.
 """
 
 import argparse
@@ -446,6 +459,15 @@ def _webview_backend_ok() -> bool:
 # ============================================================
 
 class InstallerAPI:
+    # Known ROCm-capable gfx targets on Windows via AMD TheRock.
+    # Same list the v13 install.bat validates against.
+    ROCM_WINDOWS_GFX_TARGETS = {
+        "gfx1200", "gfx1201",
+        "gfx1100", "gfx1101", "gfx1102",
+        "gfx1030", "gfx1031", "gfx1032", "gfx1034",
+        "gfx1010",
+    }
+
     def __init__(self, repo_dir, backend_override, launch, integrate, headless):
         self.repo_dir = Path(repo_dir).resolve()
         self.backend_override = (backend_override or "").strip().lower()
@@ -468,6 +490,7 @@ class InstallerAPI:
         self.torch_index = None
         self.wheel_note = ""
         self.torch_ver = ""
+        self.rocm_gfx = None          # Windows AMD ROCm target (e.g. "gfx1200")
         self.installed_venv_py = None
         self.installed_app_dir = None
 
@@ -664,6 +687,8 @@ class InstallerAPI:
         _begin("git");     self.subtitle("Syncing repository…");               self.sync_repo();                _end("git")
         _begin("detect");  self.subtitle("Detecting hardware…");               self.detect_backend();           _end("detect", self.backend or "cpu")
         self.log(f"Backend: {self.backend}", "ok")
+        if self.rocm_gfx:
+            self.log(f"ROCm target: {self.rocm_gfx}", "ok")
         if self.torch_index:
             self.log(f"Torch index: {self.torch_index}", "ok")
         else:
@@ -835,16 +860,80 @@ class InstallerAPI:
             self.wheel_note = f"NVIDIA via WMI ({nv[0]}) -> cu124"
         return True
 
+    # ---- v2: detect_amd_gpu.ps1 helpers (absolute paths, no CWD dep) ----
+
+    def _find_detect_amd_ps1(self):
+        """Locate detect_amd_gpu.ps1 by ABSOLUTE path.
+
+        The v13 batch installer looked at %~dp0 (where install.bat lives) and
+        failed whenever the batch had been downloaded to Downloads/ while the
+        repo was cloned elsewhere. We look in the repo first, then the installer
+        directory, and always hand the absolute result to PowerShell.
+        """
+        candidates = [
+            self.repo_dir / "detect_amd_gpu.ps1",
+            Path(__file__).resolve().parent / "detect_amd_gpu.ps1",
+        ]
+        for p in candidates:
+            if p.is_file():
+                return p
+        return None
+
+    def _detect_amd_rocm_target(self):
+        """Run detect_amd_gpu.ps1 and return a gfx target string (e.g. 'gfx1200')
+        if the GPU is ROCm-capable via TheRock, else None."""
+        ps1 = self._find_detect_amd_ps1()
+        if ps1 is None:
+            self.log(
+                "detect_amd_gpu.ps1 not found in repo root or installer dir — "
+                "AMD will fall back to DirectML",
+                "warn",
+            )
+            return None
+        self.log(f"Identifying AMD ROCm target via {ps1.name} ...")
+        rc, out = run_capture([
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", str(ps1),          # absolute path, no cwd dependency
+        ])
+        if rc != 0:
+            self.log(f"detect_amd_gpu.ps1 exited {rc}: {out[:300]}", "warn")
+            return None
+        first_line = (out.strip().splitlines() or [""])[0].strip()
+        target = first_line.lower()
+        if target in self.ROCM_WINDOWS_GFX_TARGETS:
+            self.log(f"detect_amd_gpu.ps1 -> {target}", "ok")
+            return target
+        if first_line:
+            self.log(
+                f"detect_amd_gpu.ps1 returned unrecognized target {first_line!r}; "
+                f"not in {sorted(self.ROCM_WINDOWS_GFX_TARGETS)} — using DirectML",
+                "warn",
+            )
+        return None
+
     def _detect_amd_windows(self) -> bool:
-        """AMD on Windows → DirectML (Windows ROCm is experimental/absent)."""
+        """AMD on Windows:
+             - if detect_amd_gpu.ps1 identifies a ROCm-capable gfx target -> ROCm (TheRock, experimental)
+             - otherwise                                                  -> DirectML
+           Mirrors the v13 install.bat choose_rocm_gpu / detect_backend split.
+        """
         names = self._wmi_gpu_names()
         amd = [n for n in names if any(
             k in n.lower() for k in ("amd", "radeon", "ati ")
         )]
         if not amd:
             return False
+
+        gfx = self._detect_amd_rocm_target()
+        if gfx:
+            self.backend = "rocm"
+            self.torch_index = "https://stable.repo.amd.com/rocm/whl-next/"
+            self.rocm_gfx = gfx
+            self.wheel_note = f"AMD {amd[0]} ({gfx}) -> Windows ROCm via TheRock (experimental)"
+            return True
+
         self.backend = "amd"
-        self.torch_index = ""  # DirectML installs from PyPI, not a torch index
+        self.torch_index = ""
         self.wheel_note = f"AMD {amd[0]} -> DirectML (torch-directml)"
         return True
 
@@ -1040,6 +1129,21 @@ class InstallerAPI:
                 else:
                     self.torch_index = "https://download.pytorch.org/whl/rocm6.1"
                     self.wheel_note = "forced: amd/rocm6.1"
+            elif forced == "rocm":
+                if self.os_name != "Windows":
+                    raise RuntimeError(
+                        "--backend rocm is Windows-only (TheRock). On Linux use --backend amd."
+                    )
+                if not self._detect_amd_windows():
+                    raise RuntimeError(
+                        "--backend rocm: no AMD GPU detected via WMI"
+                    )
+                if self.backend != "rocm":
+                    raise RuntimeError(
+                        f"--backend rocm: {self.wheel_note}. "
+                        "Use --backend amd to force DirectML instead."
+                    )
+                return
             elif forced == "nvidia":
                 if self.os_name == "Windows":
                     if not self._detect_nvidia_windows():
@@ -1167,7 +1271,58 @@ class InstallerAPI:
             capture_output=True, text=True,
         )
 
-        # Windows AMD → torch-directml (installs its own torch 2.4.1)
+        # ---- Windows AMD ROCm (TheRock) — try first; fall back to DirectML on failure ----
+        if self.os_name == "Windows" and self.backend == "rocm":
+            gfx = self.rocm_gfx
+            if not gfx:
+                self.log("backend=rocm but no gfx target set — switching to DirectML", "warn")
+                self.backend = "amd"; self.torch_index = ""
+                self.wheel_note = "ROCm target unknown; DirectML fallback"
+            else:
+                self.log(f"Installing Windows ROCm torch via AMD TheRock ({gfx})...")
+                rc = self.run([
+                    py, "-m", "pip", "install",
+                    "--index-url", "https://stable.repo.amd.com/rocm/whl-next/",
+                    f"torch[device-{gfx}]==2.13.0+rocm10.1.0",
+                ], check=False)
+                if rc == 0:
+                    check = (
+                        "import torch\n"
+                        "assert torch.version.hip, 'Not a HIP build'\n"
+                        "assert torch.cuda.is_available(), 'No HIP devices'\n"
+                        "gs = [(i, torch.cuda.get_device_name(i), int(torch.cuda.get_device_properties(i).total_memory))"
+                        "       for i in range(torch.cuda.device_count())]\n"
+                        "ds = [g for g in gs if 'radeon rx' in g[1].lower()]\n"
+                        "assert ds, f'No discrete Radeon RX visible via HIP (saw: {[g[1] for g in gs]})'\n"
+                        "g = max(ds, key=lambda v: v[2])\n"
+                        "torch.cuda.set_device(g[0])\n"
+                        "x = torch.ones((256, 256), device='cuda:' + str(g[0]))\n"
+                        "y = x @ x\n"
+                        "torch.cuda.synchronize(g[0])\n"
+                        "assert float(y[0, 0].cpu()) == 256.0, 'Wrong matmul result'\n"
+                        "print(f'ROCm OK: {g[1]} / hip {torch.version.hip}')"
+                    )
+                    rc2, out2 = run_capture([py, "-c", check])
+                    if rc2 == 0:
+                        self.log(out2.strip(), "ok")
+                        rc3, out3 = run_capture([py, "-c",
+                            "import torch; print(torch.__version__)"])
+                        self.torch_ver = out3.strip() if rc3 == 0 else "unknown"
+                        return
+                    self.log(f"ROCm runtime test failed:\n{out2[:400]}", "warn")
+                else:
+                    self.log(f"TheRock install failed (exit {rc})", "warn")
+
+                self.log(
+                    "Falling back from experimental ROCm to AMD DirectML. "
+                    "The client will show AMD as available via DirectML, not ROCm.",
+                    "warn",
+                )
+                self.backend = "amd"
+                self.torch_index = ""
+                self.wheel_note = "ROCm failed; DirectML fallback"
+
+        # ---- Windows AMD DirectML (also reached on ROCm fallback) ----
         if self.os_name == "Windows" and self.backend == "amd":
             self.log("Installing torch-directml (Windows AMD DirectML backend)...")
             rc = self.run([py, "-m", "pip", "install", "torch-directml"], check=False)
@@ -1191,6 +1346,7 @@ class InstallerAPI:
             self.torch_ver = out.strip() if rc == 0 else "unknown"
             return
 
+        # ---- everything else: normal PyTorch pipeline ----
         if not self._index_has_wheel_for():
             self.log(
                 f"{self.torch_index} has no torch wheels for python "
@@ -1659,6 +1815,41 @@ echo "Done."
             )
         self.log(out.strip(), "ok")
 
+        if self.backend == "rocm":
+            rc, out = run_capture([py, "-c",
+                "import torch\n"
+                "assert torch.version.hip, 'torch has no HIP support'\n"
+                "assert torch.cuda.is_available(), 'HIP is present but no AMD device is visible'\n"
+                "gs = [(i, torch.cuda.get_device_name(i), int(torch.cuda.get_device_properties(i).total_memory))"
+                "       for i in range(torch.cuda.device_count())]\n"
+                "ds = [g for g in gs if 'radeon rx' in g[1].lower()]\n"
+                "assert ds, f'No discrete Radeon RX visible via HIP (saw: {[g[1] for g in gs]})'\n"
+                "g = max(ds, key=lambda v: v[2])\n"
+                "torch.cuda.set_device(g[0])\n"
+                "x = torch.ones((256, 256), device='cuda:' + str(g[0]))\n"
+                "y = x @ x\n"
+                "torch.cuda.synchronize(g[0])\n"
+                "assert float(y[0, 0].cpu()) == 256.0, 'Wrong matmul result'\n"
+                "print(f'ROCm OK: {g[1]} / hip {torch.version.hip}')"
+            ])
+            if rc != 0:
+                raise RuntimeError(f"ROCm final check failed:\n{out}")
+            self.log(out.strip(), "ok")
+
+        elif self.backend == "amd":
+            rc, out = run_capture([py, "-c",
+                "import torch, torch_directml as d\n"
+                "assert d.is_available(), 'no DirectML device'\n"
+                "dev = d.device(0)\n"
+                "x = torch.randn(64, 64).to(dev)\n"
+                "y = x @ x\n"
+                "print(f'DirectML OK: {d.device_name(0)}')"
+            ])
+            if rc != 0:
+                self.log(f"DirectML final check failed: {out[:300]}", "warn")
+            else:
+                self.log(out.strip(), "ok")
+
 
 # ============================================================
 # Headless
@@ -1704,7 +1895,8 @@ def _set_windows_console_visible(visible: bool) -> bool:
 def main():
     p = argparse.ArgumentParser(description="CrowdGPT GUI installer")
     p.add_argument("--repo-dir", default=".")
-    p.add_argument("--backend", default="", choices=["", "nvidia", "amd", "intel", "apple", "cpu"])
+    p.add_argument("--backend", default="",
+                   choices=["", "nvidia", "amd", "rocm", "intel", "apple", "cpu"])
     p.add_argument("--no-launch", action="store_true")
     p.add_argument("--no-integrate", action="store_true")
     p.add_argument("--headless", action="store_true")
