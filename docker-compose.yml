@@ -1,0 +1,50 @@
+services:
+  crowdgpt:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+      args:
+        BASE_IMAGE: "${BASE_IMAGE:-pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime}"
+        BACKEND: "cuda"
+        TORCH_INDEX: "${TORCH_INDEX:-}"
+        TORCH_SPEC: "${TORCH_SPEC:-torch}"
+        INSTALL_BITSANDBYTES: "${INSTALL_BITSANDBYTES:-auto}"
+    image: crowdgpt:cuda
+    container_name: crowdgpt
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 2m
+    shm_size: "8gb"
+    network_mode: host
+
+    environment:
+      HOME: /home/crowd
+      CROWDGPT_DATA_DIR: /data
+      HF_HOME: /data/hf_home
+      TORCH_HOME: /data/torch_home
+      CUDA_CACHE_PATH: /data/cuda_cache
+      XDG_CACHE_HOME: /data/cache
+
+      CROWDGPT_ENGRAM: "${CROWDGPT_ENGRAM:-1}"
+      CROWDGPT_ANON: "${CROWDGPT_ANON:-1}"
+      CROWDGPT_NO_UPDATE: "${CROWDGPT_NO_UPDATE:-1}"
+      CROWDGPT_NO_TOKENIZER: "${CROWDGPT_NO_TOKENIZER:-1}"
+      CROWDGPT_NO_TUI: "${CROWDGPT_NO_TUI:-0}"
+      CROWDGPT_DEBUG: "${CROWDGPT_DEBUG:-0}"
+      CROWDGPT_SERVER: "${CROWDGPT_SERVER:-}"
+      CROWDGPT_USER: "${CROWDGPT_USER:-}"
+      CROWDGPT_PASSWORD: "${CROWDGPT_PASSWORD:-}"
+      CROWDGPT_TOKEN: "${CROWDGPT_TOKEN:-}"
+      CROWDGPT_BACKEND: "${CROWDGPT_BACKEND:-auto}"
+      CROWDGPT_VRAM_GB: "${CROWDGPT_VRAM_GB:-}"
+      CROWDGPT_ROUNDS: "${CROWDGPT_ROUNDS:-}"
+      CROWDGPT_EXTRA_ARGS: "${CROWDGPT_EXTRA_ARGS:-}"
+
+    volumes:
+      - crowdgpt-data:/data
+
+    command: []
+
+volumes:
+  crowdgpt-data:

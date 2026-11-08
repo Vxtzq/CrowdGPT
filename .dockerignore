@@ -1,0 +1,14 @@
+.git
+.gitignore
+.github
+.env
+checkpoints/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.installer-venv/
+*.bak
+*.new
+*.part
+*.gz

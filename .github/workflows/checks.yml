@@ -18,7 +18,17 @@ jobs:
         run: git ls-files '*.py' | xargs python -m py_compile
 
       - name: Shell scripts parse
-        run: bash -n install.sh
+        run: |
+          bash -n install.sh
+          bash -n docker/install-deps.sh
+          bash -n docker/docker-entrypoint.sh
+          bash -n docker/run.sh
+
+      - name: Docker Compose overlays validate
+        run: |
+          for overlay in cuda cuda-noruntime rocm xpu cpu; do
+            docker compose -f docker-compose.yml -f "docker-compose.${overlay}.yml" config -q
+          done
 
       # Fails when client.py / client.html changed after the release was signed,
       # i.e. when clients that are behind would fail the update hash check.
