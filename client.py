@@ -479,6 +479,9 @@ ENGRAM_ACTIVE = os.environ.get("CROWDGPT_ENGRAM", "1") == "1"
 
 LOSS_CHUNK = 256; UPLOAD_BUFFER_MIN = 25; ALLOWED_BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128]
 SAFETY_MARGIN_GB = 1.0; ALLOCATOR_RESERVE_GB = 0.5; MIN_HEADROOM_GB = 0.25
+# The planner's byte estimate is tight enough that a 512 MiB allocation can
+# still fail on a 12 GB card. Keep a full gigabyte out of placement decisions.
+PLACEMENT_SAFETY_GB = 1.0
 CAL_TIME_BUDGET = 90.0; CAL_MIN_MICRO = 3; CAL_MAX_MICRO_HARD = 20
 
 def _calc_model_size():
@@ -1508,6 +1511,13 @@ def run_doctor(args):
         print(_doctor_render_text(report))
     return 0 if report["summary"]["fail"] == 0 else 1
 
+def _placement_budget_gb():
+    return max(0.25, float(memory_config["ram_gb"]) - PLACEMENT_SAFETY_GB)
+
+def _cohort_predegrade(cc_bs, bs_est):
+    try: return bool(cc_bs and int(cc_bs) > int(bs_est))
+    except (TypeError, ValueError): return False
+
 def _plan_placement(device, backend_name, budget_gb, bs=1, sl=MAX_SEQ_LEN,
                     u8=False, loss_chunk=LOSS_CHUNK, act_bytes=None):
     if backend_name == "ROCM": loss_chunk = min(loss_chunk, 128)
@@ -1649,7 +1659,7 @@ def _streamed_block(block, dev, dtype, x, cos, sin, use_chunked):
 
 class SotaGPT(nn.Module):
     def __init__(self, bn, device, gpu_layers=None, bs=1, sl=MAX_SEQ_LEN,
-                 u8_override=None, act_bytes_override=None):
+                 u8_override=None, act_bytes_override=None, force_head_cpu=False):
         super().__init__()
         self.main_device = device; self.accel_device = device; self.cpu_device  = torch.device('cpu'); self.backend_name = bn
         is_cpu = (device is None) or (device.type == 'cpu')
@@ -1657,14 +1667,14 @@ class SotaGPT(nn.Module):
             u8 = u8_override if u8_override is not None else (
                 has_bitsandbytes() and device is not None and device.type in ('cuda',))
             head_gpu, gpu_layers, self.loss_chunk_hint = _plan_placement(
-                device, bn, memory_config["ram_gb"], bs=bs, sl=sl,
+                device, bn, _placement_budget_gb(), bs=bs, sl=sl,
                 u8=u8, act_bytes=act_bytes_override,
             )
         else:
             head_gpu = int(gpu_layers) >= N_LAYERS; self.loss_chunk_hint = LOSS_CHUNK
         self.gpu_layers = 0 if is_cpu else max(0, min(N_LAYERS, int(gpu_layers)))
         self.gpu_layer_set = set(range(self.gpu_layers))
-        self.head_on_gpu = bool(head_gpu) and not is_cpu
+        self.head_on_gpu = bool(head_gpu) and not is_cpu and not force_head_cpu
         self.wte = nn.Embedding(VOCAB_SIZE, DIM); self.engram = EngramMemory(bn, device)
         self.blocks = nn.ModuleList([Block() for _ in range(N_LAYERS)])
         self.ln_f = nn.LayerNorm(DIM); self.lm_head = nn.Linear(DIM, VOCAB_SIZE, bias=False)
@@ -2453,9 +2463,10 @@ def chunked_submit_delta(srv, h, delta_path, meta, emit, se):
             raise
 
 def _build_model(bn, device, iw, ie, emit, bs=1, sl=MAX_SEQ_LEN,
-                 u8_override=None, act_bytes_override=None):
+                 u8_override=None, act_bytes_override=None, force_head_cpu=False):
     model = SotaGPT(bn, device, gpu_layers=None, bs=bs, sl=sl,
-                    u8_override=u8_override, act_bytes_override=act_bytes_override)
+                    u8_override=u8_override, act_bytes_override=act_bytes_override,
+                    force_head_cpu=force_head_cpu)
     model.engram.table.to('cpu'); model.load_base_weights(iw)
     if ENGRAM_ACTIVE and ie is not None: model.engram.table.weight.data.copy_(ie.view(model.engram.table.weight.shape))
     model.engram.table.to('cpu'); model.train(); return model
@@ -2758,9 +2769,11 @@ def run_single_round_wrapper(srv, at, se, emit):
 
         _bs_est = recommend_batch_size(sl, force_mode=optim_mode)
         bs = _bs_est
+        predegrade = False
         if cohort_mode and cc_bs and int(cc_bs) > 0:
-            if int(cc_bs) > _bs_est:
-                emit('log', f"[COHORT] ⚠️ target bs={cc_bs} exceeds local estimate (bs={_bs_est}); will attempt with layout degradation")
+            predegrade = _cohort_predegrade(cc_bs, _bs_est)
+            if predegrade:
+                emit('log', f"[COHORT] target bs={cc_bs} exceeds local estimate (bs={_bs_est}); pre-degrading the head placement")
             bs = int(cc_bs)
 
         model = None
@@ -2773,6 +2786,7 @@ def run_single_round_wrapper(srv, at, se, emit):
                 model = _build_model(
                     train_backend, train_device, iw, ie, emit, bs=bs, sl=sl,
                     u8_override=_u8_override, act_bytes_override=_act_bytes_override,
+                    force_head_cpu=predegrade,
                 )
                 break
             except RuntimeError as e:
