@@ -2329,6 +2329,10 @@ def _clear_accel_cache(device):
     except Exception: pass
     gc.collect()
 
+def _oom_rung_changes_placement(stage):
+    """Rungs 4/5 only shrink the loss chunk; rebuilding Adam would lose its moments."""
+    return int(stage) not in (4, 5)
+
 class DegradeLadder:
     def __init__(self, model, on_step_down=None):
         self.model = model; self.stage = 0
@@ -2793,6 +2797,9 @@ def run_single_round_wrapper(srv, at, se, emit):
             nonlocal ob, oe
             if cohort_mode and _ladder.stage >= 6:
                 raise CohortAbort("OOM: would require CPU-only fallback in cohort mode")
+            if not _oom_rung_changes_placement(_ladder.stage):
+                emit('log', "   reduced loss chunk; keeping optimizer state")
+                return
             # Preserve optim_mode: flipping back to native mid-round would submit a delta trained
             # with the wrong optimizer for the pool, silently failing cross-check
             ob, oe = _build_optimizers(model, lr=1e-4, force_mode=optim_mode); emit('log', "   rebuilt optimizers for new placement")
