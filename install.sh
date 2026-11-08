@@ -44,6 +44,7 @@ INTEGRATE=1
 HEADLESS=0
 DEBUG=0
 KEEP_OPEN=0
+DIR_EXPLICIT=0
 
 if [ -t 1 ]; then
     BOLD=$'\033[1m'; RED=$'\033[31m'; GREEN=$'\033[32m'
@@ -73,7 +74,7 @@ while [[ $# -gt 0 ]]; do
             BACKEND_OVERRIDE="$2"; shift 2 ;;
         --dir)
             [[ -n "${2:-}" ]] || die "--dir requires a path"
-            REPO_DIR="$2"; shift 2 ;;
+            REPO_DIR="$2"; DIR_EXPLICIT=1; shift 2 ;;
         --no-launch)    LAUNCH=0; shift ;;
         --no-integrate) INTEGRATE=0; shift ;;
         --headless)     HEADLESS=1; shift ;;
@@ -131,7 +132,13 @@ if [[ -n "${BASH_SOURCE+x}" ]]; then
     fi
 fi
 
-if [[ -f "$SCRIPT_DIR/client.py" && -d "$SCRIPT_DIR/.git" ]]; then
+if [[ "$DIR_EXPLICIT" -eq 1 ]]; then
+    if [[ ! -d "$REPO_DIR/.git" ]]; then
+        [[ -e "$REPO_DIR" ]] && die "$REPO_DIR exists but is not a git repo."
+        log "Cloning $REPO_URL into $REPO_DIR ..."
+        git clone "$REPO_URL" "$REPO_DIR" || die "git clone failed"
+    fi
+elif [[ -f "$SCRIPT_DIR/client.py" && -d "$SCRIPT_DIR/.git" ]]; then
     REPO_DIR="$SCRIPT_DIR"
 elif [[ -f "client.py" && -d ".git" ]]; then
     REPO_DIR="$PWD"
@@ -146,6 +153,9 @@ cd "$REPO_DIR"
 
 BRANCH="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || echo main)"
 log "Syncing to origin/$BRANCH..."
+if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+    die "Local changes detected in $REPO_DIR. Commit or stash them before installing."
+fi
 git fetch --all --prune --tags || die "git fetch failed"
 git reset --hard "origin/$BRANCH" || die "git reset failed"
 ok "Synced to $(git log -1 --format='%h %s')"
@@ -210,6 +220,12 @@ log "Fetching Python 3.11 ..."
 uv python install 3.11 >/dev/null 2>&1 || die "Failed to download Python 3.11 via uv"
 ok "Python 3.11 ready"
 
+if [[ "$HEADLESS" -eq 0 ]] && [[ "$(uname -s)" != "Darwin" ]] \
+    && [[ -z "${DISPLAY:-}" ]] && [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
+    warn "No display detected — using headless installer; skipping the GUI runtime."
+    HEADLESS=1
+fi
+
 # ── 6. Installer venv + WebView ──
 INSTALLER_VENV="$PWD/.installer-venv"
 log "Creating installer venv at $INSTALLER_VENV ..."
@@ -217,33 +233,40 @@ rm -rf "$INSTALLER_VENV"
 uv venv --python 3.11 --clear "$INSTALLER_VENV" >/dev/null 2>&1 \
     || die "Failed to create installer venv"
 
-log "Downloading WebView runtime (PyQt6 + WebEngine + qtpy, ~120 MB)..."
-uv pip install --python "$INSTALLER_VENV/bin/python" --quiet \
-    pywebview "pywebview[qt]" qtpy pyqt6 pyqt6-webengine \
-    || warn "WebView dependencies unavailable; continuing in headless mode"
-
-# ── 7. Verify Qt backend ──
 WEBVIEW_OK=0
-if "$INSTALLER_VENV/bin/python" - <<'PY' >/dev/null 2>&1
+if [[ "$HEADLESS" -eq 1 ]]; then
+    log "Headless install: skipping the WebView runtime."
+elif [[ "$(uname -s)" == "Darwin" ]]; then
+    log "Installing pywebview for the macOS cocoa backend..."
+    uv pip install --python "$INSTALLER_VENV/bin/python" --quiet pywebview \
+        || die "Failed to install pywebview"
+    WEBVIEW_OK=1
+else
+    log "Downloading WebView runtime (PyQt6 + WebEngine + qtpy, ~208 MB)..."
+    uv pip install --python "$INSTALLER_VENV/bin/python" --quiet \
+        pywebview "pywebview[qt]" qtpy pyqt6 pyqt6-webengine \
+        || warn "WebView dependencies unavailable; continuing in headless mode"
+
+    # ── 7. Verify Qt backend ──
+    if "$INSTALLER_VENV/bin/python" - <<'PY' >/dev/null 2>&1
 from qtpy import QtCore
 from PyQt6 import QtWidgets, QtWebEngineWidgets
 from PyQt6.QtSvg import QSvgRenderer
 import webview.platforms.qt
 print("qt-ok")
 PY
-then
-    WEBVIEW_OK=1
-    ok "Qt WebEngine OK"
-else
-    warn "Qt WebEngine could not load in this environment."
-    if [[ "$(uname -s)" == "Linux" ]]; then
+    then
+        WEBVIEW_OK=1
+        ok "Qt WebEngine OK"
+    else
+        warn "Qt WebEngine could not load in this environment."
         warn "Common missing system libs on Debian / Ubuntu:"
         warn "  sudo apt install -y \\"
         warn "      libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \\"
         warn "      libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 \\"
         warn "      libxcb-xinerama0 libxcb-xkb1 libegl1 libgl1"
+        warn "Continuing in headless mode (full install still runs)."
     fi
-    warn "Continuing in headless mode (full install still runs)."
 fi
 
 # ── 8. Decide GUI vs headless ──
@@ -283,6 +306,8 @@ if [[ $rc -ne 0 ]]; then
     warn "Or headless (writes readable log even without a display):"
     warn "  bash $0 --headless ${ARGS[*]} 2>&1 | tee /tmp/crowdgpt-install.log"
 fi
+
+rm -rf "$INSTALLER_VENV" >/dev/null 2>&1 || true
 
 if [[ $rc -ne 0 ]] || [[ "$KEEP_OPEN" -eq 1 ]]; then
     pause_if_interactive
