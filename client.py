@@ -2176,25 +2176,26 @@ def fetch_task(srv, h, prec, se, emit, hb=None):
                 continue
             cl_total = int(r.headers.get('content-length', 0) or 0)
             total = cl_total if cl_total > 0 else EXPECTED_WEIGHT_BYTES
-            chunks = []; done = 0; last = 0.0
+            # One buffer, no list + join + full-payload slice: the inline
+            # payload is ~1.9 GiB, and the old path held two copies at once.
+            buf = bytearray(); done = 0; last = 0.0
             for chunk in r.iter_content(chunk_size=512 * 1024):
                 if not chunk: continue
                 if se.is_set() or (hb and hb.should_stop()):
                     r.close()
                     raise KeyboardInterrupt("Stop requested")
-                chunks.append(chunk); done += len(chunk)
+                buf.extend(chunk); done += len(chunk)
                 now = time.time()
                 if now - last > 0.25:
                     emit('overlay_progress', {'done': done, 'total': total}); last = now
             r.close()
             emit('overlay_progress', {'done': done, 'total': total}); emit('overlay_hide', {}); emit('status', 'preparing')
-            raw = b"".join(chunks); del chunks
-            if len(raw) < 4:
-                emit('log', f"/fl/task returned only {len(raw)} bytes; retrying"); time.sleep(5); continue
-            ml = struct.unpack('<I', raw[:4])[0]
-            if 4 + ml > len(raw):
+            if len(buf) < 4:
+                emit('log', f"/fl/task returned only {len(buf)} bytes; retrying"); time.sleep(5); continue
+            ml = struct.unpack('<I', buf[:4])[0]
+            if 4 + ml > len(buf):
                 emit('log', f"Truncated header; retrying"); time.sleep(5); continue
-            md = json.loads(raw[4:4 + ml].decode()); wb = raw[4 + ml:]
+            md = json.loads(bytes(buf[4:4 + ml]).decode()); wb = memoryview(buf)[4 + ml:]
             emit('log', f"/fl/task inline: metadata OK, weights={len(wb):,} bytes")
             if len(wb) < EXPECTED_WEIGHT_BYTES:
                 emit('log', f"⚠️ inline truncated at {len(wb):,}; retrying"); time.sleep(10); continue
