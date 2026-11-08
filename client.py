@@ -2607,13 +2607,17 @@ def _submit_delta_background(srv, h, delta_path, delta_size, meta, emit, se, hb=
         _upload_thread = threading.Thread(target=_run, daemon=True, name="crowdgpt-upload")
         _upload_thread.start()
 
-def _join_upload(se=None, timeout=None):
-    """Wait for the background upload at shutdown / before a restart."""
+def _join_upload(se=None, timeout=15.0):
+    """Wait for the background upload at shutdown / before a restart.
+
+    ``se`` is accepted for call-site compatibility but deliberately does not
+    abort the wait: on quit it is already set, and returning early can kill a
+    half-written POST and leak the delta file.
+    """
     t = _upload_thread
     if t is None: return
     end = None if timeout is None else time.time() + timeout
     while t.is_alive():
-        if se is not None and se.is_set(): return
         if end is not None and time.time() > end: return
         t.join(0.5)
 
@@ -2645,7 +2649,17 @@ def _upload_delta_file(srv, h, delta_path, delta_size, meta, emit, se):
             except Exception: j = {}
             if j.get("duplicate"): emit("log", f"⏭️ Not counted by server ({j.get('reason','duplicate')})")
             else: emit("log", "✅ Submitted successfully!")
-        elif r is not None: emit("log", f"❌ Round lost — submit failed (HTTP {r.status_code}): {_http_detail(r)}")
+        elif r is not None:
+            code = r.status_code; detail = _http_detail(r)
+            if code == 401:
+                _clear_saved_token_if_matches(h)
+                emit("log", f"❌ Round lost — session expired during upload (HTTP 401): {detail}")
+            elif code == 403:
+                emit("log", f"❌ Round lost — coordinator rejected the upload (HTTP 403): {detail or 'forbidden'}")
+            elif code == 426:
+                emit("log", f"❌ Round lost — client update required (HTTP 426): {detail or 'update the client'}")
+            else:
+                emit("log", f"❌ Round lost — submit failed (HTTP {code}): {detail}")
     except Exception as e: emit("log", f"Upload failed: {e}")
     finally:
         try: os.unlink(delta_path)
@@ -3809,7 +3823,7 @@ def _headless_emit(verbose=False):
         elif verbose: log.debug(f"[{ev}] {data}")
     return emit
 
-def _install_stop_signal_handlers(stop_event):
+def _install_stop_signal_handlers(stop_event, on_stop=None):
     """First SIGINT/SIGTERM requests a graceful stop; a second one hard-exits.
 
     No logging from the handler: logging can block on locks held by the thread
@@ -3822,7 +3836,11 @@ def _install_stop_signal_handlers(stop_event):
             try: signal.signal(signum, signal.SIG_DFL)
             except (ValueError, OSError): pass
             os._exit(130)
-        seen.append(signum); stop_event.set()
+        seen.append(signum)
+        if on_stop is not None:
+            try: on_stop()
+            except Exception: pass
+        stop_event.set()
     for sig_name in ("SIGINT", "SIGTERM"):
         s = getattr(signal, sig_name, None)
         if s is not None:
@@ -3912,12 +3930,7 @@ def _run_headless(args, emit, dashboard=None, control=None):
 
     if not args.no_tokenizer: _load_tokenizer_worker()
     stop_event = control.halt_event
-    def _on_signal(signum, frame): control.request_quit(announce=False)
-    for sig_name in ("SIGINT", "SIGTERM"):
-        s = getattr(signal, sig_name, None)
-        if s is not None:
-            try: signal.signal(s, _on_signal)
-            except (ValueError, OSError): pass
+    _install_stop_signal_handlers(stop_event, lambda: control.request_quit(announce=False))
 
     if args.dry_run:
         try: md = fetch_task_metadata(args.server, {"Authorization": f"Bearer {auth_token}"} if auth_token else {}, stop_event, emit)
@@ -3937,7 +3950,7 @@ def _run_headless(args, emit, dashboard=None, control=None):
         try: run_single_round_wrapper(args.server, auth_token, stop_event, emit)
         except AuthRejected: return 2
         except CoordinatorRejected:
-            _join_upload(stop_event); return 7   # don't let process exit kill an earlier round's upload (Ctrl+C still skips the wait)
+            _join_upload(stop_event); return 7   # let an earlier round's upload finish (wait is capped at 15s; a second Ctrl+C force-quits)
         except ArchIncompatible: return 6
         except KeyboardInterrupt:
             if control.quit_event.is_set():

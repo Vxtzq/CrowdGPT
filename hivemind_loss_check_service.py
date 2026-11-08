@@ -94,6 +94,9 @@ class LossCheckCoordinator:
         self._submit_times: dict[str, list[float]] = {}
         self.path = Path(state_path)
         self._lock = threading.Lock()
+        # Serializes expensive weight loading / CPU recomputation without blocking
+        # cheap state reads behind it. The state lock only guards bookkeeping.
+        self._verify_slot = threading.Semaphore(1)
         self.state = self._load()
 
     # ---------------------------------------------------------------- persistence
@@ -184,11 +187,12 @@ class LossCheckCoordinator:
         # coordinator lock and (through the FastAPI router) outside the event loop. The
         # state is re-checked below before anything is recorded, so a concurrent duplicate
         # cannot be counted twice.
-        base, cand, held = self.loader(job)
-        v = lc.verify_receipt(r, evaluator_keys=self.keys, server_secret=self.secret, expected_base_sha256=job.base_sha256,
-                              expected_candidate_sha256=job.candidate_sha256, heldout=held,
-                              recompute=lc.cpu_recompute_fn(self.model_factory, base, cand, held, job.window), k=self.k, tol=self.tol,
-                              max_regression_tolerance=self.max_regression, min_windows=self.min_windows)
+        with self._verify_slot:
+            base, cand, held = self.loader(job)
+            v = lc.verify_receipt(r, evaluator_keys=self.keys, server_secret=self.secret, expected_base_sha256=job.base_sha256,
+                                  expected_candidate_sha256=job.candidate_sha256, heldout=held,
+                                  recompute=lc.cpu_recompute_fn(self.model_factory, base, cand, held, job.window), k=self.k, tol=self.tol,
+                                  max_regression_tolerance=self.max_regression, min_windows=self.min_windows)
         verdict = {"accepted": v.accepted, "reason": v.reason, "loss_before": _finite_or_none(v.loss_before),
                    "loss_after": _finite_or_none(v.loss_after), "delta_loss": _finite_or_none(v.delta_loss), "checked": list(v.checked)}
         if v.reason.startswith("REJECTED"):
@@ -197,6 +201,8 @@ class LossCheckCoordinator:
         with self._lock:
             if r.round_id in self.state.decisions:
                 return 409, {"error": "job already decided", "decision": self.state.decisions[r.round_id]}
+            if job.expires_at < self.clock():
+                return 410, {"error": "job expired during verification"}
             if any(x["receipt"]["evaluator_id"] == r.evaluator_id for x in self.state.receipts.get(r.round_id, [])):
                 return 409, {"error": "this evaluator already answered this job"}
             self.state.receipts.setdefault(r.round_id, []).append({"receipt": json.loads(r.to_json()), "verdict": verdict})
