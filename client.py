@@ -3950,7 +3950,7 @@ def _run_headless(args, emit, dashboard=None, control=None):
         try: run_single_round_wrapper(args.server, auth_token, stop_event, emit)
         except AuthRejected: return 2
         except CoordinatorRejected:
-            _join_upload(stop_event); return 7   # don't let process exit kill an earlier round's upload (Ctrl+C still skips the wait)
+            _join_upload(stop_event); return 7   # let an earlier round's upload finish (wait is capped at 15s; a second Ctrl+C force-quits)
         except ArchIncompatible: return 6
         except KeyboardInterrupt:
             if control.quit_event.is_set():
