@@ -32,7 +32,8 @@
   <strong>The best 0$ AI.</strong>
 </p>
 
-# CrowdGPT v3.0 changelog
+# CrowdGPT v3.1 changelog
+- Allowed training and uploading at the same time
 - Enhanced CLI client version
 - Reduced weight decay and increased learning rate on server
  
