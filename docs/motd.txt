@@ -1,5 +1,5 @@
-CrowdGPT v3.0 changelog:
-- Stabilized Engram training
+CrowdGPT v3.1 changelog:
+- Allow training while uploading
 - Enhanced CLI client
 - Fixed server weight decay being WAY TOO HIGH
 Check GitHub for more infos
