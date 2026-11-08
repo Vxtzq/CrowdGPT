@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v3.1
+CrowdGPT GUI Client v3.2
+v3.2 changes
+  - Merged pull requests
+  - Many bugfixes
 v3.1 changes
   - Fixed register bugs
   - Background upload: training continues while the previous delta uploads (max 1 upload in flight;
@@ -118,7 +121,7 @@ del _stream_name, _stream
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
 
-CLIENT_VERSION = "3.1"
+CLIENT_VERSION = "3.2"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
@@ -2607,12 +2610,13 @@ def _submit_delta_background(srv, h, delta_path, delta_size, meta, emit, se, hb=
         _upload_thread = threading.Thread(target=_run, daemon=True, name="crowdgpt-upload")
         _upload_thread.start()
 
-def _join_upload(se=None, timeout=15.0):
+def _join_upload(se=None, timeout=None):
     """Wait for the background upload at shutdown / before a restart.
 
     ``se`` is accepted for call-site compatibility but deliberately does not
     abort the wait: on quit it is already set, and returning early can kill a
-    half-written POST and leak the delta file.
+    half-written POST and leak the delta file. ``timeout=None`` waits as long as
+    the upload takes (callers pass a cap only when the user is quitting).
     """
     t = _upload_thread
     if t is None: return
@@ -3950,7 +3954,7 @@ def _run_headless(args, emit, dashboard=None, control=None):
         try: run_single_round_wrapper(args.server, auth_token, stop_event, emit)
         except AuthRejected: return 2
         except CoordinatorRejected:
-            _join_upload(stop_event); return 7   # let an earlier round's upload finish (wait is capped at 15s; a second Ctrl+C force-quits)
+            _join_upload(stop_event, timeout=(15.0 if stop_event.is_set() else None)); return 7   # let an earlier round's upload finish; if the user quit, wait at most 15s (a second Ctrl+C force-quits)
         except ArchIncompatible: return 6
         except KeyboardInterrupt:
             if control.quit_event.is_set():
@@ -3974,7 +3978,8 @@ def _run_headless(args, emit, dashboard=None, control=None):
         if not args.no_update: _check_updates_between_rounds(emit)
         if control.quit_event.is_set(): break
         stop_event.wait(timeout=10.0)
-    _join_upload(stop_event)
+    # normal end of the run: the last round's upload must finish however long it takes; on quit wait at most 15s
+    _join_upload(stop_event, timeout=(15.0 if stop_event.is_set() else None))
     return 0
 
 def run_gui(args):
