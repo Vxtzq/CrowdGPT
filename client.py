@@ -3949,6 +3949,8 @@ if __name__ == "__main__":
 
     if args.doctor:
         sys.exit(run_doctor(args))
+    if args.register:
+        sys.exit(run_register(args))
     if sys.platform == "win32":
         try: ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Vxtzq.CrowdGPT.1")
         except Exception: pass
