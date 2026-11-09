@@ -920,3 +920,24 @@ def new_nonce() -> str:
     """A random 256-bit nonce."""
 
     return secrets.token_hex(32)
+
+
+def verify_round_certificate(record: Mapping[str, Any], certificate: Mapping[str, Any]) -> bool:
+    """Verify one ``{node, pubkey, sig}`` certificate over a round record.
+
+    The certificate is excluded from the signed payload, matching
+    ``RoundRecord.signing_payload()`` and the server's ``sign_record``. The
+    caller decides how many distinct certificates are required.
+    """
+    try:
+        pubkey = _require_hex64(certificate["pubkey"], "pubkey")
+        signature = certificate["sig"]
+        if not isinstance(signature, str) or not _HEX128.fullmatch(signature):
+            return False
+        body = {k: v for k, v in record.items() if k != "certificate"}
+        _, public_cls = _ed25519()
+        public = public_cls.from_public_bytes(bytes.fromhex(pubkey))
+        public.verify(bytes.fromhex(signature), canonical_bytes(body))
+        return True
+    except Exception:
+        return False
