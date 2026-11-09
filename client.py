@@ -197,6 +197,64 @@ _ED_L = 2 ** 252 + 27742317777372353535851937790883648493
 _ED_D = (-121665 * pow(121666, _ED_P - 2, _ED_P)) % _ED_P
 _ED_I = pow(2, (_ED_P - 1) // 4, _ED_P)
 
+class UnitCheckpoint:
+    """Opt-in mid-unit resume: model + optimizer + counters every N steps.
+
+    Off by default because a full state dict is ~1.4 GB. Enable with
+    CROWDGPT_UNIT_CHECKPOINT_EVERY=<steps>; a checkpoint is keyed by task id and
+    removed once the delta is handed to the uploader.
+    """
+    def __init__(self, task_id, every):
+        safe = re.sub(r"[^0-9A-Za-z_.-]", "_", str(task_id))[:120]
+        self.path = CHECKPOINT_DIR / "unit_resume" / f"{safe}.pt"
+        self.every = max(0, int(every))
+        self._last = 0
+
+    @classmethod
+    def from_env(cls, task_id):
+        try: every = int(os.environ.get("CROWDGPT_UNIT_CHECKPOINT_EVERY", "0") or 0)
+        except ValueError: every = 0
+        return cls(task_id, every)
+
+    @property
+    def enabled(self): return self.every > 0
+
+    def load(self, model, optimizers):
+        if not self.enabled or not self.path.exists(): return None
+        try:
+            state = torch.load(self.path, map_location="cpu", weights_only=False)
+            model.load_state_dict(state["model"], strict=False)
+            for opt, key in zip(optimizers, ("optim_base", "optim_engram")):
+                if state.get(key): opt.load_state_dict(state[key])
+            return state.get("counters") or {}
+        except Exception as e:
+            log.warning(f"Unit checkpoint load failed ({e}); starting the unit over")
+            self.clear()
+            return None
+
+    def maybe_save(self, model, optimizers, *, micro_step, tt, loss_sum, loss_sq, loss_count):
+        if not self.enabled or micro_step - self._last < self.every: return
+        self._last = micro_step
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        try:
+            torch.save({"schema": "ng-unit-1", "model": model.state_dict(),
+                        "optim_base": optimizers[0].state_dict(),
+                        "optim_engram": optimizers[1].state_dict(),
+                        "counters": {"micro_step": int(micro_step), "tokens": int(tt),
+                                     "loss_sum": float(loss_sum), "loss_sq": float(loss_sq),
+                                     "loss_count": int(loss_count)}},
+                       tmp)
+            os.replace(tmp, self.path)
+        except Exception as e:
+            log.warning(f"Unit checkpoint save failed: {e}")
+            try: tmp.unlink()
+            except OSError: pass
+
+    def clear(self):
+        try: self.path.unlink()
+        except OSError: pass
+
 def _ed_recover_x(y, sign):
     if y >= _ED_P: return None
     x2 = (y * y - 1) * pow(_ED_D * y * y + 1, _ED_P - 2, _ED_P) % _ED_P
@@ -2313,6 +2371,15 @@ def fetch_weights_from_hf(md, se, emit):
         emit("status", "downloading"); emit("overlay_show", {"title_key": "dl_weights", "indeterminate": False})
         for role, url, path, size, label, cached, cid in need:
             _download_file_with_progress(url, path, emit, se, expected_size=size, label=label)
+            want = expected_sha.get(role)
+            if want:
+                got = _sha256_file(path)
+                if got != str(want).lower():
+                    try: path.unlink()
+                    except OSError: pass
+                    raise RuntimeError(f"{label} SHA-256 mismatch: expected {want}, got {got}")
+    hits = sum(1 for j in jobs if j[5])
+    emit("log", f"Weight cache: {hits}/{len(jobs)} hit ({100 * hits // max(1, len(jobs))}%)")
     for role, url, path, size, label, cached, cid in jobs:
         if cached:
             emit("log", f"♻️ {label} unchanged on Hugging Face ({(cid or 'rev ' + str(revision))[:10]}…): using cached copy, no download")
@@ -2328,6 +2395,30 @@ def fetch_weights_from_hf(md, se, emit):
             except Exception: pass
     except Exception: pass
     return iw, ie
+
+def prefetch_latest_hf_weights(se=None, emit=None):
+    """Warm the content-addressed cache for the model repo's latest revision.
+
+    Runs after an upload has been handed off. It never asks the coordinator for
+    a task, so it cannot reserve a pool slot that this client will not train.
+    """
+    try:
+        if os.environ.get("CROWDGPT_PREFETCH", "1") == "0": return
+        r = requests.get(f"https://huggingface.co/api/models/{HF_MODEL_REPO_ID}", timeout=15)
+        if not r.ok: return
+        revision = r.json().get("sha")
+        if not revision: return
+        for role, fn, active in (("model", "model_bf16.safetensors", True),
+                                 ("engram", "engram_bf16.safetensors", bool(ENGRAM_ACTIVE))):
+            if not active or (se is not None and se.is_set()): continue
+            url = f"https://huggingface.co/{HF_MODEL_REPO_ID}/resolve/{revision}/{fn}"
+            cid, size = _hf_head_identity(url)
+            path = _weight_blob_path(role, cid, size, revision)
+            if path.exists() and (size is None or path.stat().st_size == int(size)): continue
+            _download_file_with_progress(url, path, emit or (lambda *a, **k: None), se,
+                                         expected_size=size, label=fn)
+    except Exception as e:
+        log.debug(f"prefetch skipped: {e}")
 
 def _chunk_ce(xs, w, ys, pos_step=64):
     """Cross-entropy without materialising the whole logits chunk in fp32.
@@ -2888,6 +2979,15 @@ def run_single_round_wrapper(srv, at, se, emit):
         iew = ie.view(model.engram.table.weight.shape) if (ENGRAM_ACTIVE and ie is not None) else None; ie = None; _trim_heap()
         mbt = bs * sl; as_ = int(cc_accum) if (cohort_mode and cc_accum) else max(1, round(131072 / mbt))
         ls = 1.0 / as_; ob, oe = _build_optimizers(model, lr=1e-4, force_mode=optim_mode)
+        uck = UnitCheckpoint.from_env(tid)
+        _resumed = uck.load(model, [ob, oe])
+        if _resumed:
+            micro_step = int(_resumed.get("micro_step", 0))
+            tt = int(_resumed.get("tokens", 0))
+            round_loss_sum = float(_resumed.get("loss_sum", 0.0))
+            round_loss_sq_sum = float(_resumed.get("loss_sq", 0.0))
+            round_loss_count = int(_resumed.get("loss_count", 0))
+            emit('log', f"♻️ Resumed unit {tid} at step {micro_step} from {uck.path.name}")
 
         def _on_step_down(_ladder):
             nonlocal ob, oe
@@ -2929,7 +3029,10 @@ def run_single_round_wrapper(srv, at, se, emit):
             if hb.should_stop() or se.is_set(): return
             _clip_base_grads(model)
             ob.step(); ob.zero_grad(set_to_none=True)
-            oe.step(); oe.zero_grad(set_to_none=True); gc.collect()
+            oe.step(); oe.zero_grad(set_to_none=True)
+            uck.maybe_save(model, [ob, oe], micro_step=micro_step, tt=tt,
+                           loss_sum=round_loss_sum, loss_sq=round_loss_sq_sum,
+                           loss_count=round_loss_count); gc.collect()
 
         if se.is_set(): return
         if cohort_mode: dl = float('inf'); target_micro_steps = int(cc_steps)
@@ -2973,6 +3076,9 @@ def run_single_round_wrapper(srv, at, se, emit):
             _clip_base_grads(model)
             ob.step(); ob.zero_grad(set_to_none=True)
             oe.step(); oe.zero_grad(set_to_none=True)
+            uck.maybe_save(model, [ob, oe], micro_step=micro_step, tt=tt,
+                           loss_sum=round_loss_sum, loss_sq=round_loss_sq_sum,
+                           loss_count=round_loss_count)
 
         timing.phase("train", time.monotonic() - _train_t0, tokens=tt, steps=micro_step)
 
@@ -3024,6 +3130,8 @@ def run_single_round_wrapper(srv, at, se, emit):
         
         upload_size_mb = delta_size / (1024 * 1024); meta = {"taskId": tid, "loss": fl, "localSteps": micro_step, "tokensProcessed": tt, "loraRank": 0, "isDelta": True, "weightFormat": "bf16", "hasEngram": has_engram, "engramSparseCount": engram_sparse_count, **submit_extra}
         timing_handoff = _submit_delta_background(srv, h, delta_path, delta_size, meta, emit, se, hb=hb, timing=timing)   # discards the delta if refused
+        uck.clear()
+        threading.Thread(target=prefetch_latest_hf_weights, args=(se, emit), daemon=True).start()
         if not timing_handoff:
             timing.finish(ok=False, error="upload_not_started")
     except BaseException as e:
