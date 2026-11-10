@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import importlib.util
-import io
 import json
 import os
-import shutil
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,26 +15,17 @@ ROOT = Path(__file__).resolve().parents[1]
 class TimingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls._sandbox = tempfile.TemporaryDirectory(prefix="timing-client-")
-        sandbox = Path(cls._sandbox.name)
-        shutil.copy2(ROOT / "client.py", sandbox / "client.py")
-        old_out, old_err = sys.stdout, sys.stderr
-        sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
-        sys.stderr = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+        # Reuse the stdlib-only client loader from the coordinator tests: it
+        # stubs torch/numpy/requests, so this module runs in upstream CI.
         try:
-            spec = importlib.util.spec_from_file_location("ng_timing_client", sandbox / "client.py")
-            assert spec and spec.loader
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[spec.name] = module
-            spec.loader.exec_module(module)
-        finally:
-            sys.stdout, sys.stderr = old_out, old_err
-        cls.client = module
+            import test_coordinator_rejected as base
+        except ImportError:
+            from tests import test_coordinator_rejected as base
+        cls.client = base.client
 
     @classmethod
     def tearDownClass(cls):
-        sys.modules.pop("ng_timing_client", None)
-        cls._sandbox.cleanup()
+        pass
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory(prefix="timing-out-")
