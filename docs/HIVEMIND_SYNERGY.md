@@ -1,21 +1,30 @@
-# Synergie CrowdGPT × HiveMind : Architecture Tronc Commun + Greffons
+# CrowdGPT × HiveMind Synergy: Coordinator, Account Multiplexing & CrossCheck Guide
 
-Ce document décrit le pont technique entre **[CrowdGPT](https://github.com/Vxtzq/CrowdGPT)** (`Vxtzq/Crowd-v1`, modèle dense de 1B paramètres entraîné sur des shards binaires `uint16` FineWeb de 1 Mo) et **[HiveMind](https://github.com/xaviercallens/HiveMind)** (La Ruche Sparse MoE & routeur OpenAI-compatible).
+This document defines the exact integration points between **[CrowdGPT](https://github.com/Vxtzq/CrowdGPT)** (`Vxtzq/Crowd-v1`, `server.crowdgpt.net`, `client.py` v3.1+) and **[HiveMind](https://github.com/xaviercallens/HiveMind)** (OpenRouter inference gateway & volunteer GPU swarm).
 
-## 1. Convergence Architecturale (Hub-and-Spoke DiLoCo)
+## 1. Repository Modules & Intended Integration Points
 
-Le cycle d'entraînement de `CrowdGPT/client.py` (téléchargement du checkpoint `bf16`, entraînement local pendant 1 heure sur des sous-chunks `uint16` avec `AdamW8bit`, puis envoi du delta compressé `_base_delta_bf16` au coordinateur) correspond exactement au schéma **Hub-and-Spoke DiLoCo (Distributed Low-Communication)**.
+All three root modules in this repository are active coordinator/client bridge components exercised by `tests/test_hivemind_integration.py` in CI (`python -m unittest discover -s tests -v`):
 
-## 2. Brique `hivemind_bridge.py` (Zéro Dépendance Supplémentaire)
+| File in `Vxtzq/CrowdGPT` | Role | Coordinator / Client Integration Point |
+|---|---|---|
+| `hivemind_bridge.py` | Pure-stdlib v3.1 `X-Client-*` header builder, `crossCheck` cohort parser & `/fl/submit` validator, precision cohort classifier, gzipped delta stream packer/unpacker, Multi-Krum & Loss Ratchet | Coordinator `POST /fl/submit` pre-merge verification + CLI `python hivemind_bridge.py headers --handle <user> --device <gpu>` |
+| `hivemind_loss_check.py` | `CrowdV1` (`657.8M` trunk + optional `227,865`-bucket `CrowdEngram` on HF Step 348+), HMAC-signed loss receipts & spot-check verifier | Shared library imported by `hivemind_loss_check_service.py` and GPU evaluator nodes |
+| `hivemind_loss_check_service.py` | Framework-agnostic backend job & receipt coordinator (`handle_get_job`, `handle_post_receipt`, `fastapi_router`) | Coordinator `GET /fl/loss_check/job` & `POST /fl/loss_check/receipt` before promoting a merged checkpoint to Hugging Face |
 
-Le module autonome `hivemind_bridge.py` (utilisant uniquement `torch` et `numpy`, déjà présents dans `requirements.txt`) fournit trois briques prêtes à l'emploi pour le coordinateur CrowdGPT lorsqu'il monte à 100 contributeurs simultanés :
+## 2. Onboarding HiveMind Trainers Without Per-User Account Explosion
 
-1. **`unpack_crowdgpt_delta_stream` / `pack_crowdgpt_delta_stream`** : lecture et écriture exactes du flux gzippé `struct.pack('<I', len(pl)) + pl + (dbf, si, sv)` généré par `client.py`.
-2. **`multi_krum_select_and_aggregate`** : filtrage géométrique **Multi-Krum** par blocs mémoire bornés (`chunk_elements=1_048_576`) qui écarte automatiquement les deltas corrompus ou empoisonnés avant la moyenne pondérée par `tokensProcessed`.
-3. **`LossRatchetGate`** : porte de validation monotone sur jeu held-out qui n'avance le checkpoint global (`Vxtzq/Crowd-v1`) que lorsque la loss held-out s'améliore (avec empreinte `SHA-256`).
+CrowdGPT's coordinator keys active tasks on `user:<uuid>:dev:<device>` (`client.py:337`). `hivemind_bridge.build_crowdgpt_client_hardware_headers(...)` sets deterministic `X-Client-Device: hm-<handle>-<gpu>` headers alongside all 12 required `X-Client-*` headers:
 
-## 3. Intégration dans le Routeur HiveMind OpenRouter & La Ruche
+1. **Tier 1 — Shared Fleet Account (`hivemind-swarm`)**: Casual or night-window HiveMinders (`RTX 2070`, `GCP Spot T4`, volunteer GPUs) share a single `hivemind-swarm` token while passing unique `X-Client-Device: hm-<handle>-<gpu>` IDs so tasks never collide on `server.crowdgpt.net`.
+2. **Tier 2 — Personal CrowdGPT Account (`--login`)**: Dedicated contributors link their own CrowdGPT token for individual leaderboard credit while also earning HiveMind OpenTrainer rewards.
 
-Le modèle `Vxtzq/Crowd-v1` est pré-câblé dans le catalogue et le routeur HiveMind sous l'identifiant **`hivemind/crowd-v1`** (alias `crowdgpt/crowd-v1` et `Vxtzq/Crowd-v1`), permettant :
-- de discuter gratuitement avec `Crowd-v1` dans le playground navigateur (`0 €`, aucun abonnement) ;
-- d'y greffer des adaptateurs QLoRA spécialisés de 18 Mo (`loraRank > 0`, déjà prévu dans l'en-tête JSON de `client.py`) sans diluer l'entraînement du tronc commun 1B.
+## 3. Exact Cross-Client Verification (`crossCheck`) Compliance
+
+When `server.crowdgpt.net` enables a cross-client verification cohort (`task["crossCheck"]["enabled"] == True`):
+- `parse_crowdgpt_task_crosscheck(task)` enforces `effective_slot = 0` and extracts `targetSeed`, `targetLocalSteps`, `targetBatchSize`, `targetAccumSteps`, and `targetAutocast`.
+- `build_crowdgpt_submit_metadata(...)` validates that `actual_steps == targetLocalSteps` and `actual_batch_size == targetBatchSize` before packing `crossCheckUsed`, `actualSeed`, `actualSteps`, `actualBatchSize`, `lastLoss`, `lossStd`, and `lossSamples` into the `/fl/submit` JSON header.
+
+## 4. Testing Live `Vxtzq/Crowd-v1` on HiveMind OpenRouter
+
+`Vxtzq/Crowd-v1` (including `CrowdEngram` `engram_buckets=227865`) is served live via OpenAI-compatible `/v1/chat/completions` as **`hivemind/crowd-v1`** (aliases `crowdgpt/crowd-v1`, `Vxtzq/Crowd-v1`), polling `https://huggingface.co/Vxtzq/Crowd-v1/resolve/main/status.json` to hot-reload new `globalStep` / `hfRevision` checkpoints automatically.

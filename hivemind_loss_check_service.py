@@ -25,10 +25,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-try:  # inside HiveMind
-    from hivemind.swarm import crowdgpt_loss_check as lc
-except ImportError:  # copied next to it in the CrowdGPT repository
+try:  # copied next to it in the CrowdGPT repository
     import hivemind_loss_check as lc  # type: ignore[no-redef]
+except ImportError:  # inside HiveMind
+    from hivemind.swarm import crowdgpt_loss_check as lc
 
 JOB_SCHEMA = "hivemind.crowdgpt.loss_check_job.v1"
 MAX_RECEIPT_BYTES = 1_000_000
