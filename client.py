@@ -2954,7 +2954,7 @@ def _check_updates_between_rounds(emit):
 
 class Api:
     def __init__(self):
-        self.window = None; self.stop_event = threading.Event(); self.thread = None
+        self.window = None; self.stop_event = threading.Event(); self.restart_event = threading.Event(); self.thread = None
         self.auth_token = None; self.username = None; self.server_url = DEFAULT_SERVER
         self._lp = 0.0
         self._ui_queue = queue.Queue(maxsize=2048)
@@ -3051,9 +3051,10 @@ class Api:
             return
         _save_saved_gpu_idx(idx)
         busy = self.thread is not None and self.thread.is_alive()
-        self.emit('log', f"GPU → {idx}" + (" (stopping current round; applies from the next)" if busy else ""))
+        self.emit('log', f"GPU → {idx}" + (" (restarting training with the new GPU)" if busy else ""))
         self.get_backends()
-        if busy: self.stop_event.set()
+        if busy:
+            self.restart_event.set(); self.stop_event.set()
 
     def set_vram(self, gb):
         try: gb = max(0.0, float(gb))
@@ -3069,7 +3070,9 @@ class Api:
         try: self._backend_file.write_text(json.dumps({"backend": backend_name}))
         except Exception: pass
         self.get_backends()
-        if self.thread and self.thread.is_alive(): self.stop_event.set()
+        if self.thread and self.thread.is_alive():
+            self.emit('log', f"Backend → {backend_name} (restarting training)")
+            self.restart_event.set(); self.stop_event.set()
 
     def login(self, s, u, p, remember=False):
         self.server_url = s or self.server_url
@@ -3108,13 +3111,13 @@ class Api:
             if self.stop_event.is_set():
                 self.emit('log', "Previous run is still shutting down — press Start again in a moment."); self.emit('start_refused', {})
             return
-        self.stop_event.clear()
+        self.stop_event.clear(); self.restart_event.clear()
         self.thread = threading.Thread(target=self._rs, daemon=True)
         self.thread.start()
         self.emit('started', {})
       
     def stop(self):
-        self.stop_event.set()
+        self.restart_event.clear(); self.stop_event.set()
         self.emit('stopped', {})
     def logout(self):
         self.stop_event.set()                                      # stops training after the current step; a new login can't start until it has ended
@@ -3126,39 +3129,47 @@ class Api:
     def _check_updates_between_rounds(self): _check_updates_between_rounds(self.emit)
 
     def _rs(self):
-        try: _do_backend_setup(self.selected_backend, self.vram_gb, self.emit)
-        except Exception as e:
-            self.emit('log', f"Error: {e}"); self.emit('status', 'idle'); return
-        round_count = 0
-        while not self.stop_event.is_set():
-            round_count += 1; apply_vram_override(self.vram_gb)
-            self.emit('log', f"{'='*40}\nStarting Round Cycle #{round_count}\n{'='*40}")
-            try: run_single_round_wrapper(self.server_url, self.auth_token, self.stop_event, self.emit)
-            except AuthRejected:
-                self.auth_token = None; self.emit('status', 'idle'); self.emit('log', "🔒 Session expired — please log in again.")
-                try: AUTH_TOKEN_FILE.unlink(missing_ok=True)
-                except Exception: pass
-                self.emit('logged_out', {}); break
-            except CoordinatorRejected as e:
-                if e.status == 426:
-                    self.emit('log', f"⛔ This client version is no longer accepted ({e}). Training stopped — checking for an update; if none installs, update the client and press Start again.")
-                    self._check_updates_between_rounds()       # installs and restarts if a signed update exists
-                else:                                          # 403: the reason may be temporary (e.g. a timed subnet block)
-                    self.emit('log', f"⛔ The coordinator refused to hand out work ({e}). Training stopped — press Start again once this is resolved.")
-                self.emit('status', 'idle'); return            # idle last: Start must not be re-enabled while the check runs
-            except ArchIncompatible as e:
-                self.emit('status', 'idle'); self.emit('log', f"⛔ Cannot train: {e}. Fix the PyTorch/GPU mismatch above, or pick a different GPU/backend, then press Start again."); break
-            except KeyboardInterrupt: self.stop_event.set(); break
+        while True:
+            try: _do_backend_setup(self.selected_backend, self.vram_gb, self.emit)
             except Exception as e:
-                import traceback; tb = traceback.format_exc()
-                for ln in tb.splitlines()[-14:]: self.emit('log', ln)
-                self.emit('log', f"Round failed: {e}")
-            if self.stop_event.is_set(): break
-            self._check_updates_between_rounds(); self.emit('status', 'waiting'); self.emit('log', "✅ Round complete. Auto-relaunching next round in 10s...")
-            for _ in range(10):
+                self.emit('log', f"Error: {e}"); self.emit('status', 'idle'); return
+            fatal = False
+            round_count = 0
+            while not self.stop_event.is_set():
+                round_count += 1; apply_vram_override(self.vram_gb)
+                self.emit('log', f"{'='*40}\nStarting Round Cycle #{round_count}\n{'='*40}")
+                try: run_single_round_wrapper(self.server_url, self.auth_token, self.stop_event, self.emit)
+                except AuthRejected:
+                    self.auth_token = None; self.emit('status', 'idle'); self.emit('log', "🔒 Session expired — please log in again.")
+                    try: AUTH_TOKEN_FILE.unlink(missing_ok=True)
+                    except Exception: pass
+                    self.emit('logged_out', {}); fatal = True; break
+                except CoordinatorRejected as e:
+                    if e.status == 426:
+                        self.emit('log', f"⛔ This client version is no longer accepted ({e}). Training stopped — checking for an update; if none installs, update the client and press Start again.")
+                        self._check_updates_between_rounds()       # installs and restarts if a signed update exists
+                    else:                                          # 403: the reason may be temporary (e.g. a timed subnet block)
+                        self.emit('log', f"⛔ The coordinator refused to hand out work ({e}). Training stopped — press Start again once this is resolved.")
+                    self.emit('status', 'idle'); return            # idle last: Start must not be re-enabled while the check runs
+                except ArchIncompatible as e:
+                    self.emit('status', 'idle'); self.emit('log', f"⛔ Cannot train: {e}. Fix the PyTorch/GPU mismatch above, or pick a different GPU/backend, then press Start again."); fatal = True; break
+                except KeyboardInterrupt: self.stop_event.set(); fatal = True; break
+                except Exception as e:
+                    import traceback; tb = traceback.format_exc()
+                    for ln in tb.splitlines()[-14:]: self.emit('log', ln)
+                    self.emit('log', f"Round failed: {e}")
                 if self.stop_event.is_set(): break
-                time.sleep(1)
-        self.emit('status', 'idle'); self.emit('log', "👋 Training stopped by user.")
+                self._check_updates_between_rounds(); self.emit('status', 'waiting'); self.emit('log', "✅ Round complete. Auto-relaunching next round in 10s...")
+                for _ in range(10):
+                    if self.stop_event.is_set(): break
+                    time.sleep(1)
+            restart_event = getattr(self, 'restart_event', None)
+            if not fatal and restart_event is not None and restart_event.is_set():
+                restart_event.clear(); self.stop_event.clear()
+                self.emit('log', "🔄 Backend/GPU changed; restarting training...")
+                continue
+            self.emit('status', 'idle'); self.emit('log', "👋 Training stopped by user.")
+            return
 
 def _apply_gtk_icon_list():
     """GTK backend only: give the WM every real size so it never has to scale one big image."""
