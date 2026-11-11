@@ -120,6 +120,15 @@ leave the value in shell history or the process list. Registration saves the ses
 token in `checkpoints/auth_token.json`, so the next `crowdgpt --headless` run can
 reuse it. Registration exits without training.
 
+Log in to an existing account and save the session, again without the desktop app:
+
+```bash
+crowdgpt --login --user NAME
+# prompts for the password without echoing it
+```
+
+`--login` also accepts `CROWDGPT_PASSWORD` or `--password`, with the same caveat as above. It saves the session in `checkpoints/auth_token.json` and exits without training.
+
 ### Diagnostics
 
 Before reporting a launch or training problem, run the read-only environment check:

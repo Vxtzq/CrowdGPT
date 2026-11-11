@@ -1424,7 +1424,7 @@ def _doctor_collect_report(args):
     if session["present"]:
         _doctor_add(checks, "Session", "saved", "ok", f"{session['username'] or 'unknown user'} on {session['server'] or 'unknown server'}")
     else:
-        _doctor_add(checks, "Session", "saved", "info", session["error"] or "no saved session; use --register or --user/--password")
+        _doctor_add(checks, "Session", "saved", "info", session["error"] or "no saved session; use --login, --register or --user/--password")
 
     update = _doctor_update_probe()
     if not update["checked"]:
@@ -3770,7 +3770,7 @@ def _tui_enabled(args):
         return False
 
 _HEADLESS_EXIT_MESSAGES = {
-    2: "Authentication failed or no saved session. Pass --user/--password or sign in with the desktop app.",
+    2: "Authentication failed or no saved session. Run --login, pass --user/--password, or sign in with the desktop app.",
     3: "Backend setup failed.",
     5: "Could not fetch task metadata from the coordinator.",
     6: "The coordinator rejected this client's architecture.",
@@ -3780,6 +3780,7 @@ def parse_args():
     p = argparse.ArgumentParser(prog="client.py", description="CrowdGPT client. Runs GUI by default; use --headless for SSH/servers.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--headless", action="store_true", help="no window; train in the terminal")
     p.add_argument("--register", action="store_true", help="create an account, save the session, and exit")
+    p.add_argument("--login", action="store_true", help="log in with --user, save the session, and exit")
     p.add_argument("--server", default=DEFAULT_SERVER, help="coordinator URL")
     p.add_argument("--user", default=None, help="username")
     p.add_argument("--email", default=None, help="email for --register (or env CROWDGPT_EMAIL)")
@@ -3915,7 +3916,7 @@ def _run_headless(args, emit, dashboard=None, control=None):
                     auth_token = saved.get("token")
         except Exception: pass
         if not auth_token:
-            log.error("[auth] no saved session for this server; run --register or pass --user/--password.")
+            log.error("[auth] no saved session for this server; run --login, --register or pass --user/--password.")
             return 2
 
     selected = args.backend if args.backend and args.backend != "auto" else None
@@ -4098,6 +4099,35 @@ def run_register(args):
     print(f"Registered {username} on {args.server}. Session saved for headless training.")
     return 0
 
+def run_login(args):
+    username = (args.user or "").strip()
+    password = args.password or os.environ.get("CROWDGPT_PASSWORD")
+    if not username:
+        log.error("Login needs --user.")
+        return 2
+    if password is None:
+        if not sys.stdin.isatty():
+            log.error("Login needs --password or CROWDGPT_PASSWORD when stdin is not a terminal.")
+            return 2
+        try:
+            password = getpass.getpass("Password: ")
+        except (EOFError, KeyboardInterrupt):
+            log.error("Login cancelled.")
+            return 130
+    token, err = do_login(args.server, username, password)
+    if not token:
+        # do_login reports every non-200 reply as invalid_credentials, including 429 and 5xx.
+        reason = "cannot reach the coordinator" if err == "network" else "the coordinator rejected the login"
+        log.error(f"Login failed: {reason}.")
+        return 1
+    try:
+        _save_auth_token(args.server, username, token, True)
+    except Exception as exc:
+        log.error(f"Logged in, but the session could not be saved: {exc}")
+        return 1
+    print(f"Logged in as {username} on {args.server}. Session saved for headless training.")
+    return 0
+
 if __name__ == "__main__":
     args = parse_args()
     if args.debug: logging.getLogger().setLevel(logging.DEBUG)
@@ -4109,6 +4139,8 @@ if __name__ == "__main__":
         sys.exit(run_doctor(args))
     if args.register:
         sys.exit(run_register(args))
+    if args.login:
+        sys.exit(run_login(args))
     if sys.platform == "win32":
         try: ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Vxtzq.CrowdGPT.1")
         except Exception: pass
