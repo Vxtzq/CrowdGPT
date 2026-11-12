@@ -1136,6 +1136,9 @@ def _hardware_headers(force_mode=None):
         if train_backend in ("CUDA", "ROCM") and torch.cuda.is_available():
             dev_idx = train_device.index if (train_device is not None and train_device.index is not None) else 0
             gpu = torch.cuda.get_device_name(dev_idx)
+        elif train_backend == "XPU" and hasattr(torch, "xpu"):
+            dev_idx = train_device.index if (train_device is not None and train_device.index is not None) else 0
+            gpu = torch.xpu.get_device_name(dev_idx)
         elif train_backend: gpu = str(train_backend)
     except Exception: pass
     try:

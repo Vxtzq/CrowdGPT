@@ -1993,6 +1993,7 @@ nav a.nav-with-badge {
 .pool-stat-dot.forming { background: #f59e0b; }
 .pool-stat-dot.training { background: #10b981; }
 .pool-stat-dot.idle { background: #6b7280; }
+.pool-stat-dot.completing { background: #3b82f6; }
 
 .pool-stat-label {
   color: var(--text-muted);
@@ -3769,6 +3770,15 @@ const TRANSLATIONS = {
     'status.explainer.li4': '<strong>Model Loss:</strong> cross-entropy loss of the most recently aggregated update.',
     'status.explainer.foot': 'Stats refresh automatically every 15 seconds from the HuggingFace CDN. The global model weights are pushed to HuggingFace every 4 hours after aggregated updates complete.',
     'status.goal.title': 'Token goal',
+    'status.pools.title': 'Training Pools by Hardware',
+    'status.pools.sub': 'See which device types are actively training vs. waiting for more pool members.',
+    'status.pools.client.one': 'client',
+    'status.pools.client.many': 'clients',
+    'status.pools.forming': 'forming',
+    'status.pools.training': 'training',
+    'status.pools.idle': 'idle',
+    'status.pools.completing': 'completing',
+    'status.pools.none': 'no active pools',
 
     'status.chart.title': 'Loss history',
 'status.chart.waiting': 'Waiting for data…',
@@ -3954,6 +3964,15 @@ const TRANSLATIONS = {
     'status.explainer.li4': "<strong>Perte du modèle :</strong> perte d'entropie croisée de la mise à jour agrégée la plus récente.",
     'status.explainer.foot': "Les statistiques se rafraîchissent automatiquement toutes les 15 secondes depuis le CDN HuggingFace. Les poids du modèle global sont envoyés vers HuggingFace toutes les 4 heures après la fin des mises à jour agrégées.",
     'status.goal.title': 'Objectif de tokens',
+    'status.pools.title': "Pools d'entraînement par matériel",
+    'status.pools.sub': "Découvrez quels types d'appareils entraînent activement ou attendent davantage de membres.",
+    'status.pools.client.one': 'client',
+    'status.pools.client.many': 'clients',
+    'status.pools.forming': 'en formation',
+    'status.pools.training': 'en cours',
+    'status.pools.idle': 'inactif',
+    'status.pools.completing': 'finalisation',
+    'status.pools.none': 'aucun pool actif',
 
     'contrib.crumb': 'accueil / classement',
     'contrib.h1': 'Classement des contributeurs',
@@ -4144,6 +4163,15 @@ const TRANSLATIONS = {
     'status.explainer.li4': '<strong>Modellverlust:</strong> Kreuzentropie-Verlust des zuletzt aggregierten Updates.',
     'status.explainer.foot': 'Die Statistiken aktualisieren sich automatisch alle 15 Sekunden über das HuggingFace-CDN. Die globalen Modellgewichte werden alle 4 Stunden nach Abschluss aggregierter Updates zu HuggingFace hochgeladen.',
     'status.goal.title': 'Token-Ziel',
+    'status.pools.title': 'Trainingspools nach Hardware',
+    'status.pools.sub': 'Sehen Sie, welche Gerätetypen aktiv trainieren oder auf weitere Pool-Mitglieder warten.',
+    'status.pools.client.one': 'Client',
+    'status.pools.client.many': 'Clients',
+    'status.pools.forming': 'wird gebildet',
+    'status.pools.training': 'im Training',
+    'status.pools.idle': 'inaktiv',
+    'status.pools.completing': 'wird abgeschlossen',
+    'status.pools.none': 'keine aktiven Pools',
 
     'contrib.crumb': 'start / rangliste',
     'contrib.h1': 'Beitragsrangliste',
@@ -4327,6 +4355,15 @@ const TRANSLATIONS = {
     'status.explainer.li4': '<strong>Pérdida del modelo:</strong> pérdida de entropía cruzada de la actualización agregada más reciente.',
     'status.explainer.foot': 'Las estadísticas se actualizan automáticamente cada 15 segundos desde el CDN de HuggingFace. Los pesos globales del modelo se suben a HuggingFace cada 4 horas tras completarse las actualizaciones agregadas.',
     'status.goal.title': 'Objetivo de tokens',
+    'status.pools.title': 'Pools de entrenamiento por hardware',
+    'status.pools.sub': 'Vea qué tipos de dispositivos están entrenando o esperando más miembros para el pool.',
+    'status.pools.client.one': 'cliente',
+    'status.pools.client.many': 'clientes',
+    'status.pools.forming': 'formándose',
+    'status.pools.training': 'entrenando',
+    'status.pools.idle': 'inactivo',
+    'status.pools.completing': 'finalizando',
+    'status.pools.none': 'no hay pools activos',
 
     'contrib.crumb': 'inicio / clasificación',
     'contrib.h1': 'Clasificación de contribuyentes',
@@ -4510,6 +4547,15 @@ const TRANSLATIONS = {
     'status.explainer.li4': '<strong>Model Kaybı:</strong> en son birleştirilmiş güncellemenin çapraz entropi kaybı.',
     'status.explainer.foot': "İstatistikler HuggingFace CDN'inden her 15 saniyede bir otomatik yenilenir. Küresel model ağırlıkları, birleştirilmiş güncellemeler tamamlandıktan sonra her 4 saatte bir HuggingFace'e gönderilir.",
     'status.goal.title': 'Token hedefi',
+    'status.pools.title': 'Donanıma Göre Eğitim Havuzları',
+    'status.pools.sub': 'Hangi cihaz türlerinin eğitim yaptığını veya havuza daha fazla üye beklediğini görün.',
+    'status.pools.client.one': 'istemci',
+    'status.pools.client.many': 'istemci',
+    'status.pools.forming': 'oluşturuluyor',
+    'status.pools.training': 'eğitimde',
+    'status.pools.idle': 'boşta',
+    'status.pools.completing': 'tamamlanıyor',
+    'status.pools.none': 'etkin havuz yok',
 
     'contrib.crumb': 'ana sayfa / liderlik',
     'contrib.h1': 'Katkıda Bulunan Liderlik Tablosu',
@@ -5295,7 +5341,7 @@ async function fetchStats() {
     
     // Render pool hardware breakdown
     renderPoolBreakdown(d);
-    
+
     failedAttempts = 0;
     apiReachable = true;
 
@@ -5344,19 +5390,19 @@ function renderPoolBreakdown(data) {
   const grid = document.getElementById('pool-breakdown-grid');
   if (!section || !grid) return;
 
-  const mm = data.matchmaking;
+  const translations = TRANSLATIONS[currentLang] || TRANSLATIONS.en;
+  const mm = data?.matchmaking;
   if (!mm || !mm.poolBreakdown || Object.keys(mm.poolBreakdown).length === 0) {
     section.style.display = 'none';
     return;
   }
 
   section.style.display = 'block';
-  grid.innerHTML = '';
+  grid.replaceChildren();
 
-  // Sort by total clients descending
   const entries = Object.entries(mm.poolBreakdown)
     .map(([hw, info]) => ({ hw, ...info }))
-    .sort((a, b) => (b.clients || 0) - (a.clients || 0));
+    .sort((a, b) => (a.clients || 0) - (b.clients || 0) || a.hw.localeCompare(b.hw));
 
   for (const entry of entries) {
     const card = document.createElement('div');
@@ -5365,20 +5411,51 @@ function renderPoolBreakdown(data) {
     const forming = entry.forming || 0;
     const training = entry.training || 0;
     const idle = entry.idle || 0;
+    const completing = entry.completing || 0;
     const clients = entry.clients || 0;
 
-    card.innerHTML = `
-      <div class="pool-card-header">
-        <span class="pool-card-hw">${entry.hw}</span>
-        <span class="pool-card-clients">${clients} client${clients !== 1 ? 's' : ''}</span>
-      </div>
-      <div class="pool-card-stats">
-        ${forming > 0 ? `<div class="pool-stat"><span class="pool-stat-dot forming"></span><span class="pool-stat-label">forming</span><span class="pool-stat-value">${forming}</span></div>` : ''}
-        ${training > 0 ? `<div class="pool-stat"><span class="pool-stat-dot training"></span><span class="pool-stat-label">training</span><span class="pool-stat-value">${training}</span></div>` : ''}
-        ${idle > 0 ? `<div class="pool-stat"><span class="pool-stat-dot idle"></span><span class="pool-stat-label">idle</span><span class="pool-stat-value">${idle}</span></div>` : ''}
-        ${forming === 0 && training === 0 && idle === 0 ? `<div class="pool-stat"><span class="pool-stat-label">no active pools</span></div>` : ''}
-      </div>
-    `;
+    const header = document.createElement('div');
+    header.className = 'pool-card-header';
+    const hardware = document.createElement('span');
+    hardware.className = 'pool-card-hw';
+    hardware.textContent = entry.hw;
+    const clientCount = document.createElement('span');
+    clientCount.className = 'pool-card-clients';
+    const clientLabel = translations[clients === 1 ? 'status.pools.client.one' : 'status.pools.client.many'];
+    clientCount.textContent = `${clients} ${clientLabel}`;
+    header.append(hardware, clientCount);
+
+    const stats = document.createElement('div');
+    stats.className = 'pool-card-stats';
+    for (const [label, count] of [
+      ['forming', forming],
+      ['training', training],
+      ['idle', idle],
+      ['completing', completing],
+    ]) {
+      if (count === 0) continue;
+      const stat = document.createElement('div');
+      stat.className = 'pool-stat';
+      const dot = document.createElement('span');
+      dot.className = `pool-stat-dot ${label}`;
+      const statLabel = document.createElement('span');
+      statLabel.className = 'pool-stat-label';
+      statLabel.textContent = translations[`status.pools.${label}`];
+      const value = document.createElement('span');
+      value.className = 'pool-stat-value';
+      value.textContent = count;
+      stat.append(dot, statLabel, value);
+      stats.appendChild(stat);
+    }
+
+    if (stats.childElementCount === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'pool-stat';
+      empty.textContent = translations['status.pools.none'];
+      stats.appendChild(empty);
+    }
+
+    card.append(header, stats);
     grid.appendChild(card);
   }
 }
