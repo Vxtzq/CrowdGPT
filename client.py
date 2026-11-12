@@ -2567,6 +2567,9 @@ def _parse_task_meta(md, emit):
 # ---- v3.1: background uploader (max 1 upload in flight; training continues meanwhile) ----
 _upload_lock = threading.Lock()
 _upload_thread = None
+# Uploads are aborted only on a real hard shutdown, never by pause/Stop: a
+# paused training loop must not kill a POST that already owns a finished round.
+_UPLOAD_ABORT = threading.Event()
 
 def _upload_active():
     t = _upload_thread
@@ -2576,7 +2579,9 @@ def _wait_for_upload(se, emit=None, poll=0.5, hb=None):
     """Block until the in-flight upload (if any) finishes. Returns False if stopped (or refused, via hb) first."""
     announced = False
     while _upload_active():
-        if se.is_set() or (hb is not None and hb.rejected is not None): return False
+        # A training pause/Stop must not cancel an upload; only a coordinator
+        # refusal makes this round's delta not worth writing.
+        if hb is not None and hb.rejected is not None: return False
         if emit is not None and not announced:
             emit('log', "⏳ Previous upload still in progress; this round's delta will upload right after it."); emit('status', 'waiting'); announced = True
         time.sleep(poll)
@@ -2601,7 +2606,7 @@ def _submit_delta_background(srv, h, delta_path, delta_size, meta, emit, se, hb=
         return
     with _upload_lock:
         def _run():
-            try: _upload_delta_file(srv, h, delta_path, delta_size, meta, _bg_emit(emit), se)
+            try: _upload_delta_file(srv, h, delta_path, delta_size, meta, _bg_emit(emit), _UPLOAD_ABORT)
             except BaseException as e:
                 try: emit('log', f"Upload failed: {e}")
                 except Exception: pass
