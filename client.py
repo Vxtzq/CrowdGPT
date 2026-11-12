@@ -1035,6 +1035,68 @@ def has_bitsandbytes():
         import bitsandbytes; return True
     except Exception: return False
 
+_BNB_SELFTEST = None
+
+def _bnb_optimizer_works():
+    """Import is not enough on ROCm: verify AdamW8bit actually updates a tensor."""
+    global _BNB_SELFTEST
+    if _BNB_SELFTEST is not None:
+        return _BNB_SELFTEST
+    if os.environ.get("CROWDGPT_DISABLE_BNB") == "1":
+        _BNB_SELFTEST = False; return False
+    try:
+        import bitsandbytes as bnb
+        if not hasattr(bnb, "optim") or not hasattr(bnb.optim, "AdamW8bit"):
+            _BNB_SELFTEST = False; return False
+        if not torch.cuda.is_available():
+            _BNB_SELFTEST = False; return False
+        p = torch.nn.Parameter(torch.ones(8, device="cuda"))
+        before = p.detach().clone()
+        opt = bnb.optim.AdamW8bit([p], lr=0.1)
+        p.grad = torch.ones_like(p)
+        opt.step()
+        _BNB_SELFTEST = not torch.allclose(before, p.detach())
+    except Exception:
+        _BNB_SELFTEST = False
+    return bool(_BNB_SELFTEST)
+
+def _optimizer_8bit_available(backend):
+    if backend not in ("CUDA", "ROCM"):
+        return False
+    if backend == "ROCM":
+        return _bnb_optimizer_works()
+    return has_bitsandbytes()
+
+def _rocm_profile():
+    if train_backend != "ROCM":
+        return {}
+    info = {"gfx": "", "arch_supported": None, "bf16": False, "bnb8": False,
+            "budget_gb": memory_config.get("ram_gb")}
+    try:
+        props = torch.cuda.get_device_properties(0)
+        info["gfx"] = str(getattr(props, "gcnArchName", "") or "")
+        archs = [str(a) for a in torch.cuda.get_arch_list()]
+        gfx_base = info["gfx"].split(":")[0]
+        info["arch_supported"] = (not archs) or (not gfx_base) or any(
+            a == gfx_base or a.startswith(gfx_base) for a in archs)
+    except Exception:
+        pass
+    try: info["bf16"] = bool(torch.cuda.is_bf16_supported())
+    except Exception: pass
+    info["bnb8"] = bool(_bnb_optimizer_works())
+    return info
+
+def _engram_gpu_enabled(backend, device, bs, sl, u8):
+    if os.environ.get("CROWDGPT_ENGRAM_GPU") != "1":
+        return False
+    if backend != "ROCM" or device is None or getattr(device, "type", None) != "cuda":
+        return False
+    try:
+        spare = memory_config["ram_gb"] * 1024 ** 3 - estimate_vram_bytes(bs, sl, u8)
+        return spare > 2.0 * 1024 ** 3
+    except Exception:
+        return False
+
 def _bytes_per_block_params():
     return (DIM * 2 + DIM * (N_HEADS * HEAD_DIM) + DIM * (N_KV_HEADS * HEAD_DIM)
             + DIM * (N_KV_HEADS * HEAD_DIM) + DIM * DIM + DIM * 2
@@ -1059,13 +1121,23 @@ def recommend_batch_size(sl=MAX_SEQ_LEN, force_mode=None):
     elif force_mode == "adamw32":
         u8 = False
     else:
-        u8 = has_bitsandbytes() and train_backend in ("CUDA", "ROCM")
-    budget = int(memory_config["ram_gb"] * 1024**3); best = 1
+        u8 = _optimizer_8bit_available(train_backend)
+    budget_gb = float(memory_config["ram_gb"])
+    rocm_cap = 0
+    if train_backend == "ROCM":
+        try:
+            frac = float(os.environ.get("CROWDGPT_ROCM_VRAM_FRACTION", "0.85"))
+            if 0.5 <= frac <= 1.0: budget_gb *= frac
+        except (TypeError, ValueError): pass
+        raw_cap = os.environ.get("CROWDGPT_ROCM_BATCH", "").strip()
+        if raw_cap:
+            try: rocm_cap = max(1, min(8, int(raw_cap)))
+            except ValueError: rocm_cap = 0
+    budget = int(budget_gb * 1024**3); best = 1
     for bs in ALLOWED_BATCH_SIZES:
         if estimate_vram_bytes(bs, sl, u8) <= budget: best = bs
         else: break
-    if train_backend == "ROCM":
-        rocm_bs_cap = max(1, min(8, int(os.environ.get("CROWDGPT_ROCM_BATCH", 1)))); best = min(best, rocm_bs_cap)
+    if rocm_cap: best = min(best, rocm_cap)
     if train_backend == "CPU": best = min(best, 2)
     return best
 
@@ -1076,19 +1148,9 @@ def _predict_optim(backend, force_mode=None):
     - force_mode="adamw8bit" → 8bit if available, else gracefully 32 (caller is expected to have already aborted)"""
     if force_mode == "adamw32": return "adamw32"
     if force_mode == "adamw8bit":
-        try:
-            import bitsandbytes as bnb
-            if hasattr(bnb, "optim") and hasattr(bnb.optim, "AdamW8bit") and backend in ("CUDA", "ROCM"):
-                return "adamw8bit"
-        except Exception: pass
-        return "adamw32"
+        return "adamw8bit" if _optimizer_8bit_available(backend) else "adamw32"
     # native
-    if backend not in ("CUDA", "ROCM"): return "adamw32"
-    try:
-        import bitsandbytes as bnb
-        if not hasattr(bnb, "optim") or not hasattr(bnb.optim, "AdamW8bit"): return "adamw32"
-        return "adamw8bit"
-    except Exception: return "adamw32"
+    return "adamw8bit" if _optimizer_8bit_available(backend) else "adamw32"
 
 def _detect_optim_capability():
     """Returns (native, can_fp32, can_8bit). can_fp32 is always True (every backend supports fp32 AdamW).
@@ -1510,7 +1572,10 @@ def run_doctor(args):
 
 def _plan_placement(device, backend_name, budget_gb, bs=1, sl=MAX_SEQ_LEN,
                     u8=False, loss_chunk=LOSS_CHUNK, act_bytes=None):
-    if backend_name == "ROCM": loss_chunk = min(loss_chunk, 128)
+    if backend_name == "ROCM":
+        try: rocm_chunk = max(64, min(512, int(os.environ.get("CROWDGPT_ROCM_LOSS_CHUNK", "128"))))
+        except ValueError: rocm_chunk = 128
+        loss_chunk = min(loss_chunk, rocm_chunk)
     if device is None or device.type == "cpu": return False, 0, loss_chunk
     GB = 1024 ** 3
     cd = act_bytes if act_bytes is not None else (2 if device.type in ("cuda", "xpu") else 4)
@@ -1622,18 +1687,19 @@ class Block(nn.Module):
         return x + self.mlp(self.ln_2(x))
 
 class EngramMemory(nn.Module):
-    def __init__(self, bn, device):
+    def __init__(self, bn, device, table_device=None):
         super().__init__()
         self.device = device
+        self.table_device = torch.device(table_device or 'cpu')
         rows = ENG_NUM_BUCKETS if ENGRAM_ACTIVE else 1
-        self.table = nn.Embedding(rows, DIM, sparse=True).to('cpu')
+        self.table = nn.Embedding(rows, DIM, sparse=True).to(self.table_device)
         nn.init.normal_(self.table.weight, mean=0.0, std=0.02)
     def forward(self, idx):
         if self.table.num_embeddings <= 1:
             return torch.zeros(idx.shape[0], idx.shape[1], DIM, device=self.device, dtype=torch.float32)
-        idx_cpu = idx.detach().cpu()
-        px = torch.cat([torch.zeros_like(idx_cpu[:, :1]), idx_cpu[:, :-1]], dim=1)
-        hi = (px * 1000003 + idx_cpu) % ENG_NUM_BUCKETS
+        idx_dev = idx.detach().to(self.table.weight.device)
+        px = torch.cat([torch.zeros_like(idx_dev[:, :1]), idx_dev[:, :-1]], dim=1)
+        hi = (px * 1000003 + idx_dev) % ENG_NUM_BUCKETS
         uq, inv = torch.unique(hi.reshape(-1), return_inverse=True)
         cr = self.table(uq)
         out = cr[inv].view(idx.shape[0], idx.shape[1], DIM)
@@ -1665,7 +1731,11 @@ class SotaGPT(nn.Module):
         self.gpu_layers = 0 if is_cpu else max(0, min(N_LAYERS, int(gpu_layers)))
         self.gpu_layer_set = set(range(self.gpu_layers))
         self.head_on_gpu = bool(head_gpu) and not is_cpu
-        self.wte = nn.Embedding(VOCAB_SIZE, DIM); self.engram = EngramMemory(bn, device)
+        _eng_u8 = u8_override if u8_override is not None else (
+            _optimizer_8bit_available(bn))
+        self.engram_on_gpu = _engram_gpu_enabled(bn, device, bs, sl, _eng_u8) if ENGRAM_ACTIVE else False
+        self.engram_device = device if self.engram_on_gpu else self.cpu_device
+        self.wte = nn.Embedding(VOCAB_SIZE, DIM); self.engram = EngramMemory(bn, device, table_device=self.engram_device)
         self.blocks = nn.ModuleList([Block() for _ in range(N_LAYERS)])
         self.ln_f = nn.LayerNorm(DIM); self.lm_head = nn.Linear(DIM, VOCAB_SIZE, bias=False)
         if MODEL_CONFIG["weightTying"]: self.wte.weight = self.lm_head.weight
@@ -1674,7 +1744,7 @@ class SotaGPT(nn.Module):
         cm_cpu, sm_cpu = precompute_freqs(HEAD_DIM, MAX_SEQ_LEN, self.cpu_device)
         self.register_buffer("freqs_cos_cpu", cm_cpu); self.register_buffer("freqs_sin_cpu", sm_cpu)
         for i, block in enumerate(self.blocks): block.to(device if i in self.gpu_layer_set else self.cpu_device)
-        self._place_head(); self.engram.table.to('cpu')
+        self._place_head(); self.engram.table.to(self.engram_device)
 
     def _place_head(self):
         head_dev = self.main_device if self.head_on_gpu else self.cpu_device
@@ -1693,7 +1763,8 @@ class SotaGPT(nn.Module):
     def to_cpu_only(self):
         self.gpu_layers = 0; self.gpu_layer_set = set(); self.head_on_gpu = False; self.main_device = self.cpu_device
         for blk in self.blocks: blk.to(self.cpu_device)
-        self._place_head(); self.engram.table.to('cpu'); self.engram.device = self.cpu_device
+        self.engram_on_gpu = False; self.engram_device = self.cpu_device; self.engram.table_device = self.cpu_device
+        self._place_head(); self.engram.table.to(self.cpu_device); self.engram.device = self.cpu_device
 
     def head_weight(self, dtype=None):
         w = self.lm_head.weight
@@ -2456,9 +2527,9 @@ def _build_model(bn, device, iw, ie, emit, bs=1, sl=MAX_SEQ_LEN,
                  u8_override=None, act_bytes_override=None):
     model = SotaGPT(bn, device, gpu_layers=None, bs=bs, sl=sl,
                     u8_override=u8_override, act_bytes_override=act_bytes_override)
-    model.engram.table.to('cpu'); model.load_base_weights(iw)
+    model.engram.table.to(model.engram_device); model.load_base_weights(iw)
     if ENGRAM_ACTIVE and ie is not None: model.engram.table.weight.data.copy_(ie.view(model.engram.table.weight.shape))
-    model.engram.table.to('cpu'); model.train(); return model
+    model.engram.table.to(model.engram_device); model.train(); return model
 
 class _MultiOpt:
     def __init__(self, opts): self.opts = [o for o in opts if o is not None]
@@ -2519,12 +2590,13 @@ def _write_base_delta_bf16(gz, model, iw_bf16, piece=16 * 1024 * 1024):
     if o != iw_bf16.numel(): raise RuntimeError(f"delta size mismatch: {o} vs {iw_bf16.numel()}")
 
 def _engram_sparse_delta(table, iew_bf16, frac=0.10, chunk=32768):
-    n = table.shape[0]; rn = torch.empty(n)
-    for i in range(0, n, chunk): rn[i:i + chunk] = (table[i:i + chunk] - iew_bf16[i:i + chunk].float()).abs().sum(dim=1)
+    n = table.shape[0]; rn = torch.empty(n, device=table.device)
+    ref = iew_bf16.to(table.device) if iew_bf16.device != table.device else iew_bf16
+    for i in range(0, n, chunk): rn[i:i + chunk] = (table[i:i + chunk] - ref[i:i + chunk].float()).abs().sum(dim=1)
     k = max(1, int(n * frac)); tv, ti = torch.topk(rn, k); ai = ti[tv > 1e-8]
     if len(ai) == 0: return np.array([], dtype=np.uint32), np.array([], dtype=np.uint16)
-    sv = (table[ai] - iew_bf16[ai].float()).to(torch.bfloat16).view(torch.int16).numpy().view(np.uint16)
-    return ai.numpy().astype(np.uint32), sv
+    sv = (table[ai] - ref[ai].float()).to(torch.bfloat16).view(torch.int16).detach().cpu().numpy().view(np.uint16)
+    return ai.detach().cpu().numpy().astype(np.uint32), sv
 
 def _write_delta_file(path, header_bytes, model, iw_bf16, engram_arrays, level=6, piece=64 * 1024 * 1024):
     with open(path, 'wb') as f, gzip.GzipFile(fileobj=f, mode='wb', compresslevel=level) as gz:
@@ -2945,6 +3017,10 @@ def _do_backend_setup(selected_backend, vram_gb, emit):
     emit('meta', {'backend': train_backend}); emit('log', f"Backend: {train_backend} ({train_device})")
     auto_detect_vram_budget(); memory_config["auto_gb"] = memory_config["ram_gb"]; apply_vram_override(vram_gb)
     emit('log', f"Placement budget: {memory_config['ram_gb']:.2f} GB"); install_hard_vram_cap(train_device, SAFETY_MARGIN_GB)
+    if train_backend == "ROCM":
+        prof = _rocm_profile()
+        emit('log', "ROCm profile: gfx=%s arch_supported=%s bf16=%s bnb8=%s budget=%.2f GB" % (
+            prof.get("gfx") or "?", prof.get("arch_supported"), prof.get("bf16"), prof.get("bnb8"), memory_config["ram_gb"]))
 
 def _check_updates_between_rounds(emit):
     try:
