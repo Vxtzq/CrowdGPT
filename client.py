@@ -108,6 +108,7 @@ except Exception:
     _RICH_OK = False
 
 from collections import deque
+
 if _WEBVIEW_OK:
     logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 for _stream_name in ("stdout", "stderr"):
@@ -120,6 +121,65 @@ for _stream_name in ("stdout", "stderr"):
 del _stream_name, _stream
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
+
+TIMING_ENV_VAR = "CROWDGPT_TIMING_LOG"
+
+
+class TimingRecorder:
+    """Opt-in per-round phase timer. Construction and writes never raise."""
+
+    def __init__(self, path=None, round_id=None):
+        raw = path if path is not None else os.environ.get(TIMING_ENV_VAR, "")
+        self.path = Path(raw).expanduser() if str(raw).strip() else None
+        self.round = round_id
+        self.started = time.monotonic()
+        self.enabled = self.path is not None
+        self._finished = False
+        self._lock = threading.Lock()
+
+    @classmethod
+    def from_env(cls):
+        return cls()
+
+    def set_round(self, round_id):
+        if round_id is not None:
+            self.round = int(round_id)
+
+    def phase(self, name, seconds, *, bytes=0, tokens=0, ok=True, **extra):
+        if not self.enabled:
+            return
+        row = {
+            "schema": "ng-timing-1",
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds"),
+            "round": self.round,
+            "phase": name,
+            "seconds": round(max(0.0, float(seconds)), 6),
+            "bytes": int(max(0, bytes)),
+            "tokens": int(max(0, tokens)),
+            "ok": bool(ok),
+        }
+        for key, value in extra.items():
+            if value is not None and isinstance(value, (str, int, float, bool)):
+                row[key] = value
+        line = (json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(self.path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                os.write(fd, line)
+            finally:
+                os.close(fd)
+        except OSError:
+            pass
+
+    def finish(self, *, ok=True, error=None):
+        with self._lock:
+            if self._finished:
+                return
+            self._finished = True
+        fields = {"error": error} if error else {}
+        self.phase("total", time.monotonic() - self.started, ok=ok, **fields)
+
 
 CLIENT_VERSION = "3.2"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
@@ -136,6 +196,64 @@ _ED_P = 2 ** 255 - 19
 _ED_L = 2 ** 252 + 27742317777372353535851937790883648493
 _ED_D = (-121665 * pow(121666, _ED_P - 2, _ED_P)) % _ED_P
 _ED_I = pow(2, (_ED_P - 1) // 4, _ED_P)
+
+class UnitCheckpoint:
+    """Opt-in mid-unit resume: model + optimizer + counters every N steps.
+
+    Off by default because a full state dict is ~1.4 GB. Enable with
+    CROWDGPT_UNIT_CHECKPOINT_EVERY=<steps>; a checkpoint is keyed by task id and
+    removed once the delta is handed to the uploader.
+    """
+    def __init__(self, task_id, every):
+        safe = re.sub(r"[^0-9A-Za-z_.-]", "_", str(task_id))[:120]
+        self.path = CHECKPOINT_DIR / "unit_resume" / f"{safe}.pt"
+        self.every = max(0, int(every))
+        self._last = 0
+
+    @classmethod
+    def from_env(cls, task_id):
+        try: every = int(os.environ.get("CROWDGPT_UNIT_CHECKPOINT_EVERY", "0") or 0)
+        except ValueError: every = 0
+        return cls(task_id, every)
+
+    @property
+    def enabled(self): return self.every > 0
+
+    def load(self, model, optimizers):
+        if not self.enabled or not self.path.exists(): return None
+        try:
+            state = torch.load(self.path, map_location="cpu", weights_only=False)
+            model.load_state_dict(state["model"], strict=False)
+            for opt, key in zip(optimizers, ("optim_base", "optim_engram")):
+                if state.get(key): opt.load_state_dict(state[key])
+            return state.get("counters") or {}
+        except Exception as e:
+            log.warning(f"Unit checkpoint load failed ({e}); starting the unit over")
+            self.clear()
+            return None
+
+    def maybe_save(self, model, optimizers, *, micro_step, tt, loss_sum, loss_sq, loss_count):
+        if not self.enabled or micro_step - self._last < self.every: return
+        self._last = micro_step
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        try:
+            torch.save({"schema": "ng-unit-1", "model": model.state_dict(),
+                        "optim_base": optimizers[0].state_dict(),
+                        "optim_engram": optimizers[1].state_dict(),
+                        "counters": {"micro_step": int(micro_step), "tokens": int(tt),
+                                     "loss_sum": float(loss_sum), "loss_sq": float(loss_sq),
+                                     "loss_count": int(loss_count)}},
+                       tmp)
+            os.replace(tmp, self.path)
+        except Exception as e:
+            log.warning(f"Unit checkpoint save failed: {e}")
+            try: tmp.unlink()
+            except OSError: pass
+
+    def clear(self):
+        try: self.path.unlink()
+        except OSError: pass
 
 def _ed_recover_x(y, sign):
     if y >= _ED_P: return None
@@ -2253,6 +2371,15 @@ def fetch_weights_from_hf(md, se, emit):
         emit("status", "downloading"); emit("overlay_show", {"title_key": "dl_weights", "indeterminate": False})
         for role, url, path, size, label, cached, cid in need:
             _download_file_with_progress(url, path, emit, se, expected_size=size, label=label)
+            want = expected_sha.get(role)
+            if want:
+                got = _sha256_file(path)
+                if got != str(want).lower():
+                    try: path.unlink()
+                    except OSError: pass
+                    raise RuntimeError(f"{label} SHA-256 mismatch: expected {want}, got {got}")
+    hits = sum(1 for j in jobs if j[5])
+    emit("log", f"Weight cache: {hits}/{len(jobs)} hit ({100 * hits // max(1, len(jobs))}%)")
     for role, url, path, size, label, cached, cid in jobs:
         if cached:
             emit("log", f"♻️ {label} unchanged on Hugging Face ({(cid or 'rev ' + str(revision))[:10]}…): using cached copy, no download")
@@ -2268,6 +2395,30 @@ def fetch_weights_from_hf(md, se, emit):
             except Exception: pass
     except Exception: pass
     return iw, ie
+
+def prefetch_latest_hf_weights(se=None, emit=None):
+    """Warm the content-addressed cache for the model repo's latest revision.
+
+    Runs after an upload has been handed off. It never asks the coordinator for
+    a task, so it cannot reserve a pool slot that this client will not train.
+    """
+    try:
+        if os.environ.get("CROWDGPT_PREFETCH", "1") == "0": return
+        r = requests.get(f"https://huggingface.co/api/models/{HF_MODEL_REPO_ID}", timeout=15)
+        if not r.ok: return
+        revision = r.json().get("sha")
+        if not revision: return
+        for role, fn, active in (("model", "model_bf16.safetensors", True),
+                                 ("engram", "engram_bf16.safetensors", bool(ENGRAM_ACTIVE))):
+            if not active or (se is not None and se.is_set()): continue
+            url = f"https://huggingface.co/{HF_MODEL_REPO_ID}/resolve/{revision}/{fn}"
+            cid, size = _hf_head_identity(url)
+            path = _weight_blob_path(role, cid, size, revision)
+            if path.exists() and (size is None or path.stat().st_size == int(size)): continue
+            _download_file_with_progress(url, path, emit or (lambda *a, **k: None), se,
+                                         expected_size=size, label=fn)
+    except Exception as e:
+        log.debug(f"prefetch skipped: {e}")
 
 def _chunk_ce(xs, w, ys, pos_step=64):
     """Cross-entropy without materialising the whole logits chunk in fp32.
@@ -2567,6 +2718,9 @@ def _parse_task_meta(md, emit):
 # ---- v3.1: background uploader (max 1 upload in flight; training continues meanwhile) ----
 _upload_lock = threading.Lock()
 _upload_thread = None
+# Set only while the single background uploader runs, so the upload function
+# keeps its existing call signature (and its tests stay honest).
+_upload_timing = None
 
 def _upload_active():
     t = _upload_thread
@@ -2589,7 +2743,7 @@ def _bg_emit(emit):
         return emit(ev, *a, **k)
     return _e
 
-def _submit_delta_background(srv, h, delta_path, delta_size, meta, emit, se, hb=None):
+def _submit_delta_background(srv, h, delta_path, delta_size, meta, emit, se, hb=None, timing=None):
     global _upload_thread
     # Only one upload at a time: if the previous one is still running, hold this (already written) delta until it is done.
     # The previous upload itself is never cancelled here. A refusal (hb) before the hand-over discards this delta.
@@ -2598,17 +2752,26 @@ def _submit_delta_background(srv, h, delta_path, delta_size, meta, emit, se, hb=
              else "Stopped while waiting to upload; delta discarded.")
         try: os.unlink(delta_path)
         except OSError: pass
-        return
+        if timing is not None: timing.finish(ok=False, error="upload_not_started")
+        return False
     with _upload_lock:
         def _run():
-            try: _upload_delta_file(srv, h, delta_path, delta_size, meta, _bg_emit(emit), se)
+            global _upload_timing
+            ok = False
+            _upload_timing = timing
+            try:
+                ok = _upload_delta_file(srv, h, delta_path, delta_size, meta, _bg_emit(emit), se)
             except BaseException as e:
                 try: emit('log', f"Upload failed: {e}")
                 except Exception: pass
                 try: os.unlink(delta_path)
                 except OSError: pass
+            finally:
+                _upload_timing = None
+                if timing is not None: timing.finish(ok=ok, error=None if ok else "upload_failed")
         _upload_thread = threading.Thread(target=_run, daemon=True, name="crowdgpt-upload")
         _upload_thread.start()
+    return True
 
 def _join_upload(se=None, timeout=None):
     """Wait for the background upload at shutdown / before a restart.
@@ -2627,9 +2790,13 @@ def _join_upload(se=None, timeout=None):
 
 def _upload_delta_file(srv, h, delta_path, delta_size, meta, emit, se):
     """Upload one finished delta file and delete it. Runs in the background uploader thread."""
+    global _upload_timing
     upload_size_mb = delta_size / (1024 * 1024)
     emit('log', f"⬆️ Uploading {upload_size_mb:.1f} MB delta to server (in background)...")
     r = None
+    accepted = False
+    started = time.monotonic()
+    timing = _upload_timing
     try:
         if delta_size <= MAX_DIRECT_UPLOAD_BYTES:
             r = None
@@ -2652,7 +2819,9 @@ def _upload_delta_file(srv, h, delta_path, delta_size, meta, emit, se):
             try: j = r.json()
             except Exception: j = {}
             if j.get("duplicate"): emit("log", f"⏭️ Not counted by server ({j.get('reason','duplicate')})")
-            else: emit("log", "✅ Submitted successfully!")
+            else:
+                emit("log", "✅ Submitted successfully!")
+                accepted = True
         elif r is not None:
             code = r.status_code; detail = _http_detail(r)
             if code == 401:
@@ -2669,14 +2838,30 @@ def _upload_delta_file(srv, h, delta_path, delta_size, meta, emit, se):
         try: os.unlink(delta_path)
         except OSError: pass
         gc.collect()
+        if timing is not None:
+            timing.phase(
+                "upload",
+                time.monotonic() - started,
+                bytes=delta_size,
+                tokens=int(meta.get("tokensProcessed") or 0),
+                ok=accepted,
+            )
+    return accepted
 
 def run_single_round_wrapper(srv, at, se, emit):
     global train_device, train_backend
+    timing = TimingRecorder.from_env()
+    round_started = time.monotonic()
+    timing_handoff = False
     h = {"Authorization": f"Bearer {at}"} if at else {}
     if DEVICE_ID: h["X-Client-Device"] = DEVICE_ID
     emit('status', 'waiting'); rs = wait_for_round(srv, h, se, emit)
-    if not rs: return
-    cr = rs["current_round"]; hb = HeartbeatManager(srv, h, cr, se, emit); hb.start()
+    if not rs:
+        timing.finish(ok=False, error="no_round")
+        return
+    cr = rs["current_round"]; timing.set_round(cr)
+    timing.phase("queue", time.monotonic() - round_started)
+    hb = HeartbeatManager(srv, h, cr, se, emit); hb.start()
     model = ob = oe = x = y = lo = iw = ie = iew = ds = None
     micro_step = 0; lval = 10.0; tt = 0; tid = ""; tried_cpu_fallback = False
     cohort_mode = False; cc_seed = cc_steps = cc_bs = cc_accum = cc_autocast = None; cc_optim = "any"
@@ -2697,6 +2882,7 @@ def run_single_round_wrapper(srv, at, se, emit):
             if not _check_arch_and_warn(emit, _dev_idx):
                 raise ArchIncompatible(f"GPU {_dev_idx} has no matching kernels in installed PyTorch")
 
+        _weights_t0 = time.monotonic()
         if USE_HF_WEIGHTS:
             wcfg = md.get("weights") or {}
             if wcfg.get("source") == "huggingface":
@@ -2718,6 +2904,11 @@ def run_single_round_wrapper(srv, at, se, emit):
             if len(wb) < needed: raise RuntimeError(f"Incomplete coordinator payload: got {len(wb)}, expected {needed}")
             iw = _bf16_from_bytes(wb, 0, bbl); ie = _bf16_from_bytes(wb, bbl, ebl) if ENGRAM_ACTIVE else None
             del wb; gc.collect()
+
+        _weight_bytes = int(iw.numel() * 2) if iw is not None else 0
+        if ie is not None:
+            _weight_bytes += int(ie.numel() * 2)
+        timing.phase("weights", time.monotonic() - _weights_t0, bytes=_weight_bytes)
 
         # v2: resolve optimizer mode from server's target (asymmetric forcing — fp32 pools accept any,
         # 8bit pools require native 8bit). If we can't honor the target, abort rather than submit a
@@ -2788,6 +2979,15 @@ def run_single_round_wrapper(srv, at, se, emit):
         iew = ie.view(model.engram.table.weight.shape) if (ENGRAM_ACTIVE and ie is not None) else None; ie = None; _trim_heap()
         mbt = bs * sl; as_ = int(cc_accum) if (cohort_mode and cc_accum) else max(1, round(131072 / mbt))
         ls = 1.0 / as_; ob, oe = _build_optimizers(model, lr=1e-4, force_mode=optim_mode)
+        uck = UnitCheckpoint.from_env(tid)
+        _resumed = uck.load(model, [ob, oe])
+        if _resumed:
+            micro_step = int(_resumed.get("micro_step", 0))
+            tt = int(_resumed.get("tokens", 0))
+            round_loss_sum = float(_resumed.get("loss_sum", 0.0))
+            round_loss_sq_sum = float(_resumed.get("loss_sq", 0.0))
+            round_loss_count = int(_resumed.get("loss_count", 0))
+            emit('log', f"♻️ Resumed unit {tid} at step {micro_step} from {uck.path.name}")
 
         def _on_step_down(_ladder):
             nonlocal ob, oe
@@ -2799,7 +2999,7 @@ def run_single_round_wrapper(srv, at, se, emit):
 
         ladder = DegradeLadder(model, on_step_down=_on_step_down)
         emit('log', f"Backend: {train_backend} | autocast: {ua} | bs={bs} | accum={as_} | dtype={'bf16' if ua else 'fp32'} | engram={'on' if ENGRAM_ACTIVE else 'off'} | optim={_predict_optim(train_backend, force_mode=optim_mode)}")
-        cs_ = time.time(); target_micro_steps = 100
+        cs_ = time.time(); _train_t0 = time.monotonic(); target_micro_steps = 100
         if cohort_mode: target_micro_steps = int(cc_steps); emit('status', 'training')
         else:
             CAL_MAX_MICRO = max(CAL_MIN_MICRO, min(as_, CAL_MAX_MICRO_HARD))
@@ -2829,7 +3029,10 @@ def run_single_round_wrapper(srv, at, se, emit):
             if hb.should_stop() or se.is_set(): return
             _clip_base_grads(model)
             ob.step(); ob.zero_grad(set_to_none=True)
-            oe.step(); oe.zero_grad(set_to_none=True); gc.collect()
+            oe.step(); oe.zero_grad(set_to_none=True)
+            uck.maybe_save(model, [ob, oe], micro_step=micro_step, tt=tt,
+                           loss_sum=round_loss_sum, loss_sq=round_loss_sq_sum,
+                           loss_count=round_loss_count); gc.collect()
 
         if se.is_set(): return
         if cohort_mode: dl = float('inf'); target_micro_steps = int(cc_steps)
@@ -2873,6 +3076,11 @@ def run_single_round_wrapper(srv, at, se, emit):
             _clip_base_grads(model)
             ob.step(); ob.zero_grad(set_to_none=True)
             oe.step(); oe.zero_grad(set_to_none=True)
+            uck.maybe_save(model, [ob, oe], micro_step=micro_step, tt=tt,
+                           loss_sum=round_loss_sum, loss_sq=round_loss_sq_sum,
+                           loss_count=round_loss_count)
+
+        timing.phase("train", time.monotonic() - _train_t0, tokens=tt, steps=micro_step)
 
         if se.is_set(): emit('log', "Stopped by user. Skipping upload."); return
         if hb.should_stop(): emit('log', f"Stopped mid-training (round {cr} ended or task gone); discarding partial delta, no upload."); return
@@ -2921,7 +3129,11 @@ def run_single_round_wrapper(srv, at, se, emit):
         finally: iw = None; model = None; del si, sv, pl; _clear_accel_cache(train_device); _trim_heap()
         
         upload_size_mb = delta_size / (1024 * 1024); meta = {"taskId": tid, "loss": fl, "localSteps": micro_step, "tokensProcessed": tt, "loraRank": 0, "isDelta": True, "weightFormat": "bf16", "hasEngram": has_engram, "engramSparseCount": engram_sparse_count, **submit_extra}
-        _submit_delta_background(srv, h, delta_path, delta_size, meta, emit, se, hb=hb)   # discards the delta if refused
+        timing_handoff = _submit_delta_background(srv, h, delta_path, delta_size, meta, emit, se, hb=hb, timing=timing)   # discards the delta if refused
+        uck.clear()
+        threading.Thread(target=prefetch_latest_hf_weights, args=(se, emit), daemon=True).start()
+        if not timing_handoff:
+            timing.finish(ok=False, error="upload_not_started")
     except BaseException as e:
         exc_type = type(e); exc_text = f"{type(e).__name__}: {e}"[:200] if isinstance(e, Exception) else ""; raise
     finally:
@@ -2931,6 +3143,8 @@ def run_single_round_wrapper(srv, at, se, emit):
             except Exception: pass
         try: prune_hf_cache()
         except Exception: pass
+        if not timing_handoff:
+            timing.finish(ok=False, error=(exc_type.__name__ if exc_type else "aborted"))
         # The heartbeat thread can't raise into this thread: turn the refusal recorded before close() into the
         # exception the GUI/CLI loops handle (stop, keep the session, CLI exit 7). A user stop (se) and a login
         # error still win. A KeyboardInterrupt without se is fetch_task aborting its download for hb.should_stop().
