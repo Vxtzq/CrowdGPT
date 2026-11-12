@@ -1919,6 +1919,91 @@ nav a.nav-with-badge {
   font-family: var(--mono);
 }
 
+.pool-breakdown-section {
+  margin-bottom: 38px;
+}
+
+.pool-breakdown-section h2 {
+  font-size: clamp(18px, 2vw, 24px);
+  margin-bottom: 8px;
+  color: var(--text);
+}
+
+.pool-breakdown-section p {
+  font-size: clamp(13px, 1.1vw, 15px);
+  color: var(--text-muted);
+  margin-bottom: 20px;
+}
+
+.pool-breakdown-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.pool-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  background: var(--bg);
+}
+
+.pool-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.pool-card-hw {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.pool-card-clients {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg-alt);
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.pool-card-stats {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pool-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.pool-stat-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.pool-stat-dot.forming { background: #f59e0b; }
+.pool-stat-dot.training { background: #10b981; }
+.pool-stat-dot.idle { background: #6b7280; }
+
+.pool-stat-label {
+  color: var(--text-muted);
+}
+
+.pool-stat-value {
+  font-family: var(--mono);
+  color: var(--text);
+  font-weight: 500;
+}
+
 .table-wrap {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -3330,6 +3415,12 @@ footer {
         <div class="lbl" data-i18n="status.stat.loss">Model Loss</div>
         <div class="sub" data-i18n="status.stat.loss.sub">Latest aggregated</div>
       </div>
+    </div>
+
+    <div class="pool-breakdown-section" id="pool-breakdown-section" style="display:none;">
+      <h2 data-i18n="status.pools.title">Training Pools by Hardware</h2>
+      <p data-i18n="status.pools.sub">See which device types are actively training vs. waiting for more pool members.</p>
+      <div class="pool-breakdown-grid" id="pool-breakdown-grid"></div>
     </div>
 
     <div class="loss-panel">
@@ -5202,6 +5293,9 @@ async function fetchStats() {
 }
     requestAnimationFrame(drawLossGraph);
     
+    // Render pool hardware breakdown
+    renderPoolBreakdown(d);
+    
     failedAttempts = 0;
     apiReachable = true;
 
@@ -5226,6 +5320,7 @@ async function fetchStats() {
           updateGoalProgress(d2.totalTokens || 0);
           if (lossHistory.length < 2) recordLoss(Number(currentLoss), d2.globalStep || null);
           requestAnimationFrame(drawLossGraph);
+          renderPoolBreakdown(d2);
 
           failedAttempts = 0;
           apiReachable = true;
@@ -5240,6 +5335,51 @@ async function fetchStats() {
       if (statusText) statusText.textContent = 'Coordinator offline';
       if (statsInterval) clearInterval(statsInterval);
     }
+  }
+}
+
+/* ===== POOL HARDWARE BREAKDOWN ===== */
+function renderPoolBreakdown(data) {
+  const section = document.getElementById('pool-breakdown-section');
+  const grid = document.getElementById('pool-breakdown-grid');
+  if (!section || !grid) return;
+
+  const mm = data.matchmaking;
+  if (!mm || !mm.poolBreakdown || Object.keys(mm.poolBreakdown).length === 0) {
+    section.style.display = 'none';
+    return;
+  }
+
+  section.style.display = 'block';
+  grid.innerHTML = '';
+
+  // Sort by total clients descending
+  const entries = Object.entries(mm.poolBreakdown)
+    .map(([hw, info]) => ({ hw, ...info }))
+    .sort((a, b) => (b.clients || 0) - (a.clients || 0));
+
+  for (const entry of entries) {
+    const card = document.createElement('div');
+    card.className = 'pool-card';
+
+    const forming = entry.forming || 0;
+    const training = entry.training || 0;
+    const idle = entry.idle || 0;
+    const clients = entry.clients || 0;
+
+    card.innerHTML = `
+      <div class="pool-card-header">
+        <span class="pool-card-hw">${entry.hw}</span>
+        <span class="pool-card-clients">${clients} client${clients !== 1 ? 's' : ''}</span>
+      </div>
+      <div class="pool-card-stats">
+        ${forming > 0 ? `<div class="pool-stat"><span class="pool-stat-dot forming"></span><span class="pool-stat-label">forming</span><span class="pool-stat-value">${forming}</span></div>` : ''}
+        ${training > 0 ? `<div class="pool-stat"><span class="pool-stat-dot training"></span><span class="pool-stat-label">training</span><span class="pool-stat-value">${training}</span></div>` : ''}
+        ${idle > 0 ? `<div class="pool-stat"><span class="pool-stat-dot idle"></span><span class="pool-stat-label">idle</span><span class="pool-stat-value">${idle}</span></div>` : ''}
+        ${forming === 0 && training === 0 && idle === 0 ? `<div class="pool-stat"><span class="pool-stat-label">no active pools</span></div>` : ''}
+      </div>
+    `;
+    grid.appendChild(card);
   }
 }
 
