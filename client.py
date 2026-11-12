@@ -381,6 +381,9 @@ DEVICE_ID = _load_or_create_device_id()
 log.info(f"[device] id={DEVICE_ID[:8]}… ({DEVICE_ID_FILE.name})")
 
 MAX_CACHED_REVISIONS = 1; MAX_HF_CACHE_GB = 6.0; STALE_PART_AGE_SEC = 60 * 60; STALE_BAK_AGE_SEC = 24 * 60 * 60
+# A half-open download must not stall a training round for an hour. The
+# existing .part/Range resume path handles the retry after a short timeout.
+STREAM_CONNECT_TIMEOUT = 15; STREAM_READ_TIMEOUT = 120
 
 def _dir_size_bytes(path: Path) -> int:
     total = 0
@@ -2092,7 +2095,7 @@ def _download_file_with_progress(url, dest, emit, stop_evt, expected_size=None, 
             os.replace(tmp, dest); return dest
         try:
             hdrs = {"Range": f"bytes={done}-"} if done > 0 else {}
-            r = requests.get(url, headers=hdrs, stream=True, timeout=(15, 3600), allow_redirects=True)
+            r = requests.get(url, headers=hdrs, stream=True, timeout=(STREAM_CONNECT_TIMEOUT, STREAM_READ_TIMEOUT), allow_redirects=True)
             if r.status_code == 416:
                 if expected is not None and done >= expected:
                     os.replace(tmp, dest); return dest
@@ -2142,7 +2145,7 @@ def fetch_task(srv, h, prec, se, emit, hb=None):
             emit('status', 'downloading')
             emit('overlay_show', {'title_key': 'dl_weights', 'indeterminate': False})
             req_headers = {**(h or {}), **_hardware_headers()}
-            r = requests.get(f"{srv}/fl/task?format={prec}", headers=req_headers, timeout=(15, 3600), stream=True)
+            r = requests.get(f"{srv}/fl/task?format={prec}", headers=req_headers, timeout=(STREAM_CONNECT_TIMEOUT, STREAM_READ_TIMEOUT), stream=True)
             if r.status_code == 401:
                 r.close()
                 emit('log', "⚠️ auth rejected (401) — clearing the saved session")
