@@ -14,8 +14,10 @@ Training adds one term; the architecture and generation do not change:
     L = CE_next_token + lambda * (1 - cos(h_view1, h_view2))
 
 `h_view` is the final hidden state (after `ln_f`) at the last token of each view. The two views are two renderings of the same
-content, for example a description and its regex, a question and its SQL, or a docstring and its function. Both views are
-packed into one sequence with a block-causal mask, so a single forward pass serves both terms.
+content, for example a description and its regex, a question and its SQL, or a docstring and its function.
+- **SFT:** as in the reference code, the next-token loss comes from the normal pass over prompt + answer. A second pass, with
+  both views packed under a block-causal mask, gives the two embeddings.
+- **Two standalone texts** (e.g. docstring and body in pretraining): one packed pass serves both terms.
 
 Results reported in the paper (Llama-3.2-1B-Instruct fine-tuning; **not Crowd-v1 numbers**):
 

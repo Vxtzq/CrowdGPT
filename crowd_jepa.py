@@ -4,7 +4,8 @@
 
 h_text is the last-layer hidden state (after ln_f) at the last token of view 1 (optionally followed by k predictor tokens),
 h_code the one at the last token of view 2. Both views are packed in one sequence with a block-causal mask: causal inside
-each view, no attention across views, so one forward pass gives both embeddings and the next-token loss of both views.
+each view, no attention across views, so one forward pass gives both embeddings (see the wiring note below for where the
+next-token loss comes from).
 As in the reference implementation (rbalestr-lab/llm-jepa, Apache-2.0, finetune.py), there is no stop-gradient: the
 gradient flows through both views; the next-token term prevents collapse (the paper reports gamma = 0 only yields empty
 outputs). Inference is unchanged: nothing here is used at generation time.
@@ -12,11 +13,15 @@ outputs). Inference is unchanged: nothing here is used at generation time.
 NOT wired into client.py. Nothing changes for contributors unless the coordinator opts in after a pilot
 (docs/LLM_JEPA_PROPOSAL.md). Standalone on purpose: torch only, imported lazily so the stdlib CI can import this file.
 
-Wiring sketch (for a pilot, not applied):
-    ids, mask, (i_text, i_code), tgt = pack_two_views(text_ids, code_ids, k_pred=0)
+Wiring sketch for SFT (for a pilot, not applied). As in the reference finetune.py, the next-token loss comes from the
+NORMAL causal pass over [prompt ; answer] (the answer must see the prompt); the packed block-causal pass only provides
+the two embeddings:
+    ce = next_token_ce(model, model.forward_features(prompt_and_answer_ids), answer_targets)   # usual SFT loss
+    ids, mask, (i_text, i_code), _ = pack_two_views(prompt_ids, answer_ids, k_pred=0)
     h = model.forward_features(ids, attn_mask=mask)          # SDPA with attn_mask=mask instead of is_causal=True
-    ce = next_token_ce(model, h, tgt)                        # chunked, as client.py already does
     loss, j = combined_loss(ce, h, i_text, i_code, lam=1.0, apply_jepa=jepa_step(seed, step, alpha=0.5))
+The `targets` returned by `pack_two_views` (each view predicting only itself) are for the other use, where both views
+are standalone texts (e.g. docstring and function body in pretraining); there a single packed pass serves both terms.
 
 Cohort mode needs every client of a pool to compute the same thing, so the loss-dropout decision is a deterministic
 function of (seed, step), never of a local RNG (`jepa_step`).
