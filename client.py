@@ -2954,7 +2954,10 @@ def _upload_delta_file(srv, h, delta_path, delta_size, meta, emit, se):
             for attempt in range(3):
                 try:
                     with open(delta_path, 'rb') as f: body = f.read()
-                    r = requests.post(f"{srv}/fl/submit", headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip", **h}, data=body, timeout=600); body = None
+                    _hdr = {"Content-Type": "application/octet-stream", **h}
+                    if meta.get("deltaCodec", "off") != "ngd1":
+                        _hdr["Content-Encoding"] = "gzip"
+                    r = requests.post(f"{srv}/fl/submit", headers=_hdr, data=body, timeout=600); body = None
                     if r.status_code in (413, 429, 500, 502, 503, 504):
                         r = chunked_submit_delta(srv, h, delta_path, meta, emit, se)
                     break
