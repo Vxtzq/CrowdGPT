@@ -1,4 +1,4 @@
-CrowdGPT v3.2 changelog:
+CrowdGPT v3.3 changelog:
 - Merged Pull requests on GitHub
 - Many bug fixes
 Check GitHub for more infos
