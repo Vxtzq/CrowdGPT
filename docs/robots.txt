@@ -26,4 +26,4 @@ User-agent: Perplexity-User
 Allow: /
 
 # Uncomment and set your real domain once known:
-# Sitemap: https://your-domain.com/sitemap.xml
+Sitemap: https://crowdgpt.net/sitemap.xml
