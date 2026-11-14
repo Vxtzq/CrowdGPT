@@ -86,19 +86,36 @@ def pack_two_views(text_ids: Sequence[int], code_ids: Sequence[int], *, k_pred: 
     return ids, mask[None, None], (n1 - 1, T - 1), tgt
 
 
-def jepa_term(hidden, i_text: int, i_code: int):
-    """1 - cos(h[i_text], h[i_code]) averaged over the batch. hidden: [B, T, D] final hidden states (after ln_f)."""
+def jepa_term(hidden, i_text, i_code, *, stopgrad: bool = False, center: bool = False):
+    """1 - cos(h[i_text], h[i_code]) averaged over the batch. hidden: [B, T, D] final hidden states (after ln_f).
+    i_text / i_code: an int, or one index per row (packed batches of different lengths).
+
+    Anti-collapse options, both measured on the HiveMind T4 (Crowd-v1 + LoRA r64, NL-RX; see docs/LLM_JEPA_PROPOSAL.md §5).
+    With the plain term at lambda = 1, 1 - cos fell to ~0.002 and general held-out loss rose by +0.76..0.96 nat:
+      stopgrad: no gradient through the target (view-2) embedding; only view 1 moves (JEPA / BYOL style).
+      center:   subtract the batch mean of both views first, so "every state points the same way" no longer pays."""
     torch = _torch()
-    a = hidden[:, i_text, :].float()
-    b = hidden[:, i_code, :].float()
+    r = torch.arange(hidden.shape[0], device=hidden.device)
+    a = hidden[r, i_text, :].float()
+    b = hidden[r, i_code, :].float()
+    if stopgrad:
+        b = b.detach()
+    if center:
+        mu = torch.cat([a, b]).mean(0, keepdim=True)
+        a, b = a - mu, b - mu
     return 1.0 - torch.nn.functional.cosine_similarity(a, b, dim=-1).mean()
 
 
-def combined_loss(ce, hidden, i_text: int, i_code: int, *, lam: float = 1.0, gamma: float = 1.0, apply_jepa: bool = True):
-    """gamma * ce + lam * jepa_term, or gamma * ce on a loss-dropout step. Returns (loss, detached jepa value or None)."""
+def combined_loss(ce, hidden, i_text, i_code, *, lam: float = 0.1, gamma: float = 1.0, apply_jepa: bool = True,
+                  stopgrad: bool = True, center: bool = False):
+    """gamma * ce + lam * jepa_term, or gamma * ce on a loss-dropout step. Returns (loss, detached jepa value or None).
+
+    Defaults follow the T4 autoresearch screen, not the paper's lambda = 1: lam = 0.1 with stopgrad (use loss dropout
+    alpha = 0.5 via `jepa_step`) was the best variant that kept general loss at the SFT level. It still did not beat plain
+    SFT at equal compute, so this stays opt-in."""
     if lam < 0 or gamma <= 0:
         raise ValueError("need lam >= 0 and gamma > 0 (gamma = 0 collapses, per the paper)")
     if not apply_jepa or lam == 0:
         return gamma * ce, None
-    j = jepa_term(hidden, i_text, i_code)
+    j = jepa_term(hidden, i_text, i_code, stopgrad=stopgrad, center=center)
     return gamma * ce + lam * j, j.detach()

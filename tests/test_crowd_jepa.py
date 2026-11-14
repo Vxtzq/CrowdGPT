@@ -82,6 +82,28 @@ class TestPackingAndLoss(unittest.TestCase):
         same = torch.ones(1, 3, 4)
         self.assertAlmostEqual(float(cj.jepa_term(same, 0, 2)), 0.0, places=6)
 
+    def test_stopgrad_blocks_the_target_view(self) -> None:
+        torch = TORCH
+        hid = torch.randn(3, 9, 16, requires_grad=True)
+        cj.jepa_term(hid, 4, 8, stopgrad=True).backward()
+        self.assertGreater(float(hid.grad[:, 4].abs().sum()), 0.0)
+        self.assertEqual(float(hid.grad[:, 8].abs().sum()), 0.0)
+
+    def test_center_defeats_the_shared_direction_shortcut(self) -> None:
+        torch = TORCH
+        torch.manual_seed(1)
+        shared = torch.full((4, 1, 16), 10.0)
+        hid = torch.cat([shared + 0.1 * torch.randn(4, 1, 16), shared + 0.1 * torch.randn(4, 1, 16)], dim=1)
+        self.assertLess(float(cj.jepa_term(hid, 0, 1)), 0.01)  # plain cosine: "solved" by the common offset
+        self.assertGreater(float(cj.jepa_term(hid, 0, 1, center=True)), 0.5)  # centered: the offset no longer helps
+
+    def test_per_row_indices(self) -> None:
+        torch = TORCH
+        hid = torch.randn(2, 7, 8)
+        j = cj.jepa_term(hid, torch.tensor([1, 2]), torch.tensor([5, 6]))
+        a = 1.0 - torch.nn.functional.cosine_similarity(hid[[0, 1], [1, 2]], hid[[0, 1], [5, 6]], dim=-1).mean()
+        self.assertAlmostEqual(float(j), float(a), places=6)
+
     def test_combined_loss_and_dropout(self) -> None:
         torch = TORCH
         ce = torch.tensor(2.0)

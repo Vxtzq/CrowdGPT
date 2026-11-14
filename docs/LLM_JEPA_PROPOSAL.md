@@ -96,3 +96,47 @@ Both criteria are written in advance:
   regression.
 
 Only a pilot that passes would justify wiring `crowd_jepa.py` into `client.py`, behind a round-config flag.
+
+## 5. Results on the HiveMind T4 (2026-11-13/14) and tuning proposal
+
+**P1 pilot** (pre-registered; LoRA r64, 3 epochs, 3 seeds, 1,000 test examples, exact match):
+
+| | Exact match | General held-out loss |
+|---|---|---|
+| SFT | 17.07 ± 0.93 % | 3.78 |
+| SFT + JEPA (λ = 1, k = 0) | 16.90 ± 1.06 % | 4.68 (+0.90 nat) |
+
+The JEPA term collapses (1 − cos ≈ 0.0005).
+
+**autoresearch screen** (after karpathy/autoresearch: fixed 600 s budget, one metric, keep/reset per commit):
+- Metric: answer-token CE on 500 dev examples, lower is better. SFT = 2.503.
+- 10 hypotheses written in advance; 5 tested.
+
+| Variant | Dev CE | General loss (SFT 3.40) |
+|---|---|---|
+| λ = 1 (paper default) | 2.735 | 4.16 (collapses) |
+| λ = 0.1 + loss dropout 0.5 | 2.513 | 3.47 |
+| stop-grad on the target | 2.803 | 3.40 |
+| centered cosine | 2.962 | 3.32 |
+| InfoNCE | 3.274 | 3.25 |
+| layer-16 alignment | 2.608 | 4.35 (collapses) |
+| *λ 0.1 + LD + stop-grad (post-hoc)* | **2.540** | **3.43** |
+| *λ 0.1 + LD + centered (post-hoc)* | **2.505** | 3.45 |
+
+- **The pre-registered top 3** (guard rail: general loss ≤ SFT + 0.05) are stop-grad, centering and InfoNCE: the fixes
+  for the collapse.
+- **No variant beats plain SFT at equal compute.** The best ties it.
+- Full data and code: xaviercallens/HiveMind#907, `scripts/crowdgpt_t4/autoresearch/`.
+
+**What changed in `crowd_jepa.py` (this PR):**
+- `jepa_term(..., stopgrad=, center=)`.
+- Per-row indices for packed batches.
+- `combined_loss` now defaults to the safest measured setting: λ = 0.1, stop-grad on. Pair it with `jepa_step(alpha=0.5)`.
+
+The module stays **opt-in and unwired**.
+
+**Proposed next steps, if JEPA is pursued:**
+1. Confirm "λ 0.1 + LD + stop-grad" and "λ 0.1 + LD + centered" at the full protocol (3 seeds, test set).
+2. Try LoRA **r512**, where the paper reports its LoRA gain. It needs a ~24 GB GPU (community volunteer).
+3. Otherwise, spend the effort on the **data mix**. The gap to Qwen3-0.6B is 1.8 nat on wikitext, against 0.45 on
+   CrowdGPT's own chunks.
