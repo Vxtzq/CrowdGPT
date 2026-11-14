@@ -37,7 +37,8 @@ It provides:
 - `build_coordinator(config, loader, **overrides)` — create the unchanged
   coordinator with config defaults; overrides are for verification tuning.
 - `create_router(...)` / `create_app(...)` — FastAPI router and app mounting the
-  coordinator's `GET /job` and `POST /receipt` handlers.
+  coordinator's `GET /job` and `POST /receipt` handlers, plus the coordinator's
+  own `POST /eval` contract.
 - `main()` — `--print-config` for a secret-free configuration dump, and `--serve`
   for an optional uvicorn sidecar.
 
@@ -86,11 +87,54 @@ is also how tests avoid a 658M checkpoint.
 - a fake loader round-trip through `open_job`, `handle_get_job`, and
   `handle_post_receipt`, using `k=0` so no torch or model is needed;
 - bad signatures, unknown jobs, tampered receipts, and replay-free validation;
+- the coordinator `/eval` contract: validation, 503 when no evaluator is
+  configured, response normalisation, 502 on bad results, and the HTTP route;
 - FastAPI route creation and HTTP calls, skipped cleanly when FastAPI or httpx is
   absent.
 
 No test needs a real checkpoint, a GPU, or a network. The loader is injectable
 precisely so the fake path exercises the same handler code as production.
+
+### Coordinator `/eval` contract
+
+`server.py::_round_eval` does not speak the job/receipt protocol. It posts:
+
+```
+POST {CROWDGPT_EVAL_URL}/eval
+{"round": 372, "globalStep": 371, "checkpoint": "/path/model_latest.bin"}
+```
+
+and reads back `loss`, `ciLow`, `ciHigh`, `windows`, `manifestSha256`, and
+`modelSha256`. Before this change the adapter answered that URL with 404, so
+`CROWDGPT_EVAL_URL` could only point at a bespoke sidecar.
+
+The adapter now serves the same path (default prefix `/fl/loss_check`), so one
+process answers both protocols and the coordinator needs no code change:
+
+```python
+from tools import hivemind_eval_service as hes
+
+def evaluate(payload):                     # round, globalStep, checkpoint
+    return {"loss": 2.913, "ciLow": 2.88, "ciHigh": 2.95, "windows": 8,
+            "manifestSha256": "...", "modelSha256": "..."}
+
+app = hes.create_app(config, eval_fn=evaluate)
+# CROWDGPT_EVAL_URL=http://127.0.0.1:8099/fl/loss_check
+```
+
+Behaviour is deliberately opinionated, because a wrong number is worse than no
+number:
+
+| Case | Response |
+| --- | --- |
+| no `eval_fn` supplied | `503 {"error": "evaluator not configured"}` — never a fabricated loss |
+| malformed body, missing or wrong-typed fields | `400` |
+| body over 64 KiB | `413` |
+| evaluator raises, or returns a non-object / non-finite / missing `loss` / inverted CI | `502`, exception type only (no traceback text) |
+| success | `200` with `{round, globalStep, loss, ciLow, ciHigh, windows, manifestSha256, modelSha256, source}` |
+
+`evaluate_round(payload, eval_fn)` is a pure function, so the contract is tested
+with the standard library alone; the FastAPI route is a thin wrapper.
 
 ### Router caveat
 

@@ -10,7 +10,6 @@ fills only those gaps so the coordinator can run unchanged.
 The loader contract is the coordinator's own:
 
     loader(job) -> (base, candidate, heldout)
-
 `FileJobLoader` resolves each URL as a local path or ``file://`` and reads it. Tests and
 deployments that fetch over HTTP inject their own callable; this adapter deliberately
 does not grow an HTTP client.
@@ -30,6 +29,11 @@ Usage:
 The module is additive: it changes no client training path, no pool sizing, and no
 existing HiveMind module. FastAPI is imported opportunistically and uvicorn is needed
 only for ``--serve``.
+
+It also answers the coordinator's own evaluation contract
+(``POST {prefix}/eval`` with ``{"round", "globalStep", "checkpoint"}``), which is what
+``CROWDGPT_EVAL_URL`` already points at. Pass an ``eval_fn`` to ``create_app`` to enable
+it; without one the route returns 503 instead of inventing a loss.
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ import argparse
 import array
 import importlib
 import json
+import math
 import os
 import sys
 import urllib.parse
@@ -67,7 +72,10 @@ except ImportError:  # pragma: no cover - FastAPI is an optional dependency
 DEFAULT_STATE_PATH = Path(".crowdgpt_hivemind") / "eval_state.json"
 DEFAULT_ROUTE_PREFIX = "/fl/loss_check"
 MIN_SECRET_BYTES = 16
+MAX_EVAL_BODY_BYTES = 64 * 1024
+MAX_CHECKPOINT_CHARS = 4096
 JobLoader = Callable[[lcs.LossCheckJob], tuple[Any, Any, Any]]
+EvalFn = Callable[[dict[str, Any]], Mapping[str, Any]]
 
 
 # --------------------------------------------------------------------------------------------------- config
@@ -216,6 +224,7 @@ class ServiceConfig:
             "server_secret_bytes": len(self.server_secret),
             "model_factory": _factory_name(self.model_factory),
             "route_prefix": self.route_prefix,
+            "eval_endpoint": f"{self.route_prefix}/eval",
         }
 
 
@@ -352,9 +361,93 @@ def _require_fastapi() -> None:
         raise RuntimeError("FastAPI is not installed; install fastapi to create the eval router")
 
 
+# ------------------------------------------------------------------------------- coordinator /eval contract
+# `server.py::_round_eval` posts to ``{CROWDGPT_EVAL_URL}/eval`` with
+# ``{"round", "globalStep", "checkpoint"}`` and reads back ``{"loss", "ciLow",
+# "ciHigh", "windows", "manifestSha256", "modelSha256"}``. The job/receipt routes
+# above speak the HiveMind protocol; this route speaks the coordinator's, so one
+# process can answer both and the env var stops 404ing.
+def _eval_uint(body: Mapping[str, Any], name: str) -> int:
+    value = body.get(name)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer")
+    if value < 0:
+        raise ValueError(f"{name} must be >= 0")
+    return value
+
+
+def _eval_number(body: Mapping[str, Any], name: str) -> float | None:
+    value = body.get(name)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite")
+    return number
+
+
+def evaluate_round(payload: Any, eval_fn: EvalFn | None) -> tuple[int, dict[str, Any]]:
+    """Answer the coordinator's ``POST /eval``: return ``(http_status, body)``.
+
+    Kept as a pure function so the contract is testable with the standard library
+    alone; the FastAPI route is a thin wrapper. A missing evaluator is ``503``
+    rather than a fabricated loss, so a misconfigured sidecar cannot publish a
+    number nobody computed.
+    """
+    if eval_fn is None:
+        return 503, {"error": "evaluator not configured",
+                     "detail": "pass eval_fn=... to create_app(); no loss was computed"}
+    if not isinstance(payload, Mapping):
+        return 400, {"error": "eval request must be a JSON object"}
+    try:
+        round_no = _eval_uint(payload, "round")
+        step = _eval_uint(payload, "globalStep")
+        checkpoint = payload.get("checkpoint")
+        if not isinstance(checkpoint, str) or not checkpoint.strip():
+            raise ValueError("checkpoint must be a non-empty string")
+        if len(checkpoint) > MAX_CHECKPOINT_CHARS:
+            raise ValueError("checkpoint path is too long")
+    except ValueError as exc:
+        return 400, {"error": "invalid eval request", "detail": str(exc)}
+    try:
+        result = eval_fn({"round": round_no, "globalStep": step, "checkpoint": checkpoint})
+    except Exception as exc:  # the type is useful; the traceback would leak paths
+        return 502, {"error": "evaluator failed", "detail": type(exc).__name__}
+    if not isinstance(result, Mapping):
+        return 502, {"error": "evaluator returned a non-object"}
+    try:
+        loss = _eval_number(result, "loss")
+        if loss is None:
+            raise ValueError("loss is required")
+        ci_low = _eval_number(result, "ciLow")
+        ci_high = _eval_number(result, "ciHigh")
+    except ValueError as exc:
+        return 502, {"error": "evaluator returned an invalid result", "detail": str(exc)}
+    if ci_low is not None and ci_high is not None and ci_low > ci_high:
+        return 502, {"error": "evaluator returned an inverted confidence interval"}
+
+    def _digest(name: str) -> str | None:
+        value = result.get(name)
+        return value if isinstance(value, str) and value else None
+
+    return 200, {
+        "round": round_no,
+        "globalStep": step,
+        "loss": loss,
+        "ciLow": ci_low,
+        "ciHigh": ci_high,
+        "windows": result.get("windows"),
+        "manifestSha256": _digest("manifestSha256"),
+        "modelSha256": _digest("modelSha256"),
+        "source": "hivemind-eval-service",
+    }
+
+
 def create_router(config: ServiceConfig, loader: JobLoader | None = None, *, coordinator: lcs.LossCheckCoordinator | None = None,
-                  **overrides: Any) -> Any:
-    """Return a FastAPI router exposing the coordinator's job and receipt handlers.
+                  eval_fn: EvalFn | None = None, **overrides: Any) -> Any:
+    """Return a FastAPI router exposing the job, receipt, and coordinator ``/eval`` handlers.
 
     The two handlers are wired here rather than through ``hivemind_loss_check_service.
     fastapi_router`` because that factory imports ``Request`` inside its own body; with
@@ -388,14 +481,28 @@ def create_router(config: ServiceConfig, loader: JobLoader | None = None, *, coo
         status, body = await run_in_threadpool(coord.handle_post_receipt, bytes(chunks))
         return JSONResponse(body, status_code=status)
 
+    @router.post("/eval")
+    async def post_eval(request: Request) -> Response:
+        from starlette.concurrency import run_in_threadpool
+
+        raw = await request.body()
+        if len(raw) > MAX_EVAL_BODY_BYTES:
+            return JSONResponse({"error": "eval request too large"}, status_code=413)
+        try:
+            payload = json.loads(raw.decode("utf-8") or "null")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return JSONResponse({"error": "invalid JSON"}, status_code=400)
+        status, body = await run_in_threadpool(evaluate_round, payload, eval_fn)
+        return JSONResponse(body, status_code=status)
+
     return router
 
 
 def create_app(config: ServiceConfig, loader: JobLoader | None = None, *, coordinator: lcs.LossCheckCoordinator | None = None,
-               **overrides: Any) -> Any:
+               eval_fn: EvalFn | None = None, **overrides: Any) -> Any:
     _require_fastapi()
     app = FastAPI(title="CrowdGPT HiveMind evaluation adapter")
-    app.include_router(create_router(config, loader, coordinator=coordinator, **overrides))
+    app.include_router(create_router(config, loader, coordinator=coordinator, eval_fn=eval_fn, **overrides))
     return app
 
 
