@@ -2164,7 +2164,9 @@ class HeartbeatManager:
         while not self.shutdown.is_set() and not self.se.is_set():
             try:
                 tid = self.tid
-                r = requests.get(f"{self.srv}/fl/heartbeat", headers=self.h, timeout=10, params={"taskId": tid} if tid else None)
+                r = _get_with_failover(self.srv, "/fl/heartbeat", headers=self.h, timeout=10,
+                                       params={"taskId": tid} if tid else None,
+                                       emit=self.emit, se=self.se)
                 try: hj = r.json() if r.status_code == 200 else {}
                 except ValueError: hj = {}
                 if not isinstance(hj, dict): hj = {}
@@ -2193,6 +2195,8 @@ class HeartbeatManager:
                     if st.get("current_round", self.cr) != self.cr: self.emit('log', "Next round. Stopping."); self.stop_training.set()
                     rm = (st.get("max_round_hours", 2) - st.get("round_elapsed_hours", 0)) * 60
                     if rm <= 3: self.emit('log', f"ULTIMATUM: {rm:.0f} min left!"); self.stop_training.set()
+            except KeyboardInterrupt:
+                return  # Stop requested: _get_with_failover raises this once se is set
             except Exception: pass
             self.shutdown.wait(timeout=15)
 
@@ -2208,7 +2212,8 @@ def wait_for_round(srv, h, se, emit):
         if overlay_on: emit('overlay_hide', {}); overlay_on = False
     while not se.is_set():
         try:
-            r = requests.get(f"{srv}/fl/round_status", headers=h, timeout=30)
+            r = _get_with_failover(srv, "/fl/round_status", headers=h, timeout=30,
+                                   emit=emit, se=se)
             if r.status_code == 200:
                 last_error = None
                 st = r.json()
@@ -2254,7 +2259,9 @@ def fetch_task_metadata(srv, h, se, emit, hb=None):
     bad_4xx = 0
     while not se.is_set() and (not hb or not hb.should_stop()):
         try:
-            r = requests.get(f"{srv}/fl/task?format=bf16&skip_weights=true", headers={**(h or {}), **_hardware_headers()}, timeout=30)
+            r = _get_with_failover(srv, "/fl/task?format=bf16&skip_weights=true",
+                                   headers={**(h or {}), **_hardware_headers()},
+                                   timeout=30, emit=emit, se=se)
             if r.status_code == 401:
                 emit('log', "⚠️ auth rejected (401) — clearing the saved session")
                 _clear_saved_token_if_matches(h)
@@ -2399,7 +2406,9 @@ def fetch_task(srv, h, prec, se, emit, hb=None):
             emit('status', 'downloading')
             emit('overlay_show', {'title_key': 'dl_weights', 'indeterminate': False})
             req_headers = {**(h or {}), **_hardware_headers()}
-            r = requests.get(f"{srv}/fl/task?format={prec}", headers=req_headers, timeout=(STREAM_CONNECT_TIMEOUT, STREAM_READ_TIMEOUT), stream=True)
+            r = _get_with_failover(srv, f"/fl/task?format={prec}", headers=req_headers,
+                                   timeout=(STREAM_CONNECT_TIMEOUT, STREAM_READ_TIMEOUT),
+                                   emit=emit, se=se, stream=True)
             if r.status_code == 401:
                 r.close()
                 emit('log', "⚠️ auth rejected (401) — clearing the saved session")
@@ -2698,30 +2707,85 @@ def _sha256_file(path, piece=8 * 1024 * 1024):
         for b in iter(lambda: f.read(piece), b''): hs.update(b)
     return hs.hexdigest()
 
-def _post_json_with_retry(url, payload, h, emit, se, timeout=60, retries=4, max_total_wait_s=7200):
+def orchestrator_urls(default=None):
+    """The primary URL plus CROWDGPT_ORCHESTRATORS (comma-separated), in order, without duplicates."""
+    urls = [str(default or DEFAULT_SERVER).rstrip("/")]
+    for item in (os.environ.get("CROWDGPT_ORCHESTRATORS") or "").split(","):
+        item = item.strip().rstrip("/")
+        if item and item not in urls: urls.append(item)
+    return urls
+
+def _failover_url(url, urls):
+    """The URL that follows `url` in the ring of orchestrators, or `url` itself when no base matches."""
+    for i, base in enumerate(urls):
+        if url.startswith(base):
+            rest = url[len(base):]
+            return urls[(i + 1) % len(urls)] + rest
+    return url
+
+def _post_json_with_retry(url, payload, h, emit, se, timeout=60, retries=4, max_total_wait_s=7200, srv=None):
     last_err = None; real_attempts = 0; total_waited = 0.0
+    urls = orchestrator_urls(srv)
+    current = url
     while True:
         if se.is_set(): raise KeyboardInterrupt("Stop requested")
         try:
-            r = requests.post(url, json=payload, headers=h, timeout=timeout)
+            r = requests.post(current, json=payload, headers=h, timeout=timeout)
             if r.status_code in (429, 503):
                 retry_after = int(r.headers.get("Retry-After", "60"))
                 if total_waited + retry_after > max_total_wait_s: raise RuntimeError("rate-limit wait budget exceeded")
-                emit("log", f"⏳ {r.status_code} {url}; waiting {retry_after}s")
+                emit("log", f"⏳ {r.status_code} {current}; waiting {retry_after}s")
                 time.sleep(min(retry_after, 3600)); total_waited += retry_after; continue
             r.raise_for_status(); return r
         except KeyboardInterrupt: raise
         except Exception as e:
             last_err = e; real_attempts += 1
             if real_attempts >= retries: break
-            emit("log", f"POST retry {real_attempts}/{retries}: {e}"); time.sleep(min(20, 2 ** real_attempts))
+            nxt = _failover_url(current, urls)
+            if nxt != current:
+                emit("log", f"POST retry {real_attempts}/{retries} on {nxt}: {e}"); current = nxt
+            else:
+                emit("log", f"POST retry {real_attempts}/{retries}: {e}")
+            time.sleep(min(20, 2 ** real_attempts))
     raise RuntimeError(f"POST {url} failed: {last_err}")
+
+def _get_with_failover(srv, path, *, headers=None, timeout=30, emit=None, se=None,
+                       stream=False, params=None, retries=4):
+    """GET through the rotating orchestrator list.
+
+    A connection error or timeout moves to the next base URL; an HTTP response
+    (including 4xx/5xx) is returned unchanged so the caller keeps its existing
+    refusal handling. This is what lets a client waiting on a dead node move to
+    a live one instead of polling the dead address forever.
+    """
+    urls = orchestrator_urls(srv)
+    current = urls[0]
+    last = None
+    for attempt in range(max(1, int(retries))):
+        if se is not None and se.is_set():
+            raise KeyboardInterrupt("Stop requested")
+        try:
+            return requests.get(f"{current}{path}", headers=headers, timeout=timeout,
+                                params=params, stream=stream)
+        except Exception as exc:
+            last = exc
+            nxt = _failover_url(current, urls)
+            if nxt != current:
+                if emit is not None:
+                    emit('log', f"GET retry {attempt + 1}/{retries} on {nxt}: {exc}")
+                current = nxt
+            elif emit is not None:
+                emit('log', f"GET retry {attempt + 1}/{retries}: {exc}")
+            if se is not None and se.is_set():
+                raise KeyboardInterrupt("Stop requested")
+            time.sleep(min(2, 2 ** attempt))
+    raise RuntimeError(f"GET {path} failed on every orchestrator: {last}")
 
 def _chunked_submit_once(srv, h, delta_path, meta, emit, se, chunk_size):
     total = os.path.getsize(delta_path); chunks = max(1, math.ceil(total / chunk_size)); checksum = _sha256_file(delta_path)
     init_payload = {**meta, "totalBytes": total, "chunkSize": chunk_size, "chunks": chunks, "checksum": checksum}
     emit("log", f"Initializing chunked upload: {chunks} chunks, {total / (1024 * 1024):.1f} MB total")
-    r = _post_json_with_retry(f"{srv}/fl/submit/init", init_payload, h, emit, se, timeout=60, retries=4)
+    r = _post_json_with_retry(f"{srv}/fl/submit/init", init_payload, h, emit, se, timeout=60, retries=4, srv=srv)
     j = r.json(); upload_id = j.get("uploadId")
     if not upload_id: raise RuntimeError("Server did not return uploadId")
     for idx in range(chunks):
@@ -2745,7 +2809,7 @@ def _chunked_submit_once(srv, h, delta_path, meta, emit, se, chunk_size):
                 emit("log", f"Chunk {idx + 1}/{chunks} retry {attempt}: {e}"); time.sleep(min(20, 2 ** attempt))
         emit("overlay_progress", {"done": end, "total": total}); emit("log", f"  ✓ chunk {idx + 1}/{chunks} ({end / (1024 * 1024):.1f}/{total / (1024 * 1024):.1f} MB)")
     emit("log", "Finalizing chunked upload...")
-    return _post_json_with_retry(f"{srv}/fl/submit/finalize", {"uploadId": upload_id}, h, emit, se, timeout=900, retries=2)
+    return _post_json_with_retry(f"{srv}/fl/submit/finalize", {"uploadId": upload_id}, h, emit, se, timeout=900, retries=2, srv=srv)
 
 def chunked_submit_delta(srv, h, delta_path, meta, emit, se):
     chunk_size = UPLOAD_CHUNK_BYTES
