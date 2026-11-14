@@ -64,6 +64,13 @@ def fake_model_factory() -> object:
     return object()
 
 
+def fake_eval(payload: dict[str, object]) -> dict[str, object]:
+    return {"loss": 2.5, "ciLow": 2.4, "ciHigh": 2.6, "windows": 4}
+
+
+not_callable = 42  # used by the model-factory and eval-function rejection tests
+
+
 def config_for(state_path: Path) -> hes.ServiceConfig:
     return hes.ServiceConfig(
         state_path=state_path,
@@ -182,6 +189,22 @@ class TestConfigParsing(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     hes.ServiceConfig.from_env(env(CROWDGPT_HIVEMIND_MODEL_FACTORY=spec))
 
+    def test_from_env_parses_the_eval_function(self) -> None:
+        config = hes.ServiceConfig.from_env(env(CROWDGPT_HIVEMIND_EVAL_FN=f"{__name__}:fake_eval"))
+        self.assertIs(config.eval_fn, fake_eval)
+        self.assertIsNone(hes.ServiceConfig.from_env(env()).eval_fn)
+
+    def test_from_env_rejects_bad_eval_function(self) -> None:
+        for spec in ("missing-colon", "no_such_module_xyz:evaluator", f"{__name__}:not_callable"):
+            with self.subTest(spec=spec):
+                with self.assertRaises(ValueError):
+                    hes.ServiceConfig.from_env(env(CROWDGPT_HIVEMIND_EVAL_FN=spec))
+
+    def test_eval_fn_must_be_callable(self) -> None:
+        with self.assertRaises(ValueError):
+            hes.ServiceConfig(state_path=Path("s.json"), evaluator_keys={"a": KEY_A},
+                              server_secret=KEY_A, eval_fn=not_callable)  # type: ignore[arg-type]
+
     def test_invalid_route_prefix(self) -> None:
         with self.assertRaises(ValueError):
             hes.ServiceConfig(state_path=Path("s.json"), evaluator_keys={"a": KEY_A}, server_secret=KEY_A, route_prefix="no-slash")
@@ -201,6 +224,10 @@ class TestConfigParsing(unittest.TestCase):
         self.assertNotIn(KEY_A.hex(), rendered)
         self.assertEqual(summary["evaluator_ids"], ["eval-a", "eval-b"])
         self.assertEqual(summary["server_secret_bytes"], len(SECRET))
+        self.assertIsNone(summary["eval_fn"])
+        configured = hes.ServiceConfig(state_path=Path("/tmp/state.json"), evaluator_keys={"a": KEY_A},
+                                       server_secret=KEY_A, eval_fn=fake_eval)
+        self.assertEqual(configured.safe_summary()["eval_fn"], f"{__name__}:fake_eval")
 
     def test_main_print_config(self) -> None:
         buffer = io.StringIO()
@@ -210,7 +237,10 @@ class TestConfigParsing(unittest.TestCase):
         output = buffer.getvalue()
         self.assertNotIn(SECRET, output)
         self.assertNotIn(KEY_A.hex(), output)
-        self.assertEqual(json.loads(output)["evaluator_ids"], ["eval-a"])
+        parsed = json.loads(output)
+        self.assertEqual(parsed["evaluator_ids"], ["eval-a"])
+        self.assertIsNone(parsed["eval_fn"])
+        self.assertEqual(parsed["eval_endpoint"], "/fl/loss_check/eval")
 
     def test_main_without_action_does_not_require_env(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -366,6 +396,106 @@ class TestFakeLoaderHandler(unittest.TestCase):
                 open_test_job(coord, job_id="dupe")
 
 
+class TestCoordinatorEval(unittest.TestCase):
+    """The coordinator's ``POST /eval`` contract, testable without FastAPI or a GPU."""
+
+    @staticmethod
+    def _request(**overrides: object) -> dict[str, object]:
+        payload: dict[str, object] = {"round": 372, "globalStep": 371, "checkpoint": "/ckpt/model_latest.bin"}
+        payload.update(overrides)
+        return payload
+
+    def test_missing_evaluator_returns_503_instead_of_a_loss(self) -> None:
+        status, body = hes.evaluate_round(self._request(), None)
+        self.assertEqual(status, 503)
+        self.assertIn("not configured", body["error"])
+        self.assertNotIn("loss", body)
+
+    def test_non_object_payloads_are_rejected(self) -> None:
+        calls: list[object] = []
+        for payload in (None, [], [1, 2, 3], "round=1", 7):
+            with self.subTest(payload=payload):
+                status, body = hes.evaluate_round(payload, lambda p: calls.append(p) or {"loss": 1.0})
+                self.assertEqual(status, 400)
+                self.assertEqual(body["error"], "eval request must be a JSON object")
+        self.assertEqual(calls, [])
+
+    def test_field_validation_never_calls_the_evaluator(self) -> None:
+        calls: list[object] = []
+        bad_requests = (
+            self._request(round="372"),
+            self._request(round=True),
+            self._request(round=-1),
+            self._request(globalStep=3.5),
+            self._request(globalStep=None),
+            self._request(checkpoint=""),
+            self._request(checkpoint=42),
+            self._request(checkpoint="x" * (hes.MAX_CHECKPOINT_CHARS + 1)),
+            {k: v for k, v in self._request().items() if k != "round"},
+        )
+        for payload in bad_requests:
+            with self.subTest(payload=payload):
+                status, body = hes.evaluate_round(payload, lambda p: calls.append(p) or {"loss": 1.0})
+                self.assertEqual(status, 400)
+                self.assertEqual(body["error"], "invalid eval request")
+        self.assertEqual(calls, [])
+
+    def test_success_normalises_the_response(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        def evaluator(payload: dict[str, object]) -> dict[str, object]:
+            calls.append(payload)
+            return {"loss": 3, "ciLow": 2.9, "ciHigh": 3.1, "windows": 8,
+                    "manifestSha256": "ab" * 32, "modelSha256": "", "note": "internal"}
+
+        status, body = hes.evaluate_round(self._request(junk="ignored"), evaluator)
+        self.assertEqual(status, 200)
+        self.assertEqual(calls, [{"round": 372, "globalStep": 371, "checkpoint": "/ckpt/model_latest.bin"}])
+        self.assertEqual(body["loss"], 3.0)
+        self.assertIsInstance(body["loss"], float)
+        self.assertEqual((body["ciLow"], body["ciHigh"], body["windows"]), (2.9, 3.1, 8))
+        self.assertEqual(body["manifestSha256"], "ab" * 32)
+        self.assertIsNone(body["modelSha256"])
+        self.assertEqual(body["source"], "hivemind-eval-service")
+        self.assertNotIn("note", body)
+
+    def test_optional_fields_default_to_none(self) -> None:
+        status, body = hes.evaluate_round(self._request(), lambda p: {"loss": 2.0})
+        self.assertEqual(status, 200)
+        for name in ("ciLow", "ciHigh", "manifestSha256", "modelSha256"):
+            self.assertIsNone(body[name])
+        self.assertIsNone(body["windows"])
+
+    def test_bad_evaluator_results_are_502(self) -> None:
+        bad_results: tuple[object, ...] = (
+            {},
+            {"loss": None},
+            {"loss": "3.0"},
+            {"loss": float("nan")},
+            {"loss": float("inf")},
+            {"loss": 3.0, "ciLow": 3.2, "ciHigh": 2.8},
+            {"loss": 3.0, "ciLow": "low"},
+        )
+        for result in bad_results:
+            with self.subTest(result=result):
+                status, body = hes.evaluate_round(self._request(), lambda p, r=result: r)
+                self.assertEqual(status, 502)
+                self.assertIn("evaluator", body["error"])
+        status, body = hes.evaluate_round(self._request(), lambda p: ["not", "a", "mapping"])
+        self.assertEqual(status, 502)
+        self.assertEqual(body["error"], "evaluator returned a non-object")
+
+    def test_evaluator_exception_is_502_without_leaking_details(self) -> None:
+        def failing(payload: dict[str, object]) -> dict[str, object]:
+            raise RuntimeError("secret-token-and-path")
+
+        status, body = hes.evaluate_round(self._request(), failing)
+        self.assertEqual(status, 502)
+        self.assertEqual(body["error"], "evaluator failed")
+        self.assertEqual(body["detail"], "RuntimeError")
+        self.assertNotIn("secret-token-and-path", json.dumps(body))
+
+
 @unittest.skipUnless(HAVE_FASTAPI, "fastapi/httpx not installed")
 class TestRouter(unittest.TestCase):
     def test_router_creation_and_http_handlers(self) -> None:
@@ -378,6 +508,7 @@ class TestRouter(unittest.TestCase):
             paths = {route.path for route in router.routes}
             self.assertIn(f"{config.route_prefix}/job", paths)
             self.assertIn(f"{config.route_prefix}/receipt", paths)
+            self.assertIn(f"{config.route_prefix}/eval", paths)
 
             app = hes.create_app(config, coordinator=coord)
             client = TestClient(app)
@@ -398,7 +529,52 @@ class TestRouter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             config = config_for(Path(td) / "state.json")
             router = hes.create_router(config, RecordingLoader())
-            self.assertEqual(len(router.routes), 2)
+            self.assertEqual(len(router.routes), 3)
+
+    def test_eval_route_answers_the_coordinator_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config = config_for(root / "state.json")
+            coord = make_coordinator(root, RecordingLoader())
+            app = hes.create_app(config, coordinator=coord,
+                                 eval_fn=lambda p: {"loss": 2.5, "ciLow": 2.4, "ciHigh": 2.6, "windows": 4})
+            client = TestClient(app)
+            response = client.post(f"{config.route_prefix}/eval",
+                                   json={"round": 3, "globalStep": 7, "checkpoint": "model.bin"})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["loss"], 2.5)
+            self.assertEqual(response.json()["source"], "hivemind-eval-service")
+
+            unevaluated = hes.create_app(config, coordinator=coord)
+            response = TestClient(unevaluated).post(
+                f"{config.route_prefix}/eval", json={"round": 3, "globalStep": 7, "checkpoint": "model.bin"})
+            self.assertEqual(response.status_code, 503)
+            self.assertIn("not configured", response.json()["error"])
+
+    def test_eval_route_rejects_malformed_json(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            config = config_for(Path(td) / "state.json")
+            coord = make_coordinator(Path(td), RecordingLoader())
+            app = hes.create_app(config, coordinator=coord, eval_fn=lambda p: {"loss": 1.0})
+            response = TestClient(app).post(f"{config.route_prefix}/eval", content=b"{not json")
+            self.assertEqual(response.status_code, 400)
+
+    def test_config_eval_fn_enables_the_route(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = config_for(Path(td) / "state.json")
+            config = hes.ServiceConfig(state_path=base.state_path, evaluator_keys=base.evaluator_keys,
+                                       server_secret=base.server_secret, eval_fn=fake_eval)
+            coord = make_coordinator(Path(td), RecordingLoader())
+            request = {"round": 1, "globalStep": 2, "checkpoint": "model.bin"}
+            response = TestClient(hes.create_app(config, coordinator=coord)).post(
+                f"{config.route_prefix}/eval", json=request)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["loss"], 2.5)
+
+            overridden = TestClient(hes.create_app(config, coordinator=coord,
+                                                   eval_fn=lambda p: {"loss": 9.0}))
+            response = overridden.post(f"{config.route_prefix}/eval", json=request)
+            self.assertEqual(response.json()["loss"], 9.0)
 
 
 if __name__ == "__main__":  # pragma: no cover
