@@ -1,0 +1,29 @@
+# CrowdGPT - robots.txt
+# Policy: search engines, AI training crawlers, and AI agents are all allowed.
+
+# Default: everyone allowed
+User-agent: *
+Allow: /
+
+# AI training crawlers (explicitly allowed)
+User-agent: GPTBot
+User-agent: ClaudeBot
+User-agent: Google-Extended
+User-agent: Applebot-Extended
+User-agent: CCBot
+Allow: /
+
+# AI search crawlers (explicitly allowed)
+User-agent: OAI-SearchBot
+User-agent: Claude-SearchBot
+User-agent: PerplexityBot
+Allow: /
+
+# AI agents acting on a user's behalf (explicitly allowed)
+User-agent: ChatGPT-User
+User-agent: Claude-User
+User-agent: Perplexity-User
+Allow: /
+
+# Uncomment and set your real domain once known:
+# Sitemap: https://your-domain.com/sitemap.xml
