@@ -5244,28 +5244,40 @@ async function fetchLossHistory() {
     const r = await fetch(HF_LOSS_HISTORY_URL, { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
-    const pools = Array.isArray(d && d.pools) ? d.pools : [];
-    if (pools.length === 0) return;
 
-    const mapped = pools
-      .map(p => ({
-        loss: Number(p.loss),
-        step: p.step != null ? p.step : null,
-        round: p.round != null ? p.round : null,
-        tokens: Number(p.tokens) > 0 ? Number(p.tokens) : 1,
-        ts: p.ts ? p.ts * 1000 : (p.t ? Date.parse(p.t) : Date.now())
-      }))
-      .filter(p => isFinite(p.loss) && p.loss > 0);
+    const rounds = Array.isArray(d?.rounds) ? d.rounds : [];
+    const pools  = Array.isArray(d?.pools)  ? d.pools  : [];
 
+    // Which rounds already have per-pool data?
+    const coveredRounds = new Set(pools.map(p => p.round).filter(x => x != null));
+
+    const poolPts = pools.map(p => ({
+      loss:   Number(p.loss),
+      step:   p.step  ?? null,
+      round:  p.round ?? null,
+      tokens: Number(p.tokens) > 0 ? Number(p.tokens) : 1,
+      ts:     p.ts ? p.ts * 1000 : (p.t ? Date.parse(p.t) : Date.now()),
+      source: 'pool',
+    })).filter(p => isFinite(p.loss) && p.loss > 0);
+
+    const roundPts = rounds
+      .filter(r => r.round == null || !coveredRounds.has(r.round))
+      .map(r => ({
+        loss:   Number(r.loss),
+        step:   r.step  ?? null,
+        round:  r.round ?? null,
+        tokens: Number(r.tokens) > 0 ? Number(r.tokens) : 1,
+        ts:     r.ts ? r.ts * 1000 : (r.t ? Date.parse(r.t) : Date.now()),
+        source: 'round',
+      })).filter(p => isFinite(p.loss) && p.loss > 0);
+
+    const mapped = [...roundPts, ...poolPts].sort((a, b) => a.ts - b.ts);
     if (mapped.length === 0) return;
 
-    mapped.sort((a, b) => a.ts - b.ts);          // oldest -> newest, whatever order the file has
     lossHistory = mapped;
     saveLossHistory();
     requestAnimationFrame(drawLossGraph);
-  } catch (e) {
-    // silent — polling fallback via fetchStats still works
-  }
+  } catch (e) { /* silent */ }
 }
 
 function openLogs() {
