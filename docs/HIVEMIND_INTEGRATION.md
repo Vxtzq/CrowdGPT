@@ -50,6 +50,7 @@ It provides:
 | `CROWDGPT_HIVEMIND_EVALUATOR_KEYS` | Yes | `{"eval-a": "<hex>", ...}` or `eval-a:<hex>,eval-b:<hex>`. |
 | `CROWDGPT_HIVEMIND_SERVER_SECRET` | Yes | `hex:<hex>` or a literal string; at least 16 bytes. |
 | `CROWDGPT_HIVEMIND_MODEL_FACTORY` | No | `module:attr` factory for CPU recomputation; defaults to `hivemind_loss_check.CrowdV1`. |
+| `CROWDGPT_HIVEMIND_EVAL_FN` | No | `module:attr` evaluator answering `POST /eval`; absent means the route returns 503. |
 | `CROWDGPT_HIVEMIND_ROUTE_PREFIX` | No | Route prefix; default `/fl/loss_check`. |
 
 A bare hex string is decoded as bytes for the server secret; any other string is
@@ -121,6 +122,10 @@ def evaluate(payload):                     # round, globalStep, checkpoint
 app = hes.create_app(config, eval_fn=evaluate)
 # CROWDGPT_EVAL_URL=http://127.0.0.1:8099/fl/loss_check
 ```
+
+For `--serve`, set `CROWDGPT_HIVEMIND_EVAL_FN=module:attr` instead of passing a
+callable; `create_app(config)` then wires it automatically. Without either, the
+route answers 503 rather than inventing a loss.
 
 Behaviour is deliberately opinionated, because a wrong number is worse than no
 number:

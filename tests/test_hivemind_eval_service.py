@@ -64,6 +64,13 @@ def fake_model_factory() -> object:
     return object()
 
 
+def fake_eval(payload: dict[str, object]) -> dict[str, object]:
+    return {"loss": 2.5, "ciLow": 2.4, "ciHigh": 2.6, "windows": 4}
+
+
+not_callable = 42  # used by the model-factory and eval-function rejection tests
+
+
 def config_for(state_path: Path) -> hes.ServiceConfig:
     return hes.ServiceConfig(
         state_path=state_path,
@@ -182,6 +189,22 @@ class TestConfigParsing(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     hes.ServiceConfig.from_env(env(CROWDGPT_HIVEMIND_MODEL_FACTORY=spec))
 
+    def test_from_env_parses_the_eval_function(self) -> None:
+        config = hes.ServiceConfig.from_env(env(CROWDGPT_HIVEMIND_EVAL_FN=f"{__name__}:fake_eval"))
+        self.assertIs(config.eval_fn, fake_eval)
+        self.assertIsNone(hes.ServiceConfig.from_env(env()).eval_fn)
+
+    def test_from_env_rejects_bad_eval_function(self) -> None:
+        for spec in ("missing-colon", "no_such_module_xyz:evaluator", f"{__name__}:not_callable"):
+            with self.subTest(spec=spec):
+                with self.assertRaises(ValueError):
+                    hes.ServiceConfig.from_env(env(CROWDGPT_HIVEMIND_EVAL_FN=spec))
+
+    def test_eval_fn_must_be_callable(self) -> None:
+        with self.assertRaises(ValueError):
+            hes.ServiceConfig(state_path=Path("s.json"), evaluator_keys={"a": KEY_A},
+                              server_secret=KEY_A, eval_fn=not_callable)  # type: ignore[arg-type]
+
     def test_invalid_route_prefix(self) -> None:
         with self.assertRaises(ValueError):
             hes.ServiceConfig(state_path=Path("s.json"), evaluator_keys={"a": KEY_A}, server_secret=KEY_A, route_prefix="no-slash")
@@ -201,6 +224,10 @@ class TestConfigParsing(unittest.TestCase):
         self.assertNotIn(KEY_A.hex(), rendered)
         self.assertEqual(summary["evaluator_ids"], ["eval-a", "eval-b"])
         self.assertEqual(summary["server_secret_bytes"], len(SECRET))
+        self.assertIsNone(summary["eval_fn"])
+        configured = hes.ServiceConfig(state_path=Path("/tmp/state.json"), evaluator_keys={"a": KEY_A},
+                                       server_secret=KEY_A, eval_fn=fake_eval)
+        self.assertEqual(configured.safe_summary()["eval_fn"], f"{__name__}:fake_eval")
 
     def test_main_print_config(self) -> None:
         buffer = io.StringIO()
@@ -210,7 +237,10 @@ class TestConfigParsing(unittest.TestCase):
         output = buffer.getvalue()
         self.assertNotIn(SECRET, output)
         self.assertNotIn(KEY_A.hex(), output)
-        self.assertEqual(json.loads(output)["evaluator_ids"], ["eval-a"])
+        parsed = json.loads(output)
+        self.assertEqual(parsed["evaluator_ids"], ["eval-a"])
+        self.assertIsNone(parsed["eval_fn"])
+        self.assertEqual(parsed["eval_endpoint"], "/fl/loss_check/eval")
 
     def test_main_without_action_does_not_require_env(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -528,6 +558,23 @@ class TestRouter(unittest.TestCase):
             app = hes.create_app(config, coordinator=coord, eval_fn=lambda p: {"loss": 1.0})
             response = TestClient(app).post(f"{config.route_prefix}/eval", content=b"{not json")
             self.assertEqual(response.status_code, 400)
+
+    def test_config_eval_fn_enables_the_route(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = config_for(Path(td) / "state.json")
+            config = hes.ServiceConfig(state_path=base.state_path, evaluator_keys=base.evaluator_keys,
+                                       server_secret=base.server_secret, eval_fn=fake_eval)
+            coord = make_coordinator(Path(td), RecordingLoader())
+            request = {"round": 1, "globalStep": 2, "checkpoint": "model.bin"}
+            response = TestClient(hes.create_app(config, coordinator=coord)).post(
+                f"{config.route_prefix}/eval", json=request)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["loss"], 2.5)
+
+            overridden = TestClient(hes.create_app(config, coordinator=coord,
+                                                   eval_fn=lambda p: {"loss": 9.0}))
+            response = overridden.post(f"{config.route_prefix}/eval", json=request)
+            self.assertEqual(response.json()["loss"], 9.0)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -180,6 +180,21 @@ def _factory_name(factory: Callable[[], Any] | None) -> str | None:
     return f"{getattr(factory, '__module__', '?')}:{getattr(factory, '__qualname__', getattr(factory, '__name__', '?'))}"
 
 
+def _load_eval_fn(spec: str) -> EvalFn:
+    """Resolve ``CROWDGPT_HIVEMIND_EVAL_FN=module:attr`` into the /eval evaluator."""
+    module_name, sep, attr = spec.partition(":")
+    if not sep or not module_name or not attr:
+        raise ValueError("eval function must be module:attr")
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise ValueError(f"cannot import eval module {module_name!r}: {exc}") from exc
+    evaluator = getattr(module, attr, None)
+    if not callable(evaluator):
+        raise ValueError(f"{spec!r} is not callable")
+    return evaluator  # type: ignore[return-value]
+
+
 @dataclass(frozen=True)
 class ServiceConfig:
     """Everything the coordinator needs that should come from deployment configuration."""
@@ -189,6 +204,7 @@ class ServiceConfig:
     server_secret: bytes = field(repr=False)
     model_factory: Callable[[], Any] | None = None
     route_prefix: str = DEFAULT_ROUTE_PREFIX
+    eval_fn: EvalFn | None = None
 
     def __post_init__(self) -> None:
         if not self.evaluator_keys:
@@ -199,6 +215,8 @@ class ServiceConfig:
             raise ValueError(f"server secret must be at least {MIN_SECRET_BYTES} bytes")
         if self.model_factory is not None and not callable(self.model_factory):
             raise ValueError("model_factory must be callable or None")
+        if self.eval_fn is not None and not callable(self.eval_fn):
+            raise ValueError("eval_fn must be callable or None")
         prefix = self.route_prefix.strip()
         if not prefix.startswith("/"):
             raise ValueError("route_prefix must start with '/'")
@@ -212,9 +230,12 @@ class ServiceConfig:
         secret = parse_server_secret(_require_env(env, "CROWDGPT_HIVEMIND_SERVER_SECRET"))
         factory_spec = env.get("CROWDGPT_HIVEMIND_MODEL_FACTORY", "").strip()
         factory = _load_model_factory(factory_spec) if factory_spec else None
+        eval_spec = env.get("CROWDGPT_HIVEMIND_EVAL_FN", "").strip()
+        eval_fn = _load_eval_fn(eval_spec) if eval_spec else None
         state_path = Path(env.get("CROWDGPT_HIVEMIND_STATE_PATH", "").strip() or DEFAULT_STATE_PATH)
         prefix = env.get("CROWDGPT_HIVEMIND_ROUTE_PREFIX", "").strip() or DEFAULT_ROUTE_PREFIX
-        return cls(state_path=state_path, evaluator_keys=keys, server_secret=secret, model_factory=factory, route_prefix=prefix)
+        return cls(state_path=state_path, evaluator_keys=keys, server_secret=secret, model_factory=factory,
+                   route_prefix=prefix, eval_fn=eval_fn)
 
     def safe_summary(self) -> dict[str, Any]:
         """Loggable view: no secret or key material."""
@@ -223,6 +244,7 @@ class ServiceConfig:
             "evaluator_ids": sorted(self.evaluator_keys),
             "server_secret_bytes": len(self.server_secret),
             "model_factory": _factory_name(self.model_factory),
+            "eval_fn": _factory_name(self.eval_fn),
             "route_prefix": self.route_prefix,
             "eval_endpoint": f"{self.route_prefix}/eval",
         }
@@ -458,6 +480,7 @@ def create_router(config: ServiceConfig, loader: JobLoader | None = None, *, coo
     """
     _require_fastapi()
     coord = coordinator or build_coordinator(config, loader, **overrides)
+    evaluator = eval_fn if eval_fn is not None else config.eval_fn
     router = APIRouter(prefix=config.route_prefix)
 
     @router.get("/job")
@@ -492,7 +515,7 @@ def create_router(config: ServiceConfig, loader: JobLoader | None = None, *, coo
             payload = json.loads(raw.decode("utf-8") or "null")
         except (UnicodeDecodeError, json.JSONDecodeError):
             return JSONResponse({"error": "invalid JSON"}, status_code=400)
-        status, body = await run_in_threadpool(evaluate_round, payload, eval_fn)
+        status, body = await run_in_threadpool(evaluate_round, payload, evaluator)
         return JSONResponse(body, status_code=status)
 
     return router
