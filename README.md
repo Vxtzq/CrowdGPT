@@ -101,7 +101,8 @@ On a server or over SSH, run without a window:
 
 ```bash
 crowdgpt --headless                      # reuses the login saved by the app
-CROWDGPT_PASSWORD=... crowdgpt --headless --user NAME
+export CROWDGPT_PASSWORD= "<your password>"
+crowdgpt --headless --user NAME
 crowdgpt --headless --anon               # train without an account
 crowdgpt --headless --rounds 5           # stop after 5 rounds
 ```
