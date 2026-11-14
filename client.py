@@ -2036,7 +2036,7 @@ def _register_error_code(r):
 
 def do_register(srv, u, email, p):
     try:
-        r = requests.post(f"{srv}/auth/register", json={"username": u, "password": p, "emaiclient.pyl": email}, timeout=30)
+        r = requests.post(f"{srv}/auth/register", json={"username": u, "password": p, "email": email}, timeout=30)
         if r.status_code == 200:
             try:
                 tok = r.json().get("token")
@@ -2841,7 +2841,7 @@ def _submit_delta_background(srv, h, delta_path, delta_size, meta, emit, se, hb=
             ok = False
             _upload_timing = timing
             try:
-                ok = _upload_delta_file(srv, h, delta_path, delta_size, meta, _bg_emit(emit), se)
+                ok = _upload_delta_file(srv, h, delta_path, delta_size, meta, _bg_emit(emit), _UPLOAD_ABORT)
             except BaseException as e:
                 try: emit('log', f"Upload failed: {e}")
                 except Exception: pass
