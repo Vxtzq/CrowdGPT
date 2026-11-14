@@ -4963,8 +4963,9 @@ function loadLossHistory() {
 }
 function saveLossHistory() {
   try {
-    localStorage.setItem(LOSS_HISTORY_KEY, JSON.stringify(lossHistory.slice(-MAX_LOSS_STORED)));
-  } catch (e) {}
+    localStorage.setItem(LOSS_HISTORY_KEY, JSON.stringify(lossHistory));
+  } catch (e) {
+  }
 }
 function recordLoss(loss, step) {
   const n = Number(loss);
@@ -5018,7 +5019,7 @@ function drawLossGraph() {
   const W = rect.width, H = rect.height;
   if (W < 10 || H < 10) { requestAnimationFrame(drawLossGraph); return; }
 
-  const rawData = lossHistory.slice(-MAX_LOSS_POINTS);
+  const rawData = lossHistory;             // was: lossHistory.slice(-MAX_LOSS_POINTS)
   if (rawData.length < 2) {
     canvas.classList.add('hidden-graph');
     if (empty) empty.classList.remove('hidden-empty');
@@ -5326,17 +5327,17 @@ async function fetchStats() {
     updateGoalProgress(d.totalTokens || 0);
 
     // Loss history: prefer server-provided array, else accumulate from polling
-    if (Array.isArray(d.lossHistory) && d.lossHistory.length > 0) {
+    // Loss history: seed only if empty. Never overwrite the full
+    // loss_history.json that fetchLossHistory() loaded.
+    if (!lossHistory.length && Array.isArray(d.lossHistory) && d.lossHistory.length > 0) {
       lossHistory = d.lossHistory.map(p => typeof p === 'number'
         ? { loss: p, step: null, ts: Date.now() }
         : { loss: Number(p.loss ?? p.value ?? 0), step: p.step ?? null, ts: p.ts ?? Date.now() }
       ).filter(p => isFinite(p.loss) && p.loss > 0);
       saveLossHistory();
-} else {
-  // Only accumulate from status polling if the authoritative
-  // loss_history.json hasn't produced at least two points yet.
-  if (lossHistory.length < 2) recordLoss(currentLoss, d.globalStep || null);
-}
+    } else if (!lossHistory.length) {
+      recordLoss(currentLoss, d.globalStep || null);
+    }
     requestAnimationFrame(drawLossGraph);
     
     // Render pool hardware breakdown
