@@ -63,7 +63,10 @@ except ModuleNotFoundError as exc:  # inside HiveMind the modules live under hiv
     from hivemind.swarm import crowdgpt_loss_check as lc  # type: ignore[no-redef]
     from hivemind.swarm import crowdgpt_loss_check_service as lcs  # type: ignore[no-redef]
 
-from crowdgpt_ng import loss_gate as lg
+try:  # the gate needs numpy (eval library); the adapter must import without it
+    from crowdgpt_ng import loss_gate as lg
+except ImportError:  # pragma: no cover - stdlib-only installs answer 503 from /gate
+    lg = None  # type: ignore[assignment]
 
 try:  # optional: the adapter must import with the standard library alone (CI)
     from fastapi import APIRouter, FastAPI, Request, Response
@@ -73,6 +76,7 @@ except ImportError:  # pragma: no cover - FastAPI is an optional dependency
 
 DEFAULT_STATE_PATH = Path(".crowdgpt_hivemind") / "eval_state.json"
 DEFAULT_GATE_MANIFEST = Path("eval") / "ng-eval-v1" / "manifest.json"
+MAX_GATE_BODY_BYTES = 8192
 DEFAULT_ROUTE_PREFIX = "/fl/loss_check"
 MIN_SECRET_BYTES = 16
 MAX_EVAL_BODY_BYTES = 64 * 1024
@@ -403,6 +407,9 @@ class GateConfig:
         return cls(manifest=manifest, data_root=data_root, count=count, seed=seed, device=device)
 
     def summary(self) -> dict[str, Any]:
+        if lg is None:
+            return {"manifest": str(self.manifest), "missing": True,
+                    "detail": "numpy is not installed; the gate answers 503"}
         if not self.manifest.is_file():
             return {"manifest": str(self.manifest), "missing": True,
                     "detail": "the gate answers 503 until a manifest exists"}
@@ -427,7 +434,7 @@ def _env_int(env: Mapping[str, str], name: str, default: int, low: int, high: in
 def build_gate_scorer(gate: GateConfig) -> Callable[[dict[str, Any]], Any] | None:
     """None when there is no manifest; the gate then refuses with a 503."""
 
-    if not gate.manifest.is_file():
+    if lg is None or not gate.manifest.is_file():
         return None
 
     def logits_for(paths: Mapping[str, Path], manifest: Any) -> Callable[[Any], Any]:
@@ -584,13 +591,16 @@ def create_router(config: ServiceConfig, loader: JobLoader | None = None, *, coo
         from starlette.concurrency import run_in_threadpool
 
         raw = await request.body()
-        if len(raw) > lg.MAX_GATE_BODY_BYTES:
+        if len(raw) > MAX_GATE_BODY_BYTES:
             return JSONResponse({"error": "gate request too large"}, status_code=413)
         try:
             payload = json.loads(raw.decode("utf-8") or "null")
         except (UnicodeDecodeError, json.JSONDecodeError):
             return JSONResponse({"error": "invalid JSON"}, status_code=400)
         # Downloading a candidate and scoring 64 windows takes minutes; never on the loop.
+        if lg is None:  # no numpy: refuse rather than import-fail at request time
+            return JSONResponse({"error": "evaluator not configured",
+                                 "detail": "numpy is not installed"}, status_code=503)
         status, body = await run_in_threadpool(lg.evaluate_gate, payload, gate_scorer)
         return JSONResponse(body, status_code=status)
 
