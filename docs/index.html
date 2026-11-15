@@ -3180,7 +3180,7 @@ footer {
         </div>
         <div class="stat-item">
           <div class="stat-val" id="home-stat-loss">—</div>
-          <div class="stat-lbl" data-i18n="home.stat.loss">Current loss</div>
+          <div class="stat-lbl" id="home-stat-loss-lbl" data-i18n="home.stat.loss">Held-out loss</div>
         </div>
       </div>
     </div>
@@ -3462,8 +3462,8 @@ footer {
       </div>
       <div class="stat-cell">
         <div class="val" id="status-loss">—</div>
-        <div class="lbl" data-i18n="status.stat.loss">Model Loss</div>
-        <div class="sub" data-i18n="status.stat.loss.sub">Latest aggregated</div>
+        <div class="lbl" data-i18n="status.stat.loss">Held-out loss</div>
+        <div class="sub" id="status-loss-sub" data-i18n="status.stat.loss.sub">Awaiting evaluation</div>
       </div>
     </div>
 
@@ -3483,7 +3483,7 @@ footer {
 
     <div class="loss-panel">
       <div class="loss-panel-head">
-        <div class="loss-panel-title" data-i18n="status.chart.title">Loss history</div>
+        <div class="loss-panel-title" data-i18n="status.chart.title">Training loss history</div>
         <div class="loss-panel-value" id="loss-last">—</div>
       </div>
       <div class="loss-graph-wrap">
@@ -3829,13 +3829,20 @@ const TRANSLATIONS = {
     'status.stat.tokens.sub': 'Across all clients',
     'status.stat.clients': 'Active Clients',
     'status.stat.clients.sub': 'Currently training',
-    'status.stat.loss': 'Model Loss',
-    'status.stat.loss.sub': 'Latest aggregated',
+    'status.stat.loss': 'Held-out loss',
+    'status.stat.loss.sub': 'Awaiting evaluation',
+    'loss.heldout': 'Held-out loss',
+    'loss.training': 'Training loss',
+    'loss.sub.heldout': 'Held-out set · round {round}',
+    'loss.sub.heldout.ci': 'Held-out set · 95% CI {low}–{high} · round {round}',
+    'loss.sub.training': 'Latest aggregated update · not held-out',
+    'loss.sub.unevaluated': 'Latest aggregated update · held-out evaluation pending',
+    'loss.none': 'no loss data',
     'status.explainer.title': 'What the numbers mean',
     'status.explainer.li1': '<strong>Contributions:</strong> total model updates submitted across all contributors.',
     'status.explainer.li2': '<strong>Tokens Processed:</strong> cumulative tokens trained on by every GPU in the swarm.',
     'status.explainer.li3': '<strong>Active Clients:</strong> GPUs that have pinged the coordinator in the last 10 minutes.',
-    'status.explainer.li4': '<strong>Model Loss:</strong> cross-entropy loss of the most recently aggregated update.',
+    'status.explainer.li4': '<strong>Held-out loss:</strong> cross-entropy on tokens that are never trained on, scored by the evaluator and published with its confidence interval. When no evaluation exists the card says <em>training loss</em> instead and is not comparable across rounds.',
     'status.explainer.foot': 'Stats refresh automatically every 15 seconds from the HuggingFace CDN. The global model weights are pushed to HuggingFace every 4 hours after aggregated updates complete.',
     'status.goal.title': 'Token goal',
     'status.pools.title': 'Training Pools by Hardware',
@@ -3849,7 +3856,7 @@ const TRANSLATIONS = {
     'status.pools.none': 'no active pools',
     'status.pools.summary': '{pools} pools / {clients} clients',
 
-    'status.chart.title': 'Loss history',
+    'status.chart.title': 'Training loss history',
 'status.chart.waiting': 'Waiting for data…',
 'status.logs.btn': 'View server logs',
 'status.logs.title': 'Server Logs',
@@ -4767,6 +4774,7 @@ function setLanguage(lang) {
   currentLang = lang;
   try { localStorage.setItem('crowdgpt-lang', lang); } catch (e) {}
   applyTranslations();
+  if (lastStatusPayload) renderLossStat(lastStatusPayload);
 }
 
 const langSelect = document.getElementById('lang-select');
@@ -5384,6 +5392,57 @@ document.addEventListener('keydown', (e) => {
 let apiReachable = null;
 let failedAttempts = 0;
 let statsInterval, lbInterval;
+let lastStatusPayload = null;
+
+// Loss display: only a value the coordinator marks as evaluated may be labelled
+// held-out. Everything else is a training loss and must say so, because the two
+// are not comparable across rounds.
+function pickLoss(d) {
+  const hasHeld = d && d.heldoutLoss != null && d.heldoutLoss !== '' && Number.isFinite(Number(d.heldoutLoss));
+  const held = hasHeld && d.evalStatus === 'evaluated' ? Number(d.heldoutLoss) : null;
+  const rawTrain = d && d.trainLoss != null ? d.trainLoss : (d && d.lastLoss);
+  const train = rawTrain != null && rawTrain !== '' && Number.isFinite(Number(rawTrain)) ? Number(rawTrain) : null;
+  const ci = d && d.heldoutCi;
+  const low = ci && ci.low != null && Number.isFinite(Number(ci.low)) ? Number(ci.low) : null;
+  const high = ci && ci.high != null && Number.isFinite(Number(ci.high)) ? Number(ci.high) : null;
+  const round = d && (d.evalRound != null ? d.evalRound : d.currentRound);
+  return { held, train, ci: { low, high }, round, kind: held != null ? 'heldout' : 'training' };
+}
+
+function lossSubText(p) {
+  if (p.kind === 'heldout') {
+    return p.ci.low != null && p.ci.high != null
+      ? t('loss.sub.heldout.ci', { low: p.ci.low.toFixed(3), high: p.ci.high.toFixed(3), round: p.round ?? '—' })
+      : t('loss.sub.heldout', { round: p.round ?? '—' });
+  }
+  return p.train == null ? t('loss.sub.unevaluated') : t('loss.sub.training');
+}
+
+function renderLossStat(d) {
+  if (d) lastStatusPayload = d;
+  const p = pickLoss(d);
+  const shown = p.kind === 'heldout' ? p.held : p.train;
+  const value = shown == null ? '—' : Number(shown).toFixed(4);
+
+  const homeEl = document.getElementById('home-stat-loss');
+  if (homeEl) {
+    homeEl.textContent = value;
+    homeEl.style.color = 'var(--text)';
+    homeEl.title = lossSubText(p);
+  }
+  const homeLbl = document.getElementById('home-stat-loss-lbl');
+  if (homeLbl) homeLbl.textContent = p.kind === 'heldout' ? t('loss.heldout') : t('loss.training');
+  const statusEl = document.getElementById('status-loss');
+  if (statusEl) {
+    statusEl.textContent = value;
+    statusEl.title = lossSubText(p);
+  }
+  const statusLbl = document.querySelector('[data-i18n="status.stat.loss"]');
+  if (statusLbl) statusLbl.textContent = p.kind === 'heldout' ? t('loss.heldout') : t('loss.training');
+  const statusSub = document.getElementById('status-loss-sub');
+  if (statusSub) statusSub.textContent = lossSubText(p);
+  return p;
+}
 
 async function fetchStats() {
   try {
@@ -5396,9 +5455,9 @@ async function fetchStats() {
     document.getElementById('home-stat-tokens').textContent = fmtNum(d.totalTokens || 0);
 
     const lossEl = document.getElementById('home-stat-loss');
-    const currentLoss = d.lastLoss != null ? d.lastLoss : 0.0;
-    lossEl.textContent = Number(currentLoss).toFixed(4);
-    lossEl.style.color = 'var(--text)';
+    const lossPick = renderLossStat(d);
+    const currentLoss = lossPick.train != null ? lossPick.train : 0.0;
+    if (lossEl) lossEl.style.color = 'var(--text)';
 
     const contribEl = document.getElementById('status-contributions');
     if (contribEl) contribEl.textContent = (d.totalContributions || 0).toLocaleString();
@@ -5406,8 +5465,6 @@ async function fetchStats() {
     if (tokensEl) tokensEl.textContent = fmtNum(d.totalTokens || 0);
     const clientsEl = document.getElementById('status-clients');
     if (clientsEl) clientsEl.textContent = (d.activeGpus || 0).toLocaleString();
-    const lossStatusEl = document.getElementById('status-loss');
-    if (lossStatusEl) lossStatusEl.textContent = d.lastLoss != null ? Number(d.lastLoss).toFixed(4) : 'no loss data';
 
     updateGoalProgress(d.totalTokens || 0);
 
@@ -5445,9 +5502,9 @@ async function fetchStats() {
           document.getElementById('home-stat-tokens').textContent = fmtNum(d2.totalTokens || 0);
 
           const lossEl = document.getElementById('home-stat-loss');
-          const currentLoss = d2.lastLoss != null ? d2.lastLoss : 0.0;
-          lossEl.textContent = Number(currentLoss).toFixed(4);
-          lossEl.style.color = 'var(--text)';
+          const lossPick = renderLossStat(d2);
+          const currentLoss = lossPick.train != null ? lossPick.train : 0.0;
+          if (lossEl) lossEl.style.color = 'var(--text)';
 
           updateGoalProgress(d2.totalTokens || 0);
           if (lossHistory.length < 2) recordLoss(Number(currentLoss), d2.globalStep || null);
