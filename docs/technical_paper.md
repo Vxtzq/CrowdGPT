@@ -1,5 +1,5 @@
 # ⚠️⚠️Disclaimer: This paper is somewhat AI slop⚠️⚠️
-As i don't have time to write a full easy to follow technical explanation myself, i let AI do part of the job.
+**As i don't have time to write a full easy to follow technical explanation myself, i let AI do part of the job.**
 Feel free to contribute to this technical description!
 
 # CrowdGPT: A Technical Description
