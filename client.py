@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v3.3
+CrowdGPT GUI Client v3.4
+v3.4 changes
+  - Auto-pause: VRAM is measured as growth since start (the CUDA context and desktop were counted as "another app"), 4 samples of debounce
+  - Stop now fully releases VRAM (the degradation ladder kept the model alive after Stop)
+  - Auto-pause: training stops when another app (game, render, …) starts using the GPU/CPU/RAM;
+    disable with CROWDGPT_ACTIVITY_PAUSE=0, tune with CROWDGPT_ACTIVITY_PAUSE_INTERVAL/CPU/RAM/VRAM
+
 v3.3 changes
   - Fixed: registration sent a corrupted e-mail field
   - Fixed: Hugging Face weight check (expected_sha) crashed after every download and forced the slow coordinator stream
@@ -188,7 +194,7 @@ class TimingRecorder:
         self.phase("total", time.monotonic() - self.started, ok=ok, **fields)
 
 
-CLIENT_VERSION = "3.3"
+CLIENT_VERSION = "3.4"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
@@ -3137,6 +3143,123 @@ def _upload_delta_file(srv, h, delta_path, delta_size, meta, emit, se):
             )
     return accepted
 
+def _activity_pause_enabled():
+    return os.environ.get("CROWDGPT_ACTIVITY_PAUSE", "1").strip().lower() not in ("0", "false", "no", "off")
+
+def _activity_env_float(name, default, minv):
+    try:
+        v = float((os.environ.get(name, "") or "").strip() or default)
+    except (TypeError, ValueError):
+        v = float(default)
+    return max(v, minv)
+
+def _current_accel_index():
+    try:
+        td = globals().get("train_device")
+        if td is not None and getattr(td, "index", None) is not None:
+            return int(td.index)
+    except Exception:
+        pass
+    try:
+        return int(torch.cuda.current_device())
+    except Exception:
+        return 0
+
+class UserActivityMonitor:
+    """Best-effort watchdog: pauses training when the user starts another heavy task (a game,
+    a render, …) so the client stops competing for GPU / CPU / RAM.
+
+    Any one of these, after a short debounce, sets the training stop event — the same path as the
+    red Stop button — so the current round stops and the user can press Start to resume.
+      - VRAM: another process holds accelerator memory beyond this client's own reservation
+      - CPU : total CPU is busy while this client is not the main consumer
+      - RAM : free system RAM drops below a floor
+
+    Disable with CROWDGPT_ACTIVITY_PAUSE=0. Tunables: CROWDGPT_ACTIVITY_PAUSE_INTERVAL (seconds),
+    CROWDGPT_ACTIVITY_PAUSE_CPU (%), CROWDGPT_ACTIVITY_PAUSE_RAM (GB), CROWDGPT_ACTIVITY_PAUSE_VRAM (GB).
+    """
+    def __init__(self, stop_event, emit):
+        self.stop_event = stop_event
+        self.emit = emit
+        self.interval_s = _activity_env_float("CROWDGPT_ACTIVITY_PAUSE_INTERVAL", 6.0, 2.0)
+        self.cpu_busy_pct = _activity_env_float("CROWDGPT_ACTIVITY_PAUSE_CPU", 85.0, 50.0)
+        self.ram_floor_gb = _activity_env_float("CROWDGPT_ACTIVITY_PAUSE_RAM", 1.5, 0.25)
+        self.vram_other_gb = _activity_env_float("CROWDGPT_ACTIVITY_PAUSE_VRAM", 0.75, 0.25)
+        # consecutive busy samples before pausing (default 4 x 6 s = ~24 s), so a short CPU spike does not stop training
+        self.samples_needed = int(_activity_env_float("CROWDGPT_ACTIVITY_PAUSE_SAMPLES", 4, 1))
+        self._vram_base = None
+        self._stop = threading.Event()
+        self._proc = None
+        self._busy_streak = 0
+        self._fired = False
+        self._t = threading.Thread(target=self._run, daemon=True, name="activity-monitor")
+        try:
+            import psutil
+            self._proc = psutil.Process()
+        except Exception:
+            self._proc = None
+
+    def start(self):
+        if not self._t.is_alive():
+            self._t.start()
+
+    def stop(self):
+        self._stop.set()
+
+    def _run(self):
+        while not self._stop.wait(self.interval_s):
+            if self.stop_event.is_set():
+                self._busy_streak = 0
+                continue
+            reasons = self._detect()
+            if reasons:
+                self._busy_streak += 1
+                if self._busy_streak >= self.samples_needed and not self._fired:
+                    self._fired = True
+                    self.stop_event.set()
+                    try:
+                        self.emit('log', "🛑 Paused: another app is using the system (" + "; ".join(reasons) + "). Press Start to resume when you're done.")
+                    except Exception: pass
+                    try:
+                        self.emit('stopped', {})
+                    except Exception: pass
+            else:
+                self._busy_streak = 0
+
+    def _detect(self):
+        reasons = []
+        try:
+            import psutil
+            avail = psutil.virtual_memory().available / 1024**3
+            if avail < self.ram_floor_gb:
+                reasons.append(f"RAM low: {avail:.1f} GB free")
+        except Exception:
+            pass
+        try:
+            import psutil
+            total = psutil.cpu_percent(interval=None) or 0.0
+            if total > self.cpu_busy_pct:
+                own = self._proc.cpu_percent(interval=None) if self._proc is not None else 0.0
+                own = (own or 0.0) / max(1, psutil.cpu_count()) * 100.0
+                if own < total * 0.5:
+                    reasons.append(f"CPU busy: {total:.0f}% total vs {own:.0f}% ours")
+        except Exception:
+            pass
+        try:
+            if torch.cuda.is_available():
+                idx = _current_accel_index()
+                free, total = torch.cuda.mem_get_info(idx)
+                other = (total - free) - int(torch.cuda.memory_reserved(idx))
+                # "other" always contains the CUDA context and the desktop (browser, compositor), which are there before
+                # any game starts. Only growth since this monitor started counts as another app taking the GPU.
+                if self._vram_base is None or other < self._vram_base: self._vram_base = other
+                grown = other - self._vram_base
+                if grown > self.vram_other_gb * 1024**3:
+                    reasons.append(f"VRAM taken by another app: +{grown / 1024**3:.1f} GB")
+        except Exception:
+            pass
+        return reasons
+
 def run_single_round_wrapper(srv, at, se, emit):
     global train_device, train_backend
     timing = TimingRecorder.from_env()
@@ -3151,7 +3274,7 @@ def run_single_round_wrapper(srv, at, se, emit):
     cr = rs["current_round"]; timing.set_round(cr)
     timing.phase("queue", time.monotonic() - round_started)
     hb = HeartbeatManager(srv, h, cr, se, emit); hb.start()
-    model = ob = oe = x = y = lo = iw = ie = iew = ds = None
+    model = ob = oe = x = y = lo = iw = ie = iew = ds = ladder = None
     micro_step = 0; lval = 10.0; tt = 0; tid = ""; tried_cpu_fallback = False
     cohort_mode = False; cc_seed = cc_steps = cc_bs = cc_accum = cc_autocast = None; cc_optim = "any"
     optim_mode = None
@@ -3442,10 +3565,8 @@ def run_single_round_wrapper(srv, at, se, emit):
     except BaseException as e:
         exc_type = type(e); exc_text = f"{type(e).__name__}: {e}"[:200] if isinstance(e, Exception) else ""; raise
     finally:
-        rejected = hb.close(); model = ob = oe = x = y = lo = iw = ie = iew = ds = None; gc.collect()
-        if train_backend in ("CUDA", "ROCM"):
-            try: torch.cuda.empty_cache()
-            except Exception: pass
+        rejected = hb.close(); model = ob = oe = x = y = lo = iw = ie = iew = ds = ladder = None
+        _clear_accel_cache(train_device)
         try: prune_hf_cache()
         except Exception: pass
         if not timing_handoff:
@@ -3477,7 +3598,7 @@ def _check_updates_between_rounds(emit):
 
 class Api:
     def __init__(self):
-        self.window = None; self.stop_event = threading.Event(); self.thread = None
+        self.window = None; self.stop_event = threading.Event(); self.thread = None; self._activity_monitor = None
         self.auth_token = None; self.username = None; self.server_url = DEFAULT_SERVER
         self._lp = 0.0
         self._ui_queue = queue.Queue(maxsize=2048)
@@ -3626,21 +3747,34 @@ class Api:
         except Exception: pass
         self.emit('login_success', {'username': 'anonymous'})
 
+    def _stop_activity_monitor(self):
+        m = getattr(self, '_activity_monitor', None)
+        if m is not None:
+            try: m.stop()
+            except Exception: pass
+            self._activity_monitor = None
+
     def start(self):
         if self.thread and self.thread.is_alive():
             if self.stop_event.is_set():
                 self.emit('log', "Previous run is still shutting down — press Start again in a moment."); self.emit('start_refused', {})
             return
+        self._stop_activity_monitor()
         self.stop_event.clear()
+        if _activity_pause_enabled():
+            self._activity_monitor = UserActivityMonitor(self.stop_event, self.emit)
+            self._activity_monitor.start()
         self.thread = threading.Thread(target=self._rs, daemon=True)
         self.thread.start()
         self.emit('started', {})
-      
+
     def stop(self):
         self.stop_event.set()
+        self._stop_activity_monitor()
         self.emit('stopped', {})
     def logout(self):
         self.stop_event.set()                                      # stops training after the current step; a new login can't start until it has ended
+        self._stop_activity_monitor()
         self.auth_token = None; self.username = None
         try: AUTH_TOKEN_FILE.unlink(missing_ok=True)
         except Exception: pass
