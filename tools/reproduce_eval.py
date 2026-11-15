@@ -15,13 +15,10 @@ coordinator is contacted.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import math
 import sys
 from pathlib import Path
-
-import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -33,51 +30,22 @@ from crowdgpt_ng.eval import (  # noqa: E402
     uniform_logits,
     verify_shards,
 )
+from crowdgpt_ng.loss_gate import client_logits_from_safetensors, load_client_module  # noqa: E402
 
 DEFAULT_MANIFEST = "eval/ng-eval-v1/manifest.json"
+HF_REPO = "Vxtzq/Crowd-v1"
 
 
-def _load_client():
-    path = REPO_ROOT / "client.py"
-    if not path.is_file():
-        raise EvalError(f"client.py not found at {path}")
-    spec = importlib.util.spec_from_file_location("crowdgpt_client_for_eval", path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+def checkpoint_paths(model_path: str | None, engram_path: str | None) -> tuple[str, str]:
+    if model_path and engram_path:
+        return model_path, engram_path
+    from huggingface_hub import hf_hub_download
 
-
-def client_logits(manifest, *, device: str | None = None, weights: str | None = None, engram: str | None = None):
-    """Logits from the real CrowdGPT checkpoint, in flat safetensors order."""
-
-    import torch
-
-    client = _load_client()
-    if weights is None:
-        from huggingface_hub import hf_hub_download
-
-        weights = hf_hub_download(client.HF_MODEL_REPO_ID, "model_bf16.safetensors", revision="main")
-    if engram is None:
-        from huggingface_hub import hf_hub_download
-
-        engram = hf_hub_download(client.HF_MODEL_REPO_ID, "engram_bf16.safetensors", revision="main")
-
-    backend, dev = client.detect_training_backend(device)
-    iw = client._load_safetensors_flat(weights, client.EXPECTED_MODEL_SIZE, "model weights")
-    ie = None
-    if getattr(client, "ENGRAM_ACTIVE", False):
-        ie = client._load_safetensors_flat(engram, client.EXPECTED_ENGRAM_SIZE, "engram weights")
-    model = client._build_model(backend, dev, iw, ie, lambda *a, **k: None, bs=1, sl=manifest.seq_len)
-    model.eval()
-    torch.set_grad_enabled(False)
-
-    def logits(inputs):
-        idx = torch.as_tensor(np.asarray(inputs, dtype=np.int64), device=dev).unsqueeze(0)
-        out = model(idx)
-        return out[0].float().cpu().numpy()
-
-    return logits
+    if not model_path:
+        model_path = hf_hub_download(HF_REPO, "model_bf16.safetensors", revision="main")
+    if not engram_path:
+        engram_path = hf_hub_download(HF_REPO, "engram_bf16.safetensors", revision="main")
+    return model_path, engram_path
 
 
 def run(
@@ -97,8 +65,10 @@ def run(
         fn = uniform_logits(manifest.vocab_size)
         model_id = "uniform"
     elif model == "client":
-        fn = client_logits(manifest, device=device, weights=weights, engram=engram)
-        version = getattr(_load_client(), "CLIENT_VERSION", "unknown")
+        model_path, engram_path = checkpoint_paths(weights, engram)
+        fn = client_logits_from_safetensors(model_path, engram_path, manifest.seq_len, device=device,
+                                            repo_root=REPO_ROOT)
+        version = getattr(load_client_module(REPO_ROOT), "CLIENT_VERSION", "unknown")
         model_id = f"crowdgpt-client-{version}"
     else:
         raise EvalError(f"unknown model: {model}")
