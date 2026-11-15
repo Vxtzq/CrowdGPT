@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v3.4
+CrowdGPT GUI Client v3.5
 v3.4 changes
   - Auto-pause: VRAM is measured as growth since start (the CUDA context and desktop were counted as "another app"), 4 samples of debounce
   - Stop now fully releases VRAM (the degradation ladder kept the model alive after Stop)
@@ -194,7 +194,7 @@ class TimingRecorder:
         self.phase("total", time.monotonic() - self.started, ok=ok, **fields)
 
 
-CLIENT_VERSION = "3.4"
+CLIENT_VERSION = "3.5"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
@@ -1137,7 +1137,12 @@ def _uma_ram_ceiling_gb(idx, total_bytes):
         import psutil
         total_ram = float(psutil.virtual_memory().total)
     except Exception: return None
-    if not integrated and total_bytes < 0.9 * total_ram: return None
+    if not integrated:
+        # Only treat a card as unified-memory when torch says so, or it is a known gfx115x APU.
+        # A size heuristic (VRAM >= 0.9 x RAM) wrongly capped discrete cards on low-RAM PCs.
+        try: integrated = str(torch.cuda.get_device_properties(idx).gcnArchName or "").startswith("gfx115")
+        except Exception: pass
+    if not integrated: return None
     share = UMA_VRAM_SHARE_DEFAULT
     try: share = float(os.environ.get("CROWDGPT_UMA_VRAM_SHARE", share) or share)
     except Exception: pass
@@ -3279,11 +3284,11 @@ class UserActivityMonitor:
         self.stop_event = stop_event
         self.emit = emit
         self.interval_s = _activity_env_float("CROWDGPT_ACTIVITY_PAUSE_INTERVAL", 6.0, 2.0)
-        self.cpu_busy_pct = _activity_env_float("CROWDGPT_ACTIVITY_PAUSE_CPU", 85.0, 50.0)
-        self.ram_floor_gb = _activity_env_float("CROWDGPT_ACTIVITY_PAUSE_RAM", 1.5, 0.25)
-        self.vram_other_gb = _activity_env_float("CROWDGPT_ACTIVITY_PAUSE_VRAM", 0.75, 0.25)
-        # consecutive busy samples before pausing (default 4 x 6 s = ~24 s), so a short CPU spike does not stop training
-        self.samples_needed = int(_activity_env_float("CROWDGPT_ACTIVITY_PAUSE_SAMPLES", 4, 1))
+        self.cpu_busy_pct = _activity_env_float("CROWDGPT_ACTIVITY_PAUSE_CPU", 95.0, 50.0)
+        self.ram_floor_gb = _activity_env_float("CROWDGPT_ACTIVITY_PAUSE_RAM", 0.75, 0.25)
+        self.vram_other_gb = _activity_env_float("CROWDGPT_ACTIVITY_PAUSE_VRAM", 4.0, 0.25)
+        # consecutive busy samples before pausing (default 10 x 6 s = ~60 s), so a short CPU spike does not stop training
+        self.samples_needed = int(_activity_env_float("CROWDGPT_ACTIVITY_PAUSE_SAMPLES", 10, 1))
         self._vram_base = None
         self._stop = threading.Event()
         self._proc = None
