@@ -18,6 +18,7 @@
   <a href="https://discord.gg/2Shwqj3Xpx">Discord</a> ·
   <a href="./docs/ARCHITECTURE.md">Architecture</a> ·
   <a href="./docs/DATA.md">Training Data</a>
+  <a href="https://github.com/Vxtzq/CrowdEval">Evaluation pipeline</a>
 </p>
 
 <p align="center">
@@ -32,9 +33,10 @@
   <strong>The best 0$ AI.</strong>
 </p>
 
-# CrowdGPT v3.3 changelog
+# CrowdGPT v3.4 changelog
 - Merged numerous pull requests
 - Prepared ground for Crowd-v2
+- Released evaluation toolkit 🥳
  
 ## What is CrowdGPT?
 
