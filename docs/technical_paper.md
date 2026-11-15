@@ -153,6 +153,8 @@ Power-solo pools are never cross-checked and keep native precision.
 
 **Honest limitation:** the 5.0 threshold is empirical, not derived. It is permissive enough to accept benign cross-hardware noise, which also means a *subtle* poisoning attack (small, consistent bias across all three colluding clients) would not be detected. Colluding clients are prevented only by the same-UUID/same-IP guards, which are weak against a determined attacker with several machines and addresses.
 
+**Feel free to conduct experiments to validate or ask to lower this threshold.**
+
 ---
 
 ## 7. Hardening summary
