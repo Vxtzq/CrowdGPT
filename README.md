@@ -34,7 +34,7 @@
 </p>
 
 # Benchmarks
-[https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/logo-dark2.png](https://raw.githubusercontent.com/Vxtzq/CrowdGPT/refs/heads/main/docs/benchmarks/benchmarks.png)
+[[https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/logo-dark2.png](https://raw.githubusercontent.com/Vxtzq/CrowdGPT/refs/heads/main/docs/benchmarks/benchmarks.png)](https://raw.githubusercontent.com/Vxtzq/CrowdGPT/refs/heads/main/docs/benchmarks/benchmarks.png)
 
 
 # CrowdGPT v3.4 changelog
