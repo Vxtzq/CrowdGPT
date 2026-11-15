@@ -1,10 +1,11 @@
 # ⚠️⚠️Disclaimer: This paper is somewhat AI slop⚠️⚠️
 **As i don't have time to write a full easy to follow technical explanation myself, i let AI do part of the job.**
+
 Feel free to contribute to this technical description!
 
 # CrowdGPT: A Technical Description
 
-**Status:** v1 (pre-release research system) · **Client:** v3.4 · **Server:** `CrowdGPT-Server` (current `main`)
+**Status:** v1 - **Client:** v3.4 - **Server:** `CrowdGPT-Server v2.3`
 **Scope:** This document describes what the code actually does, including its weaknesses. Where a value is a default that the operator can override via environment variable, it is marked as such. Nothing here is a claim of benchmark quality: no held-out evaluation has been published yet (see §10).
 
 ---
