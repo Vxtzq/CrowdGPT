@@ -63,6 +63,11 @@ except ModuleNotFoundError as exc:  # inside HiveMind the modules live under hiv
     from hivemind.swarm import crowdgpt_loss_check as lc  # type: ignore[no-redef]
     from hivemind.swarm import crowdgpt_loss_check_service as lcs  # type: ignore[no-redef]
 
+try:  # the gate needs numpy (eval library); the adapter must import without it
+    from crowdgpt_ng import loss_gate as lg
+except ImportError:  # pragma: no cover - stdlib-only installs answer 503 from /gate
+    lg = None  # type: ignore[assignment]
+
 try:  # optional: the adapter must import with the standard library alone (CI)
     from fastapi import APIRouter, FastAPI, Request, Response
     from fastapi.responses import JSONResponse
@@ -70,6 +75,8 @@ except ImportError:  # pragma: no cover - FastAPI is an optional dependency
     APIRouter = FastAPI = Request = Response = JSONResponse = None  # type: ignore[assignment,misc]
 
 DEFAULT_STATE_PATH = Path(".crowdgpt_hivemind") / "eval_state.json"
+DEFAULT_GATE_MANIFEST = Path("eval") / "ng-eval-v1" / "manifest.json"
+MAX_GATE_BODY_BYTES = 8192
 DEFAULT_ROUTE_PREFIX = "/fl/loss_check"
 MIN_SECRET_BYTES = 16
 MAX_EVAL_BODY_BYTES = 64 * 1024
@@ -247,6 +254,7 @@ class ServiceConfig:
             "eval_fn": _factory_name(self.eval_fn),
             "route_prefix": self.route_prefix,
             "eval_endpoint": f"{self.route_prefix}/eval",
+            "gate_endpoint": f"{self.route_prefix}/gate",
         }
 
 
@@ -378,6 +386,65 @@ def build_coordinator(config: ServiceConfig, loader: JobLoader | None = None, **
     )
 
 
+@dataclass(frozen=True)
+class GateConfig:
+    """Where the loss-gate contract gets its checkpoints and held-out tokens."""
+
+    manifest: Path = DEFAULT_GATE_MANIFEST
+    data_root: Path = REPO
+    count: int = 64
+    seed: int = 0
+    device: str = ""
+
+    @classmethod
+    def from_env(cls, environ: Mapping[str, str] | None = None) -> "GateConfig":
+        env = os.environ if environ is None else environ
+        manifest = Path(env.get("CROWDGPT_EVAL_MANIFEST", "").strip() or DEFAULT_GATE_MANIFEST)
+        data_root = Path(env.get("CROWDGPT_EVAL_DATA_ROOT", "").strip() or REPO)
+        count = _env_int(env, "CROWDGPT_EVAL_COUNT", 64, 1, 4096)
+        seed = _env_int(env, "CROWDGPT_EVAL_SEED", 0, 0, 2**31 - 1)
+        device = env.get("CROWDGPT_EVAL_DEVICE", "").strip()
+        return cls(manifest=manifest, data_root=data_root, count=count, seed=seed, device=device)
+
+    def summary(self) -> dict[str, Any]:
+        if lg is None:
+            return {"manifest": str(self.manifest), "missing": True,
+                    "detail": "numpy is not installed; the gate answers 503"}
+        if not self.manifest.is_file():
+            return {"manifest": str(self.manifest), "missing": True,
+                    "detail": "the gate answers 503 until a manifest exists"}
+        try:
+            return {**lg.gate_summary(self.manifest, self.data_root), "count": self.count, "seed": self.seed,
+                    "device": self.device or "auto"}
+        except Exception as exc:  # noqa: BLE001 - a broken manifest must not crash --print-config
+            return {"manifest": str(self.manifest), "error": type(exc).__name__}
+
+
+def _env_int(env: Mapping[str, str], name: str, default: int, low: int, high: int) -> int:
+    raw = env.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(low, min(high, value))
+
+
+def build_gate_scorer(gate: GateConfig) -> Callable[[dict[str, Any]], Any] | None:
+    """None when there is no manifest; the gate then refuses with a 503."""
+
+    if lg is None or not gate.manifest.is_file():
+        return None
+
+    def logits_for(paths: Mapping[str, Path], manifest: Any) -> Callable[[Any], Any]:
+        return lg.client_logits(paths["model"], paths.get("engram"), manifest.seq_len,
+                                device=gate.device or None, repo_root=REPO)
+
+    return lg.make_gate_scorer(manifest_path=gate.manifest, data_root=gate.data_root, count=gate.count,
+                               seed=gate.seed, logits_for=logits_for)
+
+
 def _require_fastapi() -> None:
     if APIRouter is None:
         raise RuntimeError("FastAPI is not installed; install fastapi to create the eval router")
@@ -468,7 +535,8 @@ def evaluate_round(payload: Any, eval_fn: EvalFn | None) -> tuple[int, dict[str,
 
 
 def create_router(config: ServiceConfig, loader: JobLoader | None = None, *, coordinator: lcs.LossCheckCoordinator | None = None,
-                  eval_fn: EvalFn | None = None, **overrides: Any) -> Any:
+                  eval_fn: EvalFn | None = None, gate_scorer: Callable[[dict[str, Any]], Any] | None = None,
+                  **overrides: Any) -> Any:
     """Return a FastAPI router exposing the job, receipt, and coordinator ``/eval`` handlers.
 
     The two handlers are wired here rather than through ``hivemind_loss_check_service.
@@ -518,14 +586,34 @@ def create_router(config: ServiceConfig, loader: JobLoader | None = None, *, coo
         status, body = await run_in_threadpool(evaluate_round, payload, evaluator)
         return JSONResponse(body, status_code=status)
 
+    @router.post("/gate")
+    async def post_gate(request: Request) -> Response:
+        from starlette.concurrency import run_in_threadpool
+
+        raw = await request.body()
+        if len(raw) > MAX_GATE_BODY_BYTES:
+            return JSONResponse({"error": "gate request too large"}, status_code=413)
+        try:
+            payload = json.loads(raw.decode("utf-8") or "null")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return JSONResponse({"error": "invalid JSON"}, status_code=400)
+        # Downloading a candidate and scoring 64 windows takes minutes; never on the loop.
+        if lg is None:  # no numpy: refuse rather than import-fail at request time
+            return JSONResponse({"error": "evaluator not configured",
+                                 "detail": "numpy is not installed"}, status_code=503)
+        status, body = await run_in_threadpool(lg.evaluate_gate, payload, gate_scorer)
+        return JSONResponse(body, status_code=status)
+
     return router
 
 
 def create_app(config: ServiceConfig, loader: JobLoader | None = None, *, coordinator: lcs.LossCheckCoordinator | None = None,
-               eval_fn: EvalFn | None = None, **overrides: Any) -> Any:
+               eval_fn: EvalFn | None = None, gate_scorer: Callable[[dict[str, Any]], Any] | None = None,
+               **overrides: Any) -> Any:
     _require_fastapi()
     app = FastAPI(title="CrowdGPT HiveMind evaluation adapter")
-    app.include_router(create_router(config, loader, coordinator=coordinator, eval_fn=eval_fn, **overrides))
+    app.include_router(create_router(config, loader, coordinator=coordinator, eval_fn=eval_fn,
+                                     gate_scorer=gate_scorer, **overrides))
     return app
 
 
@@ -540,14 +628,17 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 2
     config = ServiceConfig.from_env()
+    gate = GateConfig.from_env()
     if args.print_config:
-        print(json.dumps(config.safe_summary(), indent=2, sort_keys=True))
+        summary = config.safe_summary()
+        summary["gate"] = gate.summary()
+        print(json.dumps(summary, indent=2, sort_keys=True))
     if args.serve:
         try:
             import uvicorn
         except ImportError as exc:
             raise SystemExit("uvicorn is not installed; install uvicorn to serve the adapter") from exc
-        uvicorn.run(create_app(config), host=args.host, port=args.port)
+        uvicorn.run(create_app(config, gate_scorer=build_gate_scorer(gate)), host=args.host, port=args.port)
     return 0
 
 

@@ -529,7 +529,10 @@ class TestRouter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             config = config_for(Path(td) / "state.json")
             router = hes.create_router(config, RecordingLoader())
-            self.assertEqual(len(router.routes), 3)
+            paths = sorted(route.path for route in router.routes)
+            prefix = config.route_prefix
+            self.assertEqual(paths, sorted([f"{prefix}/job", f"{prefix}/receipt",
+                                            f"{prefix}/eval", f"{prefix}/gate"]))
 
     def test_eval_route_answers_the_coordinator_contract(self) -> None:
         with tempfile.TemporaryDirectory() as td:

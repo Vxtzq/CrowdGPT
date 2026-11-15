@@ -1,0 +1,266 @@
+{
+  "schema": "ng-eval-sources-1",
+  "dataset": "Vxtzq/CrowdGPT-Pending",
+  "datasetRevision": "a187a481d38c5c305e9183ed1e84b458928e0d89",
+  "pattern": ".txt",
+  "tokenizer": "Qwen/Qwen3-0.6B",
+  "targetTokens": 5000000,
+  "tokens": 3750000,
+  "manifests": [
+    "manifest.json"
+  ],
+  "files": [
+    {
+      "path": "0001 - Chapter - 1 - Meeting Magic (1).txt",
+      "bytes": 13175,
+      "tokens": 2874,
+      "shard": 0
+    },
+    {
+      "path": "0018 - Chapter - 18 - Alpheas Magic School (1).txt",
+      "bytes": 3616,
+      "tokens": 773,
+      "shard": 0
+    },
+    {
+      "path": "1793051574218_HungarianGuy_text.txt",
+      "bytes": 109,
+      "tokens": 34,
+      "shard": 0
+    },
+    {
+      "path": "1793728989154_anon_text.txt",
+      "bytes": 112,
+      "tokens": 39,
+      "shard": 0
+    },
+    {
+      "path": "1794140039764_anon_text.txt",
+      "bytes": 4872,
+      "tokens": 1499,
+      "shard": 0
+    },
+    {
+      "path": "1794147328779_anon_text.txt",
+      "bytes": 152,
+      "tokens": 39,
+      "shard": 0
+    },
+    {
+      "path": "1794149709176_anon_text.txt",
+      "bytes": 4711,
+      "tokens": 1120,
+      "shard": 0
+    },
+    {
+      "path": "1794685343019_anon_text.txt",
+      "bytes": 65064,
+      "tokens": 13845,
+      "shard": 0
+    },
+    {
+      "path": "1794687367082_anon_text.txt",
+      "bytes": 68566,
+      "tokens": 15216,
+      "shard": 0
+    },
+    {
+      "path": "1794689388707_anon_text.txt",
+      "bytes": 183577,
+      "tokens": 40136,
+      "shard": 0
+    },
+    {
+      "path": "1794744927851_anon_text.txt",
+      "bytes": 25539,
+      "tokens": 5511,
+      "shard": 0
+    },
+    {
+      "path": "1794757325368_anon_text.txt",
+      "bytes": 737,
+      "tokens": 197,
+      "shard": 0
+    },
+    {
+      "path": "A Certain Magical Index Volume 8.txt",
+      "bytes": 288711,
+      "tokens": 64212,
+      "shard": 0
+    },
+    {
+      "path": "Arifureta - Vol 11.txt",
+      "bytes": 583006,
+      "tokens": 133390,
+      "shard": 0
+    },
+    {
+      "path": "Beneath the Dragoneye Moons - Book 12 - The Phoenix Peaks.txt",
+      "bytes": 854901,
+      "tokens": 199942,
+      "shard": 0
+    },
+    {
+      "path": "Chapter 30.txt",
+      "bytes": 13410,
+      "tokens": 2729,
+      "shard": 0
+    },
+    {
+      "path": "Chapter 47.txt",
+      "bytes": 13192,
+      "tokens": 2842,
+      "shard": 0
+    },
+    {
+      "path": "Date A Live Volume 11 - Devil Tobiichi [Yen Press].txt",
+      "bytes": 296303,
+      "tokens": 69749,
+      "shard": 0
+    },
+    {
+      "path": "Dungeon Crawler Carl 1.txt",
+      "bytes": 734560,
+      "tokens": 171530,
+      "shard": 0
+    },
+    {
+      "path": "GMT20260917-083449_Recording_1920x1032.txt",
+      "bytes": 27385,
+      "tokens": 6559,
+      "shard": 0
+    },
+    {
+      "path": "GMT20261019-133316_Recording_1920x1032.txt",
+      "bytes": 19177,
+      "tokens": 4788,
+      "shard": 0
+    },
+    {
+      "path": "Harry Potter 04 - Harry Potter and the Goblet of Fire.txt",
+      "bytes": 1162781,
+      "tokens": 269385,
+      "shard": 0
+    },
+    {
+      "path": "Hell Difficulty Tutorial - Book 3.txt",
+      "bytes": 1167492,
+      "tokens": 243591,
+      "shard": 0
+    },
+    {
+      "path": "Inheritance Cycle 03 - Brisingr.txt",
+      "bytes": 1495805,
+      "tokens": 347183,
+      "shard": 1
+    },
+    {
+      "path": "Mage Errant - Book 5 - The Siege of Skyhold.txt",
+      "bytes": 844040,
+      "tokens": 186981,
+      "shard": 1
+    },
+    {
+      "path": "Magical Girl Raising Project v06 - Limited II [Yen Press].txt",
+      "bytes": 379547,
+      "tokens": 85515,
+      "shard": 1
+    },
+    {
+      "path": "Manifestation Book 1 - Soul Relic.txt",
+      "bytes": 691453,
+      "tokens": 155230,
+      "shard": 1
+    },
+    {
+      "path": "More Gods Than Stars 1 - The City That Would Eat The World.txt",
+      "bytes": 1001047,
+      "tokens": 219589,
+      "shard": 1
+    },
+    {
+      "path": "Otherside Picnic - Volume 1.txt",
+      "bytes": 342140,
+      "tokens": 80424,
+      "shard": 1
+    },
+    {
+      "path": "Percy Jackson Book 2 - The Sea of Monsters.txt",
+      "bytes": 400120,
+      "tokens": 95491,
+      "shard": 1
+    },
+    {
+      "path": "Skulduggery Pleasant 01.txt",
+      "bytes": 392847,
+      "tokens": 79587,
+      "shard": 1
+    },
+    {
+      "path": "Skulduggery Pleasant 16.75 - A Small Matter of Impending Catastrophe.txt",
+      "bytes": 282279,
+      "tokens": 69005,
+      "shard": 2
+    },
+    {
+      "path": "So I'm a Spider, so What - Volume 13.txt",
+      "bytes": 366225,
+      "tokens": 80843,
+      "shard": 2
+    },
+    {
+      "path": "The Archmage Coefficient.txt",
+      "bytes": 873522,
+      "tokens": 196738,
+      "shard": 2
+    },
+    {
+      "path": "The Irregular at Magic High School v17 - Master Clans Council Arc I [Yen Press] [Marwen Ricky].txt",
+      "bytes": 317932,
+      "tokens": 71033,
+      "shard": 2
+    },
+    {
+      "path": "The Last Dragon Chronicles 7 - The Fire Ascending.txt",
+      "bytes": 586749,
+      "tokens": 140898,
+      "shard": 2
+    },
+    {
+      "path": "The Misfit of Demon King Academy Volume 3.txt",
+      "bytes": 470313,
+      "tokens": 107020,
+      "shard": 2
+    },
+    {
+      "path": "The Path of Ascension - Book 8.txt",
+      "bytes": 1367269,
+      "tokens": 293154,
+      "shard": 2
+    },
+    {
+      "path": "Toaru Majutsu no Index Volume 13.txt",
+      "bytes": 405573,
+      "tokens": 90817,
+      "shard": 2
+    },
+    {
+      "path": "Tsukimichi - Moonlit Fantasy Volume 05.txt",
+      "bytes": 377451,
+      "tokens": 83984,
+      "shard": 2
+    },
+    {
+      "path": "Wardstone 03 - The Spook's Secret (UK).txt",
+      "bytes": 440149,
+      "tokens": 103378,
+      "shard": 2
+    },
+    {
+      "path": "Wolf of the Blood Moon Book 1 - The Scarlet Wolf.txt",
+      "bytes": 972108,
+      "tokens": 13130,
+      "shard": 2
+    }
+  ]
+}

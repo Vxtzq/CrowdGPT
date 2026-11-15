@@ -1,0 +1,30 @@
+{
+  "schema": "ng-eval-1",
+  "name": "ng-eval-v1",
+  "version": "1",
+  "seq_len": 2048,
+  "stride": 1024,
+  "vocab_size": 151643,
+  "tokenizer": "Qwen/Qwen3-0.6B",
+  "shards": [
+    {
+      "path": "eval/ng-eval-v1/shard-000.bin",
+      "sha256": "a8be870a69c5a099b3f7b1ea5b866b8a128350e55c18e68cdee61cb3d0c39912",
+      "tokens": 1250000,
+      "dtype": "uint32"
+    },
+    {
+      "path": "eval/ng-eval-v1/shard-001.bin",
+      "sha256": "351b9eae64cbe2c3adcbd459789b15694035a6e3f6ea080c9d9749935cdaf6f1",
+      "tokens": 1250000,
+      "dtype": "uint32"
+    },
+    {
+      "path": "eval/ng-eval-v1/shard-002.bin",
+      "sha256": "d809fe73836f61386f041d2982dbafda35a7fb27cc78680355d99f05a8c80ffc",
+      "tokens": 1250000,
+      "dtype": "uint32"
+    }
+  ],
+  "created_at": "2026-11-15"
+}

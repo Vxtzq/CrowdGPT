@@ -186,3 +186,23 @@ opening the state file itself.
 This branch adds the adapter, its stdlib-compatible tests, and this document. It
 does not change the client, the coordinator, the existing modules, training, or
 the three-user verification pool.
+
+## Loss gate (`/gate`)
+
+The coordinator has a second evaluator contract besides `/eval`: before it
+accepts a round it stages the candidate weights and asks for a held-out loss.
+That is the input to `CROWDGPT_LOSS_CHECK_MODE=enforce`; `/eval` only publishes
+`heldoutLoss`.
+
+`create_app(config, gate_scorer=...)` wires it. `gate_scorer` is built by
+`build_gate_scorer(GateConfig.from_env())`, which returns `None` when the
+manifest is missing — the route then answers `503` instead of measuring
+something else. Environment: `CROWDGPT_EVAL_MANIFEST`,
+`CROWDGPT_EVAL_DATA_ROOT`, `CROWDGPT_EVAL_COUNT` (default 64),
+`CROWDGPT_EVAL_SEED`, `CROWDGPT_EVAL_DEVICE`.
+
+The scorer downloads the URLs in `candidate`, verifies `modelSha256` /
+`engramSha256` when present, reads the flat bf16 payloads and scores the fixed
+`ng-eval-v1` windows with `client.py`'s own model. Refusals: `400` invalid
+request, `503` no scorer, `502` download/verify/scoring failure. It never
+returns a loss it did not measure. Operating it: `docs/LOSS_CHECK_RUNBOOK.md`.
