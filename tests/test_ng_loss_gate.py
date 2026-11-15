@@ -20,8 +20,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from crowdgpt_ng import loss_gate as lg  # noqa: E402
-from crowdgpt_ng.eval import EvalError, EvalReport, uniform_logits  # noqa: E402
+try:  # the evaluator modules need numpy; the stdlib-only CI job does not have it
+    from crowdgpt_ng import loss_gate as lg  # noqa: E402
+    from crowdgpt_ng.eval import EvalError, EvalReport, uniform_logits  # noqa: E402
+except ImportError:  # pragma: no cover - CI path
+    lg = None  # type: ignore[assignment]
+    EvalError = EvalReport = uniform_logits = None  # type: ignore[assignment]
+
+_NEEDS_NUMPY = unittest.skipIf(lg is None, "numpy is required for the gate tests")
 
 MODEL_SHA = "a" * 64
 
@@ -44,6 +50,7 @@ def _candidate(**overrides):
     return body
 
 
+@_NEEDS_NUMPY
 class ParseTests(unittest.TestCase):
     def test_full_request_is_normalised(self):
         parsed = lg.parse_gate_request(_candidate())
@@ -87,6 +94,7 @@ class ParseTests(unittest.TestCase):
                 self.assertIn(fragment, str(ctx.exception))
 
 
+@_NEEDS_NUMPY
 class EvaluateGateTests(unittest.TestCase):
     def test_missing_scorer_refuses_without_a_number(self):
         status, body = lg.evaluate_gate(_candidate(), None)
@@ -152,6 +160,7 @@ class EvaluateGateTests(unittest.TestCase):
                 self.assertNotIn("loss", body)
 
 
+@_NEEDS_NUMPY
 class FetchTests(unittest.TestCase):
     def _opener(self, payload: bytes):
         def open_url(url, timeout=0):
@@ -179,6 +188,7 @@ class FetchTests(unittest.TestCase):
                 lg.fetch_candidate(lg.Candidate(model_url="https://x/model"), Path(tmp), opener=self._opener(b""))
 
 
+@_NEEDS_NUMPY
 class ScorerTests(unittest.TestCase):
     def _manifest(self, root: Path, tokens: int = 2048, seq_len: int = 32, stride: int = 16) -> Path:
         import numpy as np
@@ -224,6 +234,7 @@ def _fastapi_available() -> bool:
 
 
 @unittest.skipUnless(_fastapi_available(), "FastAPI/httpx are needed for the route test")
+@_NEEDS_NUMPY
 class GateRouteTests(unittest.TestCase):
     def test_gate_route_answers_and_refuses(self):
         from fastapi.testclient import TestClient

@@ -25,7 +25,10 @@ try:
 except ImportError:  # pragma: no cover - CI without numpy
     np = None
 
-import build_eval_manifest
+try:  # needs numpy (crowdgpt_ng.eval); the stdlib-only CI job does not have it
+    import build_eval_manifest
+except ImportError:  # pragma: no cover - CI path
+    build_eval_manifest = None
 
 
 def _write_manifest(root: Path, *, tokens: int = 4096, seq_len: int = 64, stride: int = 32) -> Path:
@@ -51,7 +54,7 @@ def _write_manifest(root: Path, *, tokens: int = 4096, seq_len: int = 64, stride
     return path
 
 
-@unittest.skipIf(np is None, "numpy is required for the eval set")
+@unittest.skipIf(build_eval_manifest is None, "numpy is required for the eval set builder")
 class SelectionTests(unittest.TestCase):
     def test_selection_spreads_across_the_queue(self):
         entries = [{"path": f"{i:04d}.txt", "bytes": 400_000} for i in range(400)]
