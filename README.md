@@ -34,6 +34,7 @@
 </p>
 
 # Benchmarks
+Performance of the Crowd-v1 as of epoch 374.
 <p align="center">
   <a href="https://crowdgpt.net">
     <picture>
