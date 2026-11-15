@@ -53,7 +53,8 @@
 - Merged numerous pull requests
 - Prepared ground for Crowd-v2
 - Released evaluation toolkit 🥳
- 
+- Implemented auto-pause which should work (while not pausing the client for no reason 😭)
+  
 ## What is CrowdGPT?
 
 CrowdGPT is a **project for training arbitrary big LLMs** using volunteered compute.
