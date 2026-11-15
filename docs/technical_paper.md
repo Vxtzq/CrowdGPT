@@ -53,7 +53,7 @@ Total trainable parameters are roughly 1.0 B including the engram. Because 350 M
 
 ## 3. Data
 
-The corpus is pre-tokenized into 5,659 chunks, each served in 10 MB sub-chunks, 4 bytes per token (`DATASET_CONFIG`). Samples are 2049 tokens. The coordinator assigns shards to clients (`SHUFFLE_CHUNKS` is on), with timeouts so an abandoned shard returns to the pool (`SHARD_TIMEOUT_S` 1800).
+The 500B tokens corpus is pre-tokenized into 5,659 chunks, each served in 10 MB sub-chunks, 4 bytes per token (`DATASET_CONFIG`). Samples are 2049 tokens. The coordinator assigns shards to clients (`SHUFFLE_CHUNKS` is on), with timeouts so an abandoned shard returns to the pool (`SHARD_TIMEOUT_S` 1800).
 
 The server enforces sanity limits on claimed work: `MAX_TOKENS_PER_STEP`, `MAX_TOKENS_PER_SEC` (1M tok/s) and `MAX_LOCAL_STEPS`, plus `MIN_TRAIN_TIME_S` (900 s): a submission that claims more work than is physically plausible, or finishes implausibly fast, is rejected.
 
