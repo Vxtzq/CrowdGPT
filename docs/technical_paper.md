@@ -1,4 +1,4 @@
-**⚠️⚠️Disclaimer: This paper is somewhat AI slop as i don't have time to write one myself⚠️⚠️** 
+# ⚠️⚠️Disclaimer: This paper is somewhat AI slop as i don't have time to write one myself⚠️⚠️
 Feel free to contribute to this technical description!
 
 # CrowdGPT: A Technical Description
