@@ -1163,6 +1163,29 @@ nav a.nav-with-badge {
   margin-bottom: 0;
 }
 
+.paradigm-report {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 22px;
+  font-weight: 500;
+  font-size: clamp(15px, 1.2vw, 17px);
+}
+
+.paradigm-report svg {
+  width: 16px;
+  height: 16px;
+  transition: transform .15s ease;
+}
+
+.paradigm-report:hover {
+  text-decoration: none;
+}
+
+.paradigm-report:hover svg {
+  transform: translateX(4px);
+}
+
 .product-section {
   padding-top: clamp(48px, 8vw, 86px);
   padding-bottom: clamp(40px, 7vw, 77px);
@@ -3193,6 +3216,10 @@ footer {
           <div class="product-head">
             <h2 data-i18n="home.paradigm.title">A new paradigm for training AI.</h2>
             <p data-i18n="home.paradigm.body">A single company training a frontier model uses thousands of A100s in a datacenter. Most people don't have that hardware. But millions of people have gaming PCs with RTX cards sitting idle. CrowdGPT uses that compute, and the model that gets trained belongs to everyone who helped build it.</p>
+            <a class="paradigm-report" href="https://github.com/Vxtzq/CrowdGPT/blob/main/docs/technical_paper.md" target="_blank" rel="noopener noreferrer">
+              <span data-i18n="home.paradigm.report">Read technical report</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </a>
           </div>
           <div class="feature-list">
             <div class="feature-item">
@@ -3759,6 +3786,7 @@ const TRANSLATIONS = {
     'home.stat.loss': 'Current loss',
     'home.paradigm.title': 'A new paradigm for training AI.',
     'home.paradigm.body': "A single company training a frontier model uses thousands of A100s in a datacenter. Most people don't have that hardware. But millions of people have gaming PCs with RTX cards sitting idle. CrowdGPT uses that compute, and the model that gets trained belongs to everyone who helped build it.",
+    'home.paradigm.report': 'Read technical report',
     'home.feature.privacy.title': 'Privacy first.',
     'home.feature.privacy.body': 'Your GPU trains on 10MB data chunks streamed from the public CrowdGPT dataset on HuggingFace; a dataset anyone can inspect or contribute to. No personal files, browser history, or local data are ever accessed or transmitted.',
     'home.feature.eco.title': 'More ecological.',
@@ -3961,6 +3989,7 @@ const TRANSLATIONS = {
     'home.stat.loss': 'Perte actuelle',
     'home.paradigm.title': "Un nouveau paradigme pour entraîner l'IA.",
     'home.paradigm.body': "Une seule entreprise entraînant un modèle de pointe utilise des milliers d'A100 dans un datacenter. La plupart des gens n'ont pas ce matériel. Mais des millions de personnes ont des PC de gaming avec des cartes RTX inutilisées. CrowdGPT utilise cette puissance, et le modèle entraîné appartient à tous ceux qui ont contribué à le construire.",
+    'home.paradigm.report': 'Lire le rapport technique',
     'home.feature.privacy.title': 'Confidentialité avant tout.',
     'home.feature.privacy.body': "Votre GPU s'entraîne sur des blocs de 10 Mo diffusés depuis le jeu de données public CrowdGPT sur HuggingFace ; un jeu de données que chacun peut inspecter ou auquel contribuer. Aucun fichier personnel, historique de navigation ou donnée locale n'est jamais consulté ou transmis.",
     'home.feature.eco.title': 'Plus écologique.',
@@ -4154,6 +4183,7 @@ const TRANSLATIONS = {
     'home.stat.loss': 'Aktueller Verlust',
     'home.paradigm.title': 'Ein neues Paradigma für das KI-Training.',
     'home.paradigm.body': "Ein einzelnes Unternehmen, das ein Frontier-Modell trainiert, verwendet Tausende von A100 in einem Rechenzentrum. Die meisten Menschen haben diese Hardware nicht. Aber Millionen von Menschen haben Gaming-PCs mit ungenutzten RTX-Karten. CrowdGPT nutzt diese Rechenleistung, und das trainierte Modell gehört allen, die mitgeholfen haben, es aufzubauen.",
+    'home.paradigm.report': 'Technischen Bericht lesen',
     'home.feature.privacy.title': 'Datenschutz zuerst.',
     'home.feature.privacy.body': 'Ihre GPU trainiert auf 10 MB großen Datenblöcken, die aus dem öffentlichen CrowdGPT-Datensatz auf HuggingFace gestreamt werden; ein Datensatz, den jeder einsehen oder zu dem jeder beitragen kann. Es werden niemals persönliche Dateien, Browserverlauf oder lokale Daten abgerufen oder übertragen.',
     'home.feature.eco.title': 'Ökologischer.',
@@ -4347,6 +4377,7 @@ const TRANSLATIONS = {
     'home.stat.loss': 'Pérdida actual',
     'home.paradigm.title': 'Un nuevo paradigma para entrenar IA.',
     'home.paradigm.body': 'Una sola empresa entrenando un modelo de frontera usa miles de A100 en un centro de datos. La mayoría de la gente no tiene ese hardware. Pero millones de personas tienen PCs gaming con tarjetas RTX sin usar. CrowdGPT usa esa potencia, y el modelo entrenado pertenece a todos los que ayudaron a construirlo.',
+    'home.paradigm.report': 'Leer el informe técnico',
     'home.feature.privacy.title': 'Privacidad primero.',
     'home.feature.privacy.body': 'Tu GPU entrena con bloques de 10 MB transmitidos desde el conjunto de datos público CrowdGPT en HuggingFace; un conjunto que cualquiera puede inspeccionar o al que puede contribuir. Nunca se accede ni se transmiten archivos personales, historial del navegador o datos locales.',
     'home.feature.eco.title': 'Más ecológico.',
@@ -4540,6 +4571,7 @@ const TRANSLATIONS = {
     'home.stat.loss': 'Mevcut kayıp',
     'home.paradigm.title': 'Yapay zeka eğitimi için yeni bir paradigma.',
     'home.paradigm.body': "Sınır modeli eğiten tek bir şirket, bir veri merkezinde binlerce A100 kullanır. Çoğu insanın bu donanımı yok. Ama milyonlarca insanın boşta duran RTX kartları olan oyun bilgisayarları var. CrowdGPT bu gücü kullanır ve eğitilen model, onu inşa etmeye yardım eden herkese aittir.",
+    'home.paradigm.report': 'Teknik raporu oku',
     'home.feature.privacy.title': 'Önce gizlilik.',
     'home.feature.privacy.body': "GPU'nuz HuggingFace'deki herkese açık CrowdGPT veri setinden akan 10 MB'lık veri parçaları üzerinde eğitilir; herkesin inceleyebileceği veya katkıda bulunabileceği bir veri seti. Kişisel dosyalarınıza, tarayıcı geçmişinize veya yerel verilerinize asla erişilmez veya iletilmez.",
     'home.feature.eco.title': 'Daha ekolojik.',
