@@ -1707,9 +1707,9 @@ nav a.nav-with-badge {
   height: 24px;
   transform: translate(-50%, -50%);
   border-radius: 50%;
-  background: var(--accent);
-  border: 2px solid var(--bg-soft);
-  box-shadow: 0 0 0 1px var(--border-strong), 0 2px 12px rgba(34, 197, 94, 0.45);
+  background: #fff;
+  border: 2px solid var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
   transition: left 0.9s cubic-bezier(0.4, 0, 0.2, 1);
   pointer-events: none;
   z-index: 2;
@@ -1889,6 +1889,10 @@ nav a.nav-with-badge {
   max-width: 100%;
 }
 
+#view-status .stats-grid {
+  border-radius: 0;
+}
+
 .stat-cell {
   padding: clamp(18px, 2.4vw, 29px) clamp(14px, 2vw, 26px);
   border-right: 1px solid var(--border);
@@ -1923,6 +1927,15 @@ nav a.nav-with-badge {
   margin-bottom: 38px;
 }
 
+.pool-section-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-bottom: 22px;
+}
+
 .pool-breakdown-section h2 {
   font-size: clamp(18px, 2vw, 24px);
   margin-bottom: 8px;
@@ -1932,77 +1945,127 @@ nav a.nav-with-badge {
 .pool-breakdown-section p {
   font-size: clamp(13px, 1.1vw, 15px);
   color: var(--text-muted);
-  margin-bottom: 20px;
+  margin: 0;
+  max-width: 60ch;
+}
+
+.pool-summary {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  padding-bottom: 4px;
+}
+
+.pool-summary b {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .pool-breakdown-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 14px;
 }
 
 .pool-card {
+  background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 16px;
-  background: var(--bg);
+  padding: 18px 18px 17px;
+  transition: border-color .15s ease;
 }
 
-.pool-card-header {
+.pool-card:hover {
+  border-color: var(--border-strong);
+}
+
+.pool-card-head {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 15px;
 }
 
-.pool-card-hw {
+.pool-card-name {
   font-family: var(--mono);
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 600;
   color: var(--text);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.pool-card-clients {
+.pool-card-count {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-muted);
-  background: var(--bg-alt);
-  padding: 2px 8px;
-  border-radius: 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
+
+.pool-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg);
+  box-shadow: inset 0 0 0 1px var(--border);
+  margin-bottom: 15px;
+}
+
+.pool-bar-seg { height: 100%; }
+
+.pool-bar-seg.training    { background: #10b981; }
+.pool-bar-seg.forming     { background: #f59e0b; }
+.pool-bar-seg.idle        { background: #6b7280; }
+.pool-bar-seg.completing  { background: #3b82f6; }
 
 .pool-card-stats {
   display: flex;
-  gap: 12px;
   flex-wrap: wrap;
+  gap: 7px 16px;
 }
 
 .pool-stat {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
-}
-
-.pool-stat-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-
-.pool-stat-dot.forming { background: #f59e0b; }
-.pool-stat-dot.training { background: #10b981; }
-.pool-stat-dot.idle { background: #6b7280; }
-.pool-stat-dot.completing { background: #3b82f6; }
-
-.pool-stat-label {
-  color: var(--text-muted);
-}
-
-.pool-stat-value {
   font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.pool-stat b {
+  font-weight: 600;
   color: var(--text);
-  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.pool-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.pool-dot.training    { background: #10b981; }
+.pool-dot.forming     { background: #f59e0b; }
+.pool-dot.idle        { background: #6b7280; }
+.pool-dot.completing  { background: #3b82f6; }
+
+.pool-empty {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .table-wrap {
@@ -3104,8 +3167,8 @@ footer {
 
       <div class="stats-strip">
         <div class="stat-item">
-          <div class="stat-val" id="home-stat-contributions">—</div>
-          <div class="stat-lbl" data-i18n="home.stat.contributions">Contributions</div>
+          <div class="stat-val" id="home-stat-epoch">—</div>
+          <div class="stat-lbl" data-i18n="home.stat.epoch">Epoch</div>
         </div>
         <div class="stat-item">
           <div class="stat-val" id="home-stat-gpus">—</div>
@@ -3381,25 +3444,11 @@ footer {
       <p data-i18n="status.sub">Real-time metrics of the CrowdGPT federated training network.</p>
     </div>
 
-    <div class="goal-wrap" id="goal-wrap">
-      <div class="goal-head">
-        <div class="goal-title" data-i18n="status.goal.title">Token goal</div>
-        <div class="goal-pct" id="goal-pct">—</div>
-      </div>
-      <div class="goal-track">
-        <div class="goal-fill" id="goal-fill"></div>
-        <div class="goal-knob" id="goal-knob"></div>
-      </div>
-      <div class="goal-meta">
-        <span id="goal-current">—</span>
-      </div>
-    </div>
-
     <div class="stats-grid">
       <div class="stat-cell">
-        <div class="val" id="status-step">—</div>
-        <div class="lbl" data-i18n="status.stat.step">Global Step</div>
-        <div class="sub" data-i18n="status.stat.step.sub">Total optimizer updates</div>
+        <div class="val" id="status-contributions">—</div>
+        <div class="lbl" data-i18n="status.stat.contributions">Contributions</div>
+        <div class="sub" data-i18n="status.stat.contributions.sub">Submitted model updates</div>
       </div>
       <div class="stat-cell">
         <div class="val" id="status-tokens">—</div>
@@ -3418,10 +3467,18 @@ footer {
       </div>
     </div>
 
-    <div class="pool-breakdown-section" id="pool-breakdown-section" style="display:none;">
-      <h2 data-i18n="status.pools.title">Training Pools by Hardware</h2>
-      <p data-i18n="status.pools.sub">See which device types are actively training vs. waiting for more pool members.</p>
-      <div class="pool-breakdown-grid" id="pool-breakdown-grid"></div>
+    <div class="goal-wrap" id="goal-wrap">
+      <div class="goal-head">
+        <div class="goal-title" data-i18n="status.goal.title">Token goal</div>
+        <div class="goal-pct" id="goal-pct">—</div>
+      </div>
+      <div class="goal-track">
+        <div class="goal-fill" id="goal-fill"></div>
+        <div class="goal-knob" id="goal-knob"></div>
+      </div>
+      <div class="goal-meta">
+        <span id="goal-current">—</span>
+      </div>
     </div>
 
     <div class="loss-panel">
@@ -3435,6 +3492,17 @@ footer {
       </div>
     </div>
 
+    <div class="pool-breakdown-section" id="pool-breakdown-section" style="display:none;">
+      <div class="pool-section-head">
+        <div>
+          <h2 data-i18n="status.pools.title">Training Pools by Hardware</h2>
+          <p data-i18n="status.pools.sub">See which device types are actively training vs. waiting for more pool members.</p>
+        </div>
+        <div class="pool-summary" id="pool-summary"></div>
+      </div>
+      <div class="pool-breakdown-grid" id="pool-breakdown-grid"></div>
+    </div>
+
     <div style="display:flex;justify-content:flex-end;margin-bottom:29px;">
       <button class="btn btn-ghost" id="btn-logs" data-i18n="status.logs.btn">View server logs</button>
     </div>
@@ -3442,7 +3510,7 @@ footer {
     <div class="content">
       <h2 data-i18n="status.explainer.title">What the numbers mean</h2>
       <ul>
-        <li data-i18n-html="status.explainer.li1"><strong>Global Step:</strong> total aggregated optimizer updates applied to the model, across all contributors.</li>
+        <li data-i18n-html="status.explainer.li1"><strong>Contributions:</strong> total model updates submitted across all contributors.</li>
         <li data-i18n-html="status.explainer.li2"><strong>Tokens Processed:</strong> cumulative tokens trained on by every GPU in the swarm.</li>
         <li data-i18n-html="status.explainer.li3"><strong>Active Clients:</strong> GPUs that have pinged the coordinator in the last 10 minutes.</li>
         <li data-i18n-html="status.explainer.li4"><strong>Model Loss:</strong> cross-entropy loss of the most recently aggregated update.</li>
@@ -3685,7 +3753,7 @@ const TRANSLATIONS = {
     'home.hero.sub': "CrowdGPT is focusing on creating the world's first 0$, datacenterless and 100% open AI. Run the app on your computer, and the AI gets better.",
     'home.hero.install': 'Install now',
     'home.hero.hf': 'View on HuggingFace',
-    'home.stat.contributions': 'Contributions',
+    'home.stat.epoch': 'Epoch',
     'home.stat.gpus': 'GPUs currently active',
     'home.stat.tokens': 'Tokens processed',
     'home.stat.loss': 'Current loss',
@@ -3755,8 +3823,8 @@ const TRANSLATIONS = {
     'status.crumb': 'home / status',
     'status.h1': 'Network Status',
     'status.sub': 'Real-time metrics of the CrowdGPT federated training network.',
-    'status.stat.step': 'Global Step',
-    'status.stat.step.sub': 'Total optimizer updates',
+    'status.stat.contributions': 'Contributions',
+    'status.stat.contributions.sub': 'Submitted model updates',
     'status.stat.tokens': 'Tokens Processed',
     'status.stat.tokens.sub': 'Across all clients',
     'status.stat.clients': 'Active Clients',
@@ -3764,7 +3832,7 @@ const TRANSLATIONS = {
     'status.stat.loss': 'Model Loss',
     'status.stat.loss.sub': 'Latest aggregated',
     'status.explainer.title': 'What the numbers mean',
-    'status.explainer.li1': '<strong>Global Step:</strong> total aggregated optimizer updates applied to the model, across all contributors.',
+    'status.explainer.li1': '<strong>Contributions:</strong> total model updates submitted across all contributors.',
     'status.explainer.li2': '<strong>Tokens Processed:</strong> cumulative tokens trained on by every GPU in the swarm.',
     'status.explainer.li3': '<strong>Active Clients:</strong> GPUs that have pinged the coordinator in the last 10 minutes.',
     'status.explainer.li4': '<strong>Model Loss:</strong> cross-entropy loss of the most recently aggregated update.',
@@ -3779,6 +3847,7 @@ const TRANSLATIONS = {
     'status.pools.idle': 'idle',
     'status.pools.completing': 'completing',
     'status.pools.none': 'no active pools',
+    'status.pools.summary': '{pools} pools / {clients} clients',
 
     'status.chart.title': 'Loss history',
 'status.chart.waiting': 'Waiting for data…',
@@ -3879,7 +3948,7 @@ const TRANSLATIONS = {
     'home.hero.sub': "CrowdGPT vise à créer la première IA au monde à 0 $, sans datacenter et 100 % ouverte. Lancez l'application sur votre ordinateur et l'IA s'améliore.",
     'home.hero.install': 'Installer',
     'home.hero.hf': 'Voir sur HuggingFace',
-    'home.stat.contributions': 'Contributions',
+    'home.stat.epoch': 'Époque',
     'home.stat.gpus': 'GPU actifs',
     'home.stat.tokens': 'Tokens traités',
     'home.stat.loss': 'Perte actuelle',
@@ -3949,8 +4018,8 @@ const TRANSLATIONS = {
     'status.crumb': 'accueil / statut',
     'status.h1': 'Statut du réseau',
     'status.sub': "Métriques en temps réel du réseau d'entraînement fédéré CrowdGPT.",
-    'status.stat.step': 'Étape globale',
-    'status.stat.step.sub': "Total des mises à jour de l'optimiseur",
+    'status.stat.contributions': 'Contributions',
+    'status.stat.contributions.sub': 'Mises à jour du modèle soumises',
     'status.stat.tokens': 'Tokens traités',
     'status.stat.tokens.sub': 'Sur tous les clients',
     'status.stat.clients': 'Clients actifs',
@@ -3958,7 +4027,7 @@ const TRANSLATIONS = {
     'status.stat.loss': 'Perte du modèle',
     'status.stat.loss.sub': 'Dernière agrégation',
     'status.explainer.title': 'Ce que les chiffres signifient',
-    'status.explainer.li1': "<strong>Étape globale :</strong> total des mises à jour de l'optimiseur appliquées au modèle, tous contributeurs confondus.",
+    'status.explainer.li1': "<strong>Contributions :</strong> total des mises à jour du modèle soumises par tous les contributeurs.",
     'status.explainer.li2': '<strong>Tokens traités :</strong> total cumulé de tokens traités par tous les GPU du réseau.',
     'status.explainer.li3': '<strong>Clients actifs :</strong> GPU ayant contacté le coordinateur au cours des 10 dernières minutes.',
     'status.explainer.li4': "<strong>Perte du modèle :</strong> perte d'entropie croisée de la mise à jour agrégée la plus récente.",
@@ -3973,6 +4042,7 @@ const TRANSLATIONS = {
     'status.pools.idle': 'inactif',
     'status.pools.completing': 'finalisation',
     'status.pools.none': 'aucun pool actif',
+    'status.pools.summary': '{pools} pools / {clients} clients',
 
     'contrib.crumb': 'accueil / classement',
     'contrib.h1': 'Classement des contributeurs',
@@ -4071,7 +4141,7 @@ const TRANSLATIONS = {
     'home.hero.sub': "CrowdGPT will die weltweit erste 0 $, datacenterlose und 100 % offene KI schaffen. Führen Sie die App auf Ihrem Computer aus, und die KI wird besser.",
     'home.hero.install': 'Jetzt installieren',
     'home.hero.hf': 'Auf HuggingFace ansehen',
-    'home.stat.contributions': 'Beiträge',
+    'home.stat.epoch': 'Epoche',
     'home.stat.gpus': 'Aktive GPUs',
     'home.stat.tokens': 'Verarbeitete Tokens',
     'home.stat.loss': 'Aktueller Verlust',
@@ -4148,8 +4218,8 @@ const TRANSLATIONS = {
     'status.crumb': 'start / status',
     'status.h1': 'Netzwerkstatus',
     'status.sub': 'Echtzeit-Metriken des föderierten Trainingsnetzwerks CrowdGPT.',
-    'status.stat.step': 'Globaler Schritt',
-    'status.stat.step.sub': 'Gesamte Optimizer-Updates',
+    'status.stat.contributions': 'Beiträge',
+    'status.stat.contributions.sub': 'Eingereichte Modell-Updates',
     'status.stat.tokens': 'Verarbeitete Tokens',
     'status.stat.tokens.sub': 'Über alle Clients',
     'status.stat.clients': 'Aktive Clients',
@@ -4157,7 +4227,7 @@ const TRANSLATIONS = {
     'status.stat.loss': 'Modellverlust',
     'status.stat.loss.sub': 'Letzte Aggregation',
     'status.explainer.title': 'Was die Zahlen bedeuten',
-    'status.explainer.li1': '<strong>Globaler Schritt:</strong> gesamte aggregierte Optimizer-Updates, die auf das Modell angewendet wurden, über alle Beitragenden hinweg.',
+    'status.explainer.li1': '<strong>Beiträge:</strong> insgesamt eingereichte Modell-Updates über alle Beitragenden hinweg.',
     'status.explainer.li2': '<strong>Verarbeitete Tokens:</strong> kumulative Tokens, auf denen jede GPU im Schwarm trainiert hat.',
     'status.explainer.li3': '<strong>Aktive Clients:</strong> GPUs, die den Koordinator in den letzten 10 Minuten kontaktiert haben.',
     'status.explainer.li4': '<strong>Modellverlust:</strong> Kreuzentropie-Verlust des zuletzt aggregierten Updates.',
@@ -4172,6 +4242,7 @@ const TRANSLATIONS = {
     'status.pools.idle': 'inaktiv',
     'status.pools.completing': 'wird abgeschlossen',
     'status.pools.none': 'keine aktiven Pools',
+    'status.pools.summary': '{pools} Pools / {clients} Clients',
 
     'contrib.crumb': 'start / rangliste',
     'contrib.h1': 'Beitragsrangliste',
@@ -4263,7 +4334,7 @@ const TRANSLATIONS = {
     'home.hero.sub': 'CrowdGPT busca crear la primera IA del mundo a 0 $, sin centros de datos y 100 % abierta. Ejecuta la app en tu ordenador y la IA mejora.',
     'home.hero.install': 'Instalar ahora',
     'home.hero.hf': 'Ver en HuggingFace',
-    'home.stat.contributions': 'Contribuciones',
+    'home.stat.epoch': 'Época',
     'home.stat.gpus': 'GPUs activas',
     'home.stat.tokens': 'Tokens procesados',
     'home.stat.loss': 'Pérdida actual',
@@ -4340,8 +4411,8 @@ const TRANSLATIONS = {
     'status.crumb': 'inicio / estado',
     'status.h1': 'Estado de la red',
     'status.sub': 'Métricas en tiempo real de la red de entrenamiento federado CrowdGPT.',
-    'status.stat.step': 'Paso global',
-    'status.stat.step.sub': 'Actualizaciones totales del optimizador',
+    'status.stat.contributions': 'Contribuciones',
+    'status.stat.contributions.sub': 'Actualizaciones de modelo enviadas',
     'status.stat.tokens': 'Tokens procesados',
     'status.stat.tokens.sub': 'En todos los clientes',
     'status.stat.clients': 'Clientes activos',
@@ -4349,7 +4420,7 @@ const TRANSLATIONS = {
     'status.stat.loss': 'Pérdida del modelo',
     'status.stat.loss.sub': 'Última agregación',
     'status.explainer.title': 'Qué significan los números',
-    'status.explainer.li1': '<strong>Paso global:</strong> total de actualizaciones agregadas del optimizador aplicadas al modelo, entre todos los contribuyentes.',
+    'status.explainer.li1': '<strong>Contribuciones:</strong> total de actualizaciones de modelo enviadas por todos los contribuyentes.',
     'status.explainer.li2': '<strong>Tokens procesados:</strong> total acumulado de tokens entrenados por cada GPU del enjambre.',
     'status.explainer.li3': '<strong>Clientes activos:</strong> GPUs que han contactado al coordinador en los últimos 10 minutos.',
     'status.explainer.li4': '<strong>Pérdida del modelo:</strong> pérdida de entropía cruzada de la actualización agregada más reciente.',
@@ -4364,6 +4435,7 @@ const TRANSLATIONS = {
     'status.pools.idle': 'inactivo',
     'status.pools.completing': 'finalizando',
     'status.pools.none': 'no hay pools activos',
+    'status.pools.summary': '{pools} pools / {clients} clientes',
 
     'contrib.crumb': 'inicio / clasificación',
     'contrib.h1': 'Clasificación de contribuyentes',
@@ -4455,7 +4527,7 @@ const TRANSLATIONS = {
     'home.hero.sub': "CrowdGPT dünyanın ilk 0 $, veri merkezi olmayan ve %100 açık yapay zekasını oluşturmayı hedefliyor. Uygulamayı bilgisayarınızda çalıştırın, yapay zeka daha iyi olsun.",
     'home.hero.install': 'Şimdi kur',
     'home.hero.hf': "HuggingFace'de görüntüle",
-    'home.stat.contributions': 'Katkılar',
+    'home.stat.epoch': 'Epok',
     'home.stat.gpus': 'Aktif GPU sayısı',
     'home.stat.tokens': 'İşlenen token',
     'home.stat.loss': 'Mevcut kayıp',
@@ -4532,8 +4604,8 @@ const TRANSLATIONS = {
     'status.crumb': 'ana sayfa / durum',
     'status.h1': 'Ağ Durumu',
     'status.sub': 'CrowdGPT federe eğitim ağının gerçek zamanlı metrikleri.',
-    'status.stat.step': 'Küresel Adım',
-    'status.stat.step.sub': 'Toplam optimize edici güncellemeleri',
+    'status.stat.contributions': 'Katkılar',
+    'status.stat.contributions.sub': 'Gönderilen model güncellemeleri',
     'status.stat.tokens': 'İşlenen Token',
     'status.stat.tokens.sub': 'Tüm istemciler genelinde',
     'status.stat.clients': 'Aktif İstemciler',
@@ -4541,7 +4613,7 @@ const TRANSLATIONS = {
     'status.stat.loss': 'Model Kaybı',
     'status.stat.loss.sub': 'En son birleştirilen',
     'status.explainer.title': 'Sayılar ne anlama geliyor',
-    'status.explainer.li1': '<strong>Küresel Adım:</strong> tüm katkıda bulunanlar genelinde modele uygulanan toplam birleştirilmiş optimize edici güncellemeleri.',
+    'status.explainer.li1': '<strong>Katkılar:</strong> tüm katkıda bulunanlar genelinde gönderilen toplam model güncellemeleri.',
     'status.explainer.li2': '<strong>İşlenen Token:</strong> sürüdeki her GPU tarafından eğitilen kümülatif token sayısı.',
     'status.explainer.li3': '<strong>Aktif İstemciler:</strong> son 10 dakika içinde koordinatöre ping atan GPU\'lar.',
     'status.explainer.li4': '<strong>Model Kaybı:</strong> en son birleştirilmiş güncellemenin çapraz entropi kaybı.',
@@ -4556,6 +4628,7 @@ const TRANSLATIONS = {
     'status.pools.idle': 'boşta',
     'status.pools.completing': 'tamamlanıyor',
     'status.pools.none': 'etkin havuz yok',
+    'status.pools.summary': '{pools} havuz / {clients} istemci',
 
     'contrib.crumb': 'ana sayfa / liderlik',
     'contrib.h1': 'Katkıda Bulunan Liderlik Tablosu',
@@ -5084,7 +5157,7 @@ function drawLossGraph() {
   const yLab = H - 7;
   ctx.textAlign = 'left';  ctx.fillText(fmtT(rawData[0].ts), pad, yLab);
   ctx.textAlign = 'right'; ctx.fillText(fmtT(rawData[rawData.length - 1].ts) + '  → newest', pad + pW, yLab);
-  if (W >= 620) { ctx.textAlign = 'center'; ctx.fillText(S.pools + ' pools · smoothed over ~' + S.windowPools + ' pools · extremes clipped', pad + pW / 2, yLab); }
+  if (W >= 620) { ctx.textAlign = 'center'; ctx.fillText(S.pools + ' pools - smoothed over ~' + S.windowPools + ' pools - extremes clipped', pad + pW / 2, yLab); }
   ctx.textAlign = 'left';  ctx.fillText(mx.toFixed(2), pad + 2, pad + 10);
   ctx.fillText(mn.toFixed(2), pad + 2, pad + pH - 4);
   { const [lx, ly] = P[P.length - 1];
@@ -5318,7 +5391,7 @@ async function fetchStats() {
     if (!r.ok) throw new Error('HF status fetch failed');
     const d = await r.json();
 
-    document.getElementById('home-stat-contributions').textContent = (d.totalContributions || 0).toLocaleString();
+    document.getElementById('home-stat-epoch').textContent = (d.globalStep || 0).toLocaleString();
     document.getElementById('home-stat-gpus').textContent = (d.activeGpus || 0).toLocaleString();
     document.getElementById('home-stat-tokens').textContent = fmtNum(d.totalTokens || 0);
 
@@ -5327,8 +5400,8 @@ async function fetchStats() {
     lossEl.textContent = Number(currentLoss).toFixed(4);
     lossEl.style.color = 'var(--text)';
 
-    const stepEl = document.getElementById('status-step');
-    if (stepEl) stepEl.textContent = (d.globalStep || 0).toLocaleString();
+    const contribEl = document.getElementById('status-contributions');
+    if (contribEl) contribEl.textContent = (d.totalContributions || 0).toLocaleString();
     const tokensEl = document.getElementById('status-tokens');
     if (tokensEl) tokensEl.textContent = fmtNum(d.totalTokens || 0);
     const clientsEl = document.getElementById('status-clients');
@@ -5367,7 +5440,7 @@ async function fetchStats() {
         const r2 = await fetch(`${API_BASE}/api/stats`, { cache: 'no-store', signal: AbortSignal.timeout(5000) });
         if (r2.ok) {
           const d2 = await r2.json();
-          document.getElementById('home-stat-contributions').textContent = (d2.totalContributions || 0).toLocaleString();
+          document.getElementById('home-stat-epoch').textContent = (d2.globalStep || 0).toLocaleString();
           document.getElementById('home-stat-gpus').textContent = (d2.activeGpus || 0).toLocaleString();
           document.getElementById('home-stat-tokens').textContent = fmtNum(d2.totalTokens || 0);
 
@@ -5398,9 +5471,12 @@ async function fetchStats() {
 }
 
 /* ===== POOL HARDWARE BREAKDOWN ===== */
+const POOL_STATE_ORDER = ['training', 'forming', 'idle', 'completing'];
+
 function renderPoolBreakdown(data) {
   const section = document.getElementById('pool-breakdown-section');
   const grid = document.getElementById('pool-breakdown-grid');
+  const summaryEl = document.getElementById('pool-summary');
   if (!section || !grid) return;
 
   const translations = TRANSLATIONS[currentLang] || TRANSLATIONS.en;
@@ -5414,61 +5490,79 @@ function renderPoolBreakdown(data) {
   grid.replaceChildren();
 
   const entries = Object.entries(mm.poolBreakdown)
-    .map(([hw, info]) => ({ hw, ...info }))
-    .sort((a, b) => (a.clients || 0) - (b.clients || 0) || a.hw.localeCompare(b.hw));
+    .map(([hw, info]) => {
+      const pools = POOL_STATE_ORDER.reduce((s, st) => s + (info[st] || 0), 0);
+      return { hw, pools, ...info };
+    })
+    .sort((a, b) => (b.pools || 0) - (a.pools || 0) || (b.clients || 0) - (a.clients || 0) || a.hw.localeCompare(b.hw));
+
+  const totalPools = entries.reduce((s, e) => s + (e.pools || 0), 0);
+  const totalClients = entries.reduce((s, e) => s + (e.clients || 0), 0);
+  if (summaryEl) {
+    summaryEl.innerHTML = t('status.pools.summary', {
+      pools: '<b>' + totalPools + '</b>',
+      clients: '<b>' + totalClients + '</b>'
+    });
+  }
 
   for (const entry of entries) {
+    const clients = entry.clients || 0;
+    const pools = entry.pools || 0;
+
     const card = document.createElement('div');
     card.className = 'pool-card';
 
-    const forming = entry.forming || 0;
-    const training = entry.training || 0;
-    const idle = entry.idle || 0;
-    const completing = entry.completing || 0;
-    const clients = entry.clients || 0;
-
-    const header = document.createElement('div');
-    header.className = 'pool-card-header';
-    const hardware = document.createElement('span');
-    hardware.className = 'pool-card-hw';
-    hardware.textContent = entry.hw;
-    const clientCount = document.createElement('span');
-    clientCount.className = 'pool-card-clients';
+    const head = document.createElement('div');
+    head.className = 'pool-card-head';
+    const name = document.createElement('span');
+    name.className = 'pool-card-name';
+    name.textContent = entry.hw;
+    name.title = entry.hw;
+    const count = document.createElement('span');
+    count.className = 'pool-card-count';
     const clientLabel = translations[clients === 1 ? 'status.pools.client.one' : 'status.pools.client.many'];
-    clientCount.textContent = `${clients} ${clientLabel}`;
-    header.append(hardware, clientCount);
+    count.textContent = `${clients} ${clientLabel}`;
+    head.append(name, count);
+
+    const bar = document.createElement('div');
+    bar.className = 'pool-bar';
+    if (pools > 0) {
+      for (const state of POOL_STATE_ORDER) {
+        const n = entry[state] || 0;
+        if (n === 0) continue;
+        const seg = document.createElement('span');
+        seg.className = `pool-bar-seg ${state}`;
+        seg.style.width = ((n / pools) * 100) + '%';
+        seg.title = `${translations[`status.pools.${state}`]}: ${n}`;
+        bar.appendChild(seg);
+      }
+    }
 
     const stats = document.createElement('div');
     stats.className = 'pool-card-stats';
-    for (const [label, count] of [
-      ['forming', forming],
-      ['training', training],
-      ['idle', idle],
-      ['completing', completing],
-    ]) {
-      if (count === 0) continue;
-      const stat = document.createElement('div');
+    for (const state of POOL_STATE_ORDER) {
+      const n = entry[state] || 0;
+      if (n === 0) continue;
+      const stat = document.createElement('span');
       stat.className = 'pool-stat';
       const dot = document.createElement('span');
-      dot.className = `pool-stat-dot ${label}`;
-      const statLabel = document.createElement('span');
-      statLabel.className = 'pool-stat-label';
-      statLabel.textContent = translations[`status.pools.${label}`];
-      const value = document.createElement('span');
-      value.className = 'pool-stat-value';
-      value.textContent = count;
-      stat.append(dot, statLabel, value);
+      dot.className = `pool-dot ${state}`;
+      const label = document.createElement('span');
+      label.textContent = translations[`status.pools.${state}`];
+      const value = document.createElement('b');
+      value.textContent = n;
+      stat.append(dot, label, value);
       stats.appendChild(stat);
     }
 
     if (stats.childElementCount === 0) {
       const empty = document.createElement('div');
-      empty.className = 'pool-stat';
+      empty.className = 'pool-empty';
       empty.textContent = translations['status.pools.none'];
       stats.appendChild(empty);
     }
 
-    card.append(header, stats);
+    card.append(head, bar, stats);
     grid.appendChild(card);
   }
 }
