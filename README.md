@@ -17,8 +17,8 @@
   <a href="https://crowdgpt.net">Website</a> ·
   <a href="https://discord.gg/2Shwqj3Xpx">Discord</a> ·
   <a href="./docs/ARCHITECTURE.md">Architecture</a> ·
-  <a href="./docs/DATA.md">Training Data</a>
-  <a href="https://github.com/Vxtzq/CrowdEval">Evaluation pipeline</a>
+  <a href="./docs/DATA.md">Training Data</a> ·
+  <a href="https://github.com/Vxtzq/CrowdEval">Evaluation pipeline</a> 
 </p>
 
 <p align="center">
