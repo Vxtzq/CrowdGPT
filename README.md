@@ -34,7 +34,18 @@
 </p>
 
 # Benchmarks
-[[https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/logo-dark2.png](https://raw.githubusercontent.com/Vxtzq/CrowdGPT/refs/heads/main/docs/benchmarks/benchmarks.png)](https://raw.githubusercontent.com/Vxtzq/CrowdGPT/refs/heads/main/docs/benchmarks/benchmarks.png)
+<p align="center">
+  <a href="https://crowdgpt.net">
+    <picture>
+      <img
+        src="https://raw.githubusercontent.com/Vxtzq/CrowdGPT/refs/heads/main/docs/benchmarks/benchmarks.png"
+        alt="CrowdGPT"
+        width="100%"
+        style="width: 100%; max-width: 100%; height: auto; display: block; border-radius: 12px;"
+      >
+    </picture>
+  </a>
+</p>
 
 
 # CrowdGPT v3.4 changelog
