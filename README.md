@@ -33,6 +33,10 @@
   <strong>The best 0$ AI.</strong>
 </p>
 
+# Benchmarks
+[https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/logo-dark2.png](https://raw.githubusercontent.com/Vxtzq/CrowdGPT/refs/heads/main/docs/benchmarks/benchmarks.png)">
+
+
 # CrowdGPT v3.4 changelog
 - Merged numerous pull requests
 - Prepared ground for Crowd-v2
