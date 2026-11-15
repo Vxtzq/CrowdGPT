@@ -1,3 +1,6 @@
+**⚠️⚠️Disclaimer: This paper is somewhat AI slop as i don't have time to write one myself⚠️⚠️** 
+Feel free to contribute to this technical description!
+
 # CrowdGPT: A Technical Description
 
 **Status:** v1 (pre-release research system) · **Client:** v3.4 · **Server:** `CrowdGPT-Server` (current `main`)
