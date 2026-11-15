@@ -412,6 +412,30 @@ def _prepare_qt_icon_early(source_path):
 # General helpers
 # ============================================================
 
+def _rocm_torch_index(rocm_ver: str) -> str:
+    """PyTorch wheel index for a detected ROCm version.
+
+    PyTorch publishes one index per ROCm minor (6.1, 6.2, 6.3, 7.0, 7.1, 7.2).
+    Map the detected stack to the newest published index at or below it: pinning
+    every 7.x box to rocm7.0 silently installed an older torch on ROCm 7.2
+    machines, and gfx1150 needs the 7.2 build.
+    """
+    parts = (rocm_ver or "").split(".")
+    try: vmaj = int(parts[0])
+    except Exception: vmaj = 0
+    try: vmin = int(parts[1])
+    except Exception: vmin = 0
+    if vmaj == 7:
+        if vmin >= 2: return "https://download.pytorch.org/whl/rocm7.2"
+        if vmin == 1: return "https://download.pytorch.org/whl/rocm7.1"
+        return "https://download.pytorch.org/whl/rocm7.0"
+    if vmaj == 6:
+        if vmin >= 3: return "https://download.pytorch.org/whl/rocm6.3"
+        if vmin == 2: return "https://download.pytorch.org/whl/rocm6.2"
+        return "https://download.pytorch.org/whl/rocm6.1"
+    if vmaj == 5: return "https://download.pytorch.org/whl/rocm5.7"
+    return "https://download.pytorch.org/whl/rocm6.1"
+
 def run_capture(cmd, **kw):
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=120, **kw)
@@ -1091,17 +1115,7 @@ class InstallerAPI:
             return True
 
         self.backend = "amd"
-        vmaj = rocm_ver.split(".")[0] if rocm_ver else ""
-        if vmaj == "7":
-            self.torch_index = "https://download.pytorch.org/whl/rocm7.0"
-        elif vmaj == "6" and rocm_ver.startswith(("6.3", "6.4")):
-            self.torch_index = "https://download.pytorch.org/whl/rocm6.3"
-        elif vmaj == "6" and rocm_ver.startswith("6.2"):
-            self.torch_index = "https://download.pytorch.org/whl/rocm6.2"
-        elif vmaj == "5":
-            self.torch_index = "https://download.pytorch.org/whl/rocm5.7"
-        else:
-            self.torch_index = "https://download.pytorch.org/whl/rocm6.1"
+        self.torch_index = _rocm_torch_index(rocm_ver)
         self.wheel_note = f"AMD ROCm {rocm_ver or 'unknown'} -> {self.torch_index.rsplit('/', 1)[-1]}"
         return True
 

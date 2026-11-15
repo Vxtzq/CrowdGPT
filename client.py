@@ -1120,6 +1120,30 @@ def install_hard_vram_cap(device, safety_gb=SAFETY_MARGIN_GB):
         return cap_bytes / 1024**3
     except Exception: return None
 
+UMA_VRAM_SHARE_DEFAULT = 0.75
+
+def _uma_ram_ceiling_gb(idx, total_bytes):
+    """System-RAM ceiling for a unified-memory GPU, or None for discrete cards.
+
+    On an APU the VRAM pool *is* system RAM, so `mem_get_info` reports the whole
+    machine as free VRAM. Measured on a 30.5 GB Strix Halo (gfx1150): the naive
+    budget was 30.34 GB of 32 GB and `recommend_batch_size` picked 16, leaving
+    nothing for the compositor. Cap the budget by a share of physical RAM.
+    """
+    integrated = False
+    try: integrated = bool(getattr(torch.cuda.get_device_properties(idx), "is_integrated", False))
+    except Exception: pass
+    try:
+        import psutil
+        total_ram = float(psutil.virtual_memory().total)
+    except Exception: return None
+    if not integrated and total_bytes < 0.9 * total_ram: return None
+    share = UMA_VRAM_SHARE_DEFAULT
+    try: share = float(os.environ.get("CROWDGPT_UMA_VRAM_SHARE", share) or share)
+    except Exception: pass
+    share = max(0.4, min(1.0, share))
+    return total_ram * share / 1024**3
+
 def auto_detect_vram_budget():
     global train_backend
     if train_backend in ("CUDA", "ROCM") and torch.cuda.is_available():
@@ -1128,7 +1152,10 @@ def auto_detect_vram_budget():
             fb, tb = torch.cuda.mem_get_info(idx)
             total_gb = tb / 1024**3; free_gb = fb / 1024**3
             usable = max(0.25, min(total_gb, free_gb) - SAFETY_MARGIN_GB - ALLOCATOR_RESERVE_GB)
-            memory_config.update({"ram_gb": round(usable, 2), "is_auto_detected": True}); return
+            ceiling = _uma_ram_ceiling_gb(idx, tb)
+            if ceiling is not None: usable = max(0.25, min(usable, ceiling - SAFETY_MARGIN_GB))
+            memory_config.update({"ram_gb": round(usable, 2), "is_auto_detected": True,
+                                  "unified": ceiling is not None}); return
         except Exception: pass
     if train_backend == "MPS":
         try:
@@ -1819,7 +1846,7 @@ class GroupedQueryAttention(nn.Module):
         gk = {"enable_gqa": True} if gqa else {}
         if _is_directml(q): o = F.scaled_dot_product_attention(q.contiguous().cpu(), k.contiguous().cpu(), v.contiguous().cpu(), is_causal=True, **gk).to(q.device)
         elif q.device.type == 'cuda' and getattr(torch.version, 'hip', None):
-            if os.environ.get('CROWDGPT_ROCM_SDPA', '1') != '0':
+            if os.environ.get('CROWDGPT_ROCM_SDPA', _rocm_sdpa_default()) != '0':
                 try: o = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=True, **gk)
                 except RuntimeError as exc:
                     if _is_oom(exc): raise
@@ -1841,6 +1868,27 @@ class GroupedQueryAttention(nn.Module):
             aw = aw.masked_fill(~(ci <= ri).unsqueeze(0).unsqueeze(0), float('-inf'))
             chunks.append(F.softmax(aw, dim=-1, dtype=torch.float32).to(q.dtype) @ v[:, :, :e, :])
         return torch.cat(chunks, dim=2)
+
+_ROCM_SDPA_DEFAULT = None
+
+def _rocm_sdpa_default():
+    """Whether to try SDPA before the manual chunked attention on ROCm.
+
+    gfx115x (Strix Halo / RDNA3.5 APUs) has no enabled AOTriton flash or
+    memory-efficient backend, so SDPA falls back to the math kernel. Measured on
+    a Radeon 890M (gfx1150), bs4 sl512: 4.79 s/step with SDPA vs 4.09 s/step with
+    the chunked kernel, and 16.8 ms vs 6.3 ms for the attention op alone. Other
+    ROCm parts keep SDPA. `CROWDGPT_ROCM_SDPA` overrides either way.
+    """
+    global _ROCM_SDPA_DEFAULT
+    if _ROCM_SDPA_DEFAULT is not None: return _ROCM_SDPA_DEFAULT
+    val = "1"
+    try:
+        gfx = str(torch.cuda.get_device_properties(0).gcnArchName or "")
+        if gfx.startswith("gfx115"): val = "0"
+    except Exception: pass
+    _ROCM_SDPA_DEFAULT = val
+    return val
 
 class SwiGLU(nn.Module):
     def __init__(self):
