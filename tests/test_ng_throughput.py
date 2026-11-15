@@ -19,11 +19,15 @@ if str(REPO_ROOT / "tools") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "tools"))
 
 try:
+    import numpy  # noqa: F401
     import torch  # noqa: F401
-except ImportError:  # pragma: no cover - CI without torch
-    torch = None
+except ImportError:  # pragma: no cover - the stdlib-only CI job has neither
+    numpy = torch = None
+
+_NEEDS_STACK = unittest.skipIf(torch is None or numpy is None, "torch and numpy are required")
 
 
+@_NEEDS_STACK
 class ProjectionTests(unittest.TestCase):
     def test_projection_matches_the_definition(self):
         import bench_throughput
@@ -44,7 +48,7 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual(more["tokensPerDayAtThisSize"], 4 * base["tokensPerDayAtThisSize"])
 
 
-@unittest.skipIf(torch is None, "torch is required for the harness")
+@_NEEDS_STACK
 class SmokeTests(unittest.TestCase):
     def test_trimmed_cpu_run_emits_the_schema(self):
         import bench_throughput
