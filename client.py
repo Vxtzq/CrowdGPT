@@ -2947,12 +2947,61 @@ def _write_base_delta_bf16(gz, model, iw_bf16, piece=16 * 1024 * 1024):
         flat = cur = d = None; p.data = torch.empty(0, dtype=p.dtype, device=p.device); o += s
     if o != iw_bf16.numel(): raise RuntimeError(f"delta size mismatch: {o} vs {iw_bf16.numel()}")
 
-def _engram_sparse_delta(table, iew_bf16, frac=0.10, chunk=32768):
+def _select_rows_by_mass(masses, max_frac=0.10, mass_frac=0.995):
+    """Tensor-free core of the engram row selection.
+
+    Chooses the smallest prefix of rows sorted by update mass that covers
+    ``mass_frac`` of the total, capped at ``max_frac`` of the table. Returns
+    ``(indices, covered, omitted)``; the omitted fraction bounds the per-lookup
+    L1 error when a token hits a dropped row, because each row's update norm is
+    at most the omitted mass.
+    """
+    n = len(masses)
+    if n == 0: return [], 0.0, 0.0
+    total = float(sum(masses))
+    if not math.isfinite(total) or total <= 0.0: return [], 0.0, 0.0
+    max_frac = min(1.0, max(0.0, float(max_frac)))
+    mass_frac = min(1.0, max(0.0, float(mass_frac)))
+    budget = max(1, int(math.floor(n * max_frac)))
+    order = sorted(range(n), key=lambda i: -masses[i])  # stable: equal masses keep row order
+    target = total * mass_frac
+    need = budget; running = 0.0
+    for k, i in enumerate(order[:budget], 1):
+        running += masses[i]
+        if running >= target: need = k; break
+    keep = min(n, budget, max(1, need))
+    selected = [i for i in order[:keep] if masses[i] > 1e-8]
+    if not selected: return [], 0.0, 0.0
+    covered = float(sum(masses[i] for i in selected)) / total
+    return selected, covered, max(0.0, 1.0 - covered)
+
+def _engram_select_rows(row_mass, max_frac=0.10, mass_frac=0.995):
+    n = int(row_mass.numel())
+    if n == 0: return torch.empty(0, dtype=torch.long), 0.0, 0.0
+    idx, covered, omitted = _select_rows_by_mass(row_mass.tolist(), max_frac=max_frac, mass_frac=mass_frac)
+    if not idx: return torch.empty(0, dtype=torch.long), 0.0, 0.0
+    return torch.tensor(idx, dtype=torch.long, device=row_mass.device), covered, omitted
+
+def _engram_sparse_delta(table, iew_bf16, frac=None, chunk=32768):
+    """Upload the rows that actually moved, not a fixed 10% of the table.
+
+    The row count follows the update mass (`CROWDGPT_ENGRAM_DELTA_MASS`, default
+    0.995) with the old 10% ceiling kept as the default cap, so the upload can
+    shrink but never grows without an explicit `CROWDGPT_ENGRAM_DELTA_MAX_FRAC`.
+    """
     n = table.shape[0]; rn = torch.empty(n, device=table.device)
     ref = iew_bf16.to(table.device) if iew_bf16.device != table.device else iew_bf16
     for i in range(0, n, chunk): rn[i:i + chunk] = (table[i:i + chunk] - ref[i:i + chunk].float()).abs().sum(dim=1)
-    k = max(1, int(n * frac)); tv, ti = torch.topk(rn, k); ai = ti[tv > 1e-8]
+    max_frac = frac
+    if max_frac is None:
+        try: max_frac = float(os.environ.get("CROWDGPT_ENGRAM_DELTA_MAX_FRAC", "0.10"))
+        except (TypeError, ValueError): max_frac = 0.10
+    try: mass_frac = float(os.environ.get("CROWDGPT_ENGRAM_DELTA_MASS", "0.995"))
+    except (TypeError, ValueError): mass_frac = 0.995
+    ai, covered, omitted = _engram_select_rows(rn, max_frac=max_frac, mass_frac=mass_frac)
     if len(ai) == 0: return np.array([], dtype=np.uint32), np.array([], dtype=np.uint16)
+    if omitted > 1e-4:
+        log.info(f"[ENGRAM] sparse delta covers {covered:.4%} of update mass; omitted {omitted:.4%} (cap {max_frac:.0%} rows)")
     sv = (table[ai] - ref[ai].float()).to(torch.bfloat16).view(torch.int16).detach().cpu().numpy().view(np.uint16)
     return ai.detach().cpu().numpy().astype(np.uint32), sv
 
