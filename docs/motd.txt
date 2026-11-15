@@ -1,4 +1,4 @@
-CrowdGPT v3.4 changelog:
+CrowdGPT v3.5 changelog:
 - Implemented auto-pause
 - VRAM optimization
 - Released benchmarks :D
