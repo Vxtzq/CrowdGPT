@@ -1,4 +1,5 @@
-CrowdGPT v3.3 changelog:
-- Merged Pull requests on GitHub
-- Many bug fixes
+CrowdGPT v3.4 changelog:
+- Implemented auto-pause
+- VRAM optimization
+- Released benchmarks :D
 Check GitHub for more infos
