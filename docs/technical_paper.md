@@ -14,7 +14,7 @@ Feel free to contribute to this technical description!
 
 CrowdGPT is a volunteer-compute pretraining run for a single language model. Contributors run a client (`client.py`, with a local web UI `client.html`) on their own GPU. A central coordinator (`server.py`, FastAPI) hands out training tasks, collects weight deltas, filters them, merges them into one global checkpoint, and publishes that checkpoint.
 
-It is **not** peer-to-peer, **not** trustless, and **not** a blockchain. It is a federated-averaging-style system with one coordinator that is trusted by every participant. Section 9 spells out what that trust covers.
+It is **not** peer-to-peer, **not** trustless, and **not** a blockchain. It is a federated-averaging-style system with one coordinator that is trusted by every participant. You can find more info on trust at section 9.
 
 Artifacts:
 
@@ -30,6 +30,8 @@ Artifacts:
 ## 2. Model
 
 The architecture is a decoder-only transformer ("SotaGPT") plus a hashed n-gram memory ("engram").
+
+"SotaGPT" is just a name highlighting that the model implements roughly all of Qwen 3.5's features (except maybe for the Muon optimizer and the Gated DeltaNet attention)
 
 | Property | Value |
 |---|---|
