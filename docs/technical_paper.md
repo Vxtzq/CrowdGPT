@@ -1,6 +1,8 @@
 # ⚠️⚠️Disclaimer: This paper is somewhat AI slop⚠️⚠️
 **As i don't have time to write a full easy to follow technical explanation myself, i let AI do part of the job.**
 
+AI still provides a faithful explanation of what is going on, what's doable and what's not.
+
 Feel free to contribute to this technical description!
 
 # CrowdGPT: A Technical Description
