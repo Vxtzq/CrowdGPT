@@ -45,6 +45,7 @@ import json
 import math
 import os
 import sys
+import time
 import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -165,6 +166,99 @@ def parse_server_secret(raw: str) -> bytes:
     if len(secret) < MIN_SECRET_BYTES:
         raise ValueError(f"server secret must be at least {MIN_SECRET_BYTES} bytes")
     return secret
+
+
+GATE_SIGNING_KEY_ENV = "CROWDGPT_GATE_SIGNING_KEY"
+
+
+def parse_gate_signing_key(raw: str) -> bytes | None:
+    """32-byte Ed25519 seed from hex (``hex:`` prefix tolerated), or ``None`` when unset.
+
+    Unset means "answer unsigned", which keeps an unsigned deployment behaving exactly as
+    it did before receipts existed. A malformed key raises at startup rather than at the
+    first gate request, because a silently unsigned answer is the failure this path exists
+    to remove.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    seed = _parse_hex(text, field_name=GATE_SIGNING_KEY_ENV)
+    if len(seed) != 32:
+        raise ValueError(f"{GATE_SIGNING_KEY_ENV} must be a 32-byte Ed25519 seed, got {len(seed)} bytes")
+    return seed
+
+
+def _gate_private_key(seed: bytes) -> Any:
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    except ImportError as exc:  # pragma: no cover - the wheel ships with the eval extras
+        raise RuntimeError("signing gate receipts needs the 'cryptography' package") from exc
+    return Ed25519PrivateKey.from_private_bytes(seed)
+
+
+def gate_public_key(seed: bytes) -> str:
+    """64-hex public key the coordinator puts in its trusted-evaluator map."""
+    from cryptography.hazmat.primitives import serialization
+
+    return _gate_private_key(seed).public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+
+
+def canonical_gate_receipt(receipt: Mapping[str, Any]) -> bytes:
+    """The bytes the coordinator verifies: sorted keys, no spaces, UTF-8."""
+    return json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def build_gate_receipt(body: Mapping[str, Any], payload: Any, *, now: float | None = None) -> dict[str, Any] | None:
+    """The receipt a coordinator accepts, or ``None`` when the answer is not signable."""
+    if not isinstance(body, Mapping):
+        return None
+    loss = body.get("loss")
+    if isinstance(loss, bool) or not isinstance(loss, (int, float)):
+        return None
+    if not math.isfinite(float(loss)):
+        return None
+    request = payload if isinstance(payload, Mapping) else {}
+    candidate = request.get("candidate")
+    candidate = candidate if isinstance(candidate, Mapping) else {}
+    try:
+        step = int(body.get("step", request.get("step", 0)))
+        rnd = int(body.get("round", request.get("round", 0)))
+    except (TypeError, ValueError):
+        return None
+    return {
+        "step": step,
+        "round": rnd,
+        "requestId": str(request.get("requestId") or ""),
+        "modelSha256": str(candidate.get("modelSha256") or ""),
+        "engramSha256": str(candidate.get("engramSha256") or ""),
+        "loss": float(loss),
+        "issuedAt": float(time.time() if now is None else now),
+    }
+
+
+def sign_gate_answer(body: Mapping[str, Any], payload: Any, seed: bytes | None, *,
+                     now: float | None = None) -> dict[str, Any]:
+    """Attach a signed receipt to a successful gate answer.
+
+    The coordinator verifies the signature over the canonical receipt and then compares
+    ``requestId``, both candidate digests and the loss against what it sent, so the receipt
+    has to echo them verbatim -- including an empty digest when the candidate declared none.
+    """
+    answer = dict(body) if isinstance(body, Mapping) else {}
+    if seed is None:
+        return answer
+    receipt = build_gate_receipt(answer, payload, now=now)
+    if receipt is None:
+        return answer
+    private = _gate_private_key(seed)
+    from cryptography.hazmat.primitives import serialization
+
+    answer["receipt"] = receipt
+    answer["pubkey"] = private.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+    answer["signature"] = private.sign(canonical_gate_receipt(receipt)).hex()
+    return answer
 
 
 def _load_model_factory(spec: str) -> Callable[[], Any]:
@@ -395,6 +489,8 @@ class GateConfig:
     count: int = 64
     seed: int = 0
     device: str = ""
+    # Empty means "answer unsigned"; see parse_gate_signing_key.
+    signing_key: bytes = b""
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "GateConfig":
@@ -404,9 +500,20 @@ class GateConfig:
         count = _env_int(env, "CROWDGPT_EVAL_COUNT", 64, 1, 4096)
         seed = _env_int(env, "CROWDGPT_EVAL_SEED", 0, 0, 2**31 - 1)
         device = env.get("CROWDGPT_EVAL_DEVICE", "").strip()
-        return cls(manifest=manifest, data_root=data_root, count=count, seed=seed, device=device)
+        signing_key = parse_gate_signing_key(env.get(GATE_SIGNING_KEY_ENV, "")) or b""
+        return cls(manifest=manifest, data_root=data_root, count=count, seed=seed, device=device,
+                   signing_key=signing_key)
 
     def summary(self) -> dict[str, Any]:
+        info = self._summary_body()
+        if self.signing_key:
+            try:
+                info["receiptSigner"] = gate_public_key(self.signing_key)
+            except Exception as exc:  # noqa: BLE001 - --print-config must never crash
+                info["receiptSigner"] = f"unavailable ({type(exc).__name__})"
+        return info
+
+    def _summary_body(self) -> dict[str, Any]:
         if lg is None:
             return {"manifest": str(self.manifest), "missing": True,
                     "detail": "numpy is not installed; the gate answers 503"}
@@ -443,6 +550,14 @@ def build_gate_scorer(gate: GateConfig) -> Callable[[dict[str, Any]], Any] | Non
 
     return lg.make_gate_scorer(manifest_path=gate.manifest, data_root=gate.data_root, count=gate.count,
                                seed=gate.seed, logits_for=logits_for)
+
+
+def build_gate_signer(gate: GateConfig) -> Callable[[dict[str, Any], Any], dict[str, Any]] | None:
+    """``None`` when no key is configured, so an unsigned deployment is unchanged."""
+    seed = gate.signing_key
+    if not seed:
+        return None
+    return lambda body, payload: sign_gate_answer(body, payload, seed)
 
 
 def _require_fastapi() -> None:
@@ -536,6 +651,7 @@ def evaluate_round(payload: Any, eval_fn: EvalFn | None) -> tuple[int, dict[str,
 
 def create_router(config: ServiceConfig, loader: JobLoader | None = None, *, coordinator: lcs.LossCheckCoordinator | None = None,
                   eval_fn: EvalFn | None = None, gate_scorer: Callable[[dict[str, Any]], Any] | None = None,
+                  gate_signer: Callable[[dict[str, Any], Any], dict[str, Any]] | None = None,
                   **overrides: Any) -> Any:
     """Return a FastAPI router exposing the job, receipt, and coordinator ``/eval`` handlers.
 
@@ -602,6 +718,10 @@ def create_router(config: ServiceConfig, loader: JobLoader | None = None, *, coo
             return JSONResponse({"error": "evaluator not configured",
                                  "detail": "numpy is not installed"}, status_code=503)
         status, body = await run_in_threadpool(lg.evaluate_gate, payload, gate_scorer)
+        if gate_signer is not None and status == 200 and isinstance(body, Mapping):
+            # A coordinator that requires receipts rejects an unsigned answer, so only
+            # sign what it would accept: a 200 carrying a finite loss.
+            body = gate_signer(body, payload)
         return JSONResponse(body, status_code=status)
 
     return router
@@ -609,11 +729,12 @@ def create_router(config: ServiceConfig, loader: JobLoader | None = None, *, coo
 
 def create_app(config: ServiceConfig, loader: JobLoader | None = None, *, coordinator: lcs.LossCheckCoordinator | None = None,
                eval_fn: EvalFn | None = None, gate_scorer: Callable[[dict[str, Any]], Any] | None = None,
+               gate_signer: Callable[[dict[str, Any], Any], dict[str, Any]] | None = None,
                **overrides: Any) -> Any:
     _require_fastapi()
     app = FastAPI(title="CrowdGPT HiveMind evaluation adapter")
     app.include_router(create_router(config, loader, coordinator=coordinator, eval_fn=eval_fn,
-                                     gate_scorer=gate_scorer, **overrides))
+                                     gate_scorer=gate_scorer, gate_signer=gate_signer, **overrides))
     return app
 
 
@@ -638,7 +759,9 @@ def main(argv: list[str] | None = None) -> int:
             import uvicorn
         except ImportError as exc:
             raise SystemExit("uvicorn is not installed; install uvicorn to serve the adapter") from exc
-        uvicorn.run(create_app(config, gate_scorer=build_gate_scorer(gate)), host=args.host, port=args.port)
+        uvicorn.run(create_app(config, gate_scorer=build_gate_scorer(gate),
+                              gate_signer=build_gate_signer(gate)),
+                    host=args.host, port=args.port)
     return 0
 
 
