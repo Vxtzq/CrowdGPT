@@ -614,6 +614,29 @@ ENGRAM_ACTIVE = os.environ.get("CROWDGPT_ENGRAM", "1") == "1"
 # coordinator only accepts "ngd1" once it ships the decoder, so this stays opt-in.
 DELTA_CODEC = (os.environ.get("CROWDGPT_DELTA_CODEC", "off") or "off").strip().lower()
 
+# ---- A1/A3: inner-optimizer controls -------------------------------------------------
+# The server now dictates *optimizer* steps per round (`crossCheck.targetOptimizerSteps`)
+# instead of letting `accum = round(131072/(bs*sl))` decide.  At H <= 2 a fresh AdamW is still
+# inside its bias-corrected warm-up, where m̂/√v̂ ≈ sign(g); averaging per-coordinate signs
+# across shards is close to a coin flip, so the delta stops being a gradient.  A first-order
+# method (SGD + Nesterov) has no such bias: step 1 is exactly -lr*g.
+#   CROWDGPT_CLIENT_OPTIM        auto (default) | adamw | sgd
+#   CROWDGPT_CLIENT_LR           absolute inner lr (overrides the rule below)
+#   CROWDGPT_CLIENT_LR_RULE      linear (default) | sqrt | none  (relative to BASE_LR/REF_STEPS)
+#   CROWDGPT_CLIENT_LR_REF_STEPS legacy optimizer steps per round the base lr was tuned at
+#   CROWDGPT_CLIENT_ENGRAM_LR    engram lr, chosen once (independent of the base lr)
+def _client_env_float(name, default):
+    try: return float(os.environ.get(name, "") or default)
+    except (TypeError, ValueError): return float(default)
+
+INNER_OPTIM = (os.environ.get("CROWDGPT_CLIENT_OPTIM", "auto") or "auto").strip().lower()
+INNER_LR_OVERRIDE = _client_env_float("CROWDGPT_CLIENT_LR", 0.0)
+INNER_LR_RULE = (os.environ.get("CROWDGPT_CLIENT_LR_RULE", "linear") or "linear").strip().lower()
+INNER_LR_REF_STEPS = _client_env_float("CROWDGPT_CLIENT_LR_REF_STEPS", 16.0)
+INNER_BASE_LR = _client_env_float("CROWDGPT_CLIENT_BASE_LR", 1e-4)
+ENGRAM_LR = _client_env_float("CROWDGPT_CLIENT_ENGRAM_LR", 1e-4)
+GRAD_CLIP_NORM = _client_env_float("CROWDGPT_CLIENT_GRAD_CLIP", 1.0)
+
 LOSS_CHUNK = 256; UPLOAD_BUFFER_MIN = 25; ALLOWED_BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128]
 SAFETY_MARGIN_GB = 1.0; ALLOCATOR_RESERVE_GB = 0.5; MIN_HEADROOM_GB = 0.25
 # The planner's byte estimate is tight enough that a 512 MiB allocation can
@@ -1274,10 +1297,15 @@ def _bytes_per_block_params():
             + DIM * (N_KV_HEADS * HEAD_DIM) + DIM * DIM + DIM * 2
             + DIM * MLP_HIDDEN + DIM * MLP_HIDDEN + MLP_HIDDEN * DIM)
 
+def _opt_state_bytes_per_param(u8):
+    """Optimizer state bytes per parameter: AdamW 8bit = 2, SGD+momentum = 4, AdamW fp32 = 8."""
+    if u8 == "sgd" or u8 == "sgd_nesterov": return 4
+    return 2 if u8 else 8
+
 def estimate_vram_bytes(bs, sl, u8):
     per_block = _bytes_per_block_params(); head_params = VOCAB_SIZE * DIM
-    head_bytes  = head_params * (4 + 4 + (2 if u8 else 8))
-    blocks = N_LAYERS * per_block; opt_state_per_param = 2 if u8 else 8
+    head_bytes  = head_params * (4 + 4 + _opt_state_bytes_per_param(u8))
+    blocks = N_LAYERS * per_block; opt_state_per_param = _opt_state_bytes_per_param(u8)
     block_bytes = blocks * (4 + 4 + opt_state_per_param)
     act = N_LAYERS * bs * sl * DIM * 4 + bs * sl * (DIM * 12 + MLP_HIDDEN * 3) * 4; loss = bs * LOSS_CHUNK * VOCAB_SIZE * 4
     workspace = int(ALLOCATOR_RESERVE_GB * 1024**3)
@@ -1298,12 +1326,15 @@ def _can_disable_checkpoint(bs, sl, u8, budget_gb, margin=1.25):
     spare = budget - estimate_vram_bytes(bs, sl, u8)
     return spare > margin * _checkpoint_extra_bytes(bs, sl)
 
-def recommend_batch_size(sl=MAX_SEQ_LEN, force_mode=None):
+def recommend_batch_size(sl=MAX_SEQ_LEN, force_mode=None, state_mode=None):
     """force_mode: None = native (8bit if available, else 32); "adamw8bit" = force 8bit (2 bytes/param);
     "adamw32" = force fp32 (8 bytes/param). Forcing matters because 8bit<->fp32 changes the VRAM
     estimate by ~6 bytes per param on the optimizer state, which can be the difference between
-    fitting and OOMing at model build."""
-    if force_mode == "adamw8bit":
+    fitting and OOMing at model build.
+    state_mode: "sgd_nesterov" = 1 fp32 momentum buffer (4 bytes/param) regardless of force_mode."""
+    if state_mode == "sgd_nesterov":
+        u8 = "sgd"
+    elif force_mode == "adamw8bit":
         u8 = True
     elif force_mode == "adamw32":
         u8 = False
@@ -1777,7 +1808,8 @@ def _plan_placement(device, backend_name, budget_gb, bs=1, sl=MAX_SEQ_LEN,
     GB = 1024 ** 3
     cd = act_bytes if act_bytes is not None else (2 if device.type in ("cuda", "xpu") else 4)
     budget = int(max(0.0, budget_gb) * GB); per_block = _bytes_per_block_params(); head_params = VOCAB_SIZE * DIM
-    opt_b = 2 if u8 else 8
+    # u8 is True/False for AdamW, "sgd" for SGD+momentum (1 fp32 buffer = 4 B/param)
+    opt_b = _opt_state_bytes_per_param(u8)
     def fixed_cost(lc):
         return (N_LAYERS * bs * sl * DIM * 4 + bs * sl * (DIM * 12 + MLP_HIDDEN * 3) * 4
                 + per_block * cd * 2 + bs * lc * VOCAB_SIZE * 4 * 3 + int(ALLOCATOR_RESERVE_GB * GB))
@@ -2901,18 +2933,89 @@ class _MultiOpt:
     def step(self):
         for o in self.opts: o.step()
 
-def _build_optimizers(model, lr=1e-4, force_mode=None):
+def _resolve_inner_optim(target_opt_steps):
+    """Inner optimizer for this round.
+
+    H >= 8 (or no server-side step budget): AdamW, unchanged.  H <= 2: Adam's first step is
+    m̂/√v̂ ≈ sign(g) per coordinate and averaging signs across shards is a coin flip, so a
+    first-order method (SGD + Nesterov) with the batch-scaled lr is the default.
+    CROWDGPT_CLIENT_OPTIM overrides the choice.
+    """
+    want = INNER_OPTIM
+    if want in ("adamw", "adam", "adamw32", "adamw8bit", "adamw_fp32"): return "adamw"
+    if want in ("sgd", "sgd_nesterov", "nesterov"): return "sgd_nesterov"
+    h = int(target_opt_steps or 0)
+    return "sgd_nesterov" if 0 < h <= 2 else "adamw"
+
+def _resolve_inner_lr(target_opt_steps):
+    """Inner lr for this round from the token-batch scaling rule (A1).
+
+    The base lr was tuned for `INNER_LR_REF_STEPS` optimizer steps of ~131k tokens per round.
+    At H steps the batch is larger by REF/H, so a first-order method can take a larger step
+    (linear rule) without leaving the linear regime; `sqrt` is the conservative alternative.
+    """
+    if INNER_LR_OVERRIDE > 0: return INNER_LR_OVERRIDE
+    h = int(target_opt_steps or 0)
+    if h <= 0 or INNER_LR_REF_STEPS <= 0 or h >= INNER_LR_REF_STEPS: return INNER_BASE_LR
+    factor = INNER_LR_REF_STEPS / float(h)
+    if INNER_LR_RULE == "none": return INNER_BASE_LR
+    if INNER_LR_RULE == "sqrt": return INNER_BASE_LR * math.sqrt(factor)
+    return INNER_BASE_LR * factor
+
+def _accum_steps_for_round(cohort_mode, cc_steps, cc_opt_steps, cc_accum, bs, sl):
+    """Micro-batches per optimizer step (A1).
+
+    With a server-dictated optimizer-step budget the round keeps `cc_steps` micro-steps and
+    groups them into that many optimizer steps, so tokens/round and upload size are unchanged:
+    cc_steps=500, H=2 -> accum=250 (2 optimizer steps of ~1.02 M tokens each).  Without the
+    budget this is the legacy `round(131072 / (bs*sl))` (or the server's targetAccumSteps).
+    """
+    mbt = max(1, int(bs) * int(sl))
+    try: opt_steps = int(cc_opt_steps or 0)
+    except (TypeError, ValueError): opt_steps = 0
+    if cohort_mode and opt_steps > 0 and cc_steps:
+        return max(1, min(int(cc_steps), math.ceil(int(cc_steps) / opt_steps)))
+    if cohort_mode and cc_accum:
+        return max(1, int(cc_accum))
+    return max(1, round(131072 / mbt))
+
+def _build_submit_extra(*, cohort_mode, cc_seed, micro_step, bs, opt_steps_taken, accum,
+                        inner_opt, inner_lr, last_step_loss, loss_std, loss_samples):
+    """Delta metadata sent with the upload (A3: the server needs the optimizer-step count)."""
+    return {
+        "crossCheckUsed": bool(cohort_mode),
+        "actualSeed": int(cc_seed) if (cohort_mode and cc_seed is not None) else None,
+        "actualSteps": int(micro_step),
+        "actualBatchSize": int(bs),
+        # A3: the aggregate is normalised by optimizer steps, so the server must know how many
+        # the delta actually took (and what accum produced them).
+        "optimizerSteps": int(opt_steps_taken),
+        "accum": int(accum),
+        "innerOptimizer": str(inner_opt),
+        "innerLr": float(inner_lr),
+        "lastLoss": float(last_step_loss) if last_step_loss is not None else None,
+        "lossStd": float(loss_std),
+        "lossSamples": int(loss_samples),
+    }
+
+def _build_optimizers(model, lr=1e-4, force_mode=None, inner="adamw", engram_lr=None):
     """force_mode: None = native, "adamw8bit" = force 8bit, "adamw32" = force fp32.
     Must be preserved across OOM-driven rebuilds (_on_step_down) or a client forced into an
-    fp32 pool by the server will silently flip back to 8bit after a VRAM step-down."""
+    fp32 pool by the server will silently flip back to 8bit after a VRAM step-down.
+    inner: "adamw" (default) or "sgd_nesterov" (A1: no cold-start sign bias at small H).
+    engram_lr: separate lr for the engram table; None keeps the base lr (legacy)."""
     bp = [p for n, p in model.named_parameters() if not n.startswith('engram.')]
     ep = list(model.engram.parameters())
     groups = {}
     for p in bp: groups.setdefault(p.device.type, []).append(p)
-    use_8bit = (_predict_optim(train_backend, force_mode=force_mode) == "adamw8bit"); opts = []
+    use_8bit = (_predict_optim(train_backend, force_mode=force_mode) == "adamw8bit") and inner != "sgd_nesterov"
+    opts = []
     for dev_type, ps in groups.items():
         o = None
-        if dev_type == 'cuda' and use_8bit:
+        if inner == "sgd_nesterov":
+            o = torch.optim.SGD(ps, lr=lr, momentum=0.9, nesterov=True,
+                                **({} if dev_type in ('cpu', 'cuda') else {"foreach": False}))
+        elif dev_type == 'cuda' and use_8bit:
             try:
                 import bitsandbytes as bnb
                 o = bnb.optim.AdamW8bit(ps, lr=lr, betas=(0.9, 0.95), weight_decay=0.01)
@@ -2920,15 +3023,16 @@ def _build_optimizers(model, lr=1e-4, force_mode=None):
         if o is None: o = torch.optim.AdamW(ps, lr=lr, betas=(0.9, 0.95), weight_decay=0.01, **({} if dev_type in ('cpu', 'cuda') else {"foreach": False}))
         opts.append(o)
     ob = _MultiOpt(opts)
-    try: oe = torch.optim.SparseAdam(ep, lr=lr)
-    except Exception: oe = torch.optim.AdamW(ep, lr=lr, weight_decay=0.01)
+    elr = engram_lr if (engram_lr is not None and engram_lr > 0) else lr
+    try: oe = torch.optim.SparseAdam(ep, lr=elr)
+    except Exception: oe = torch.optim.AdamW(ep, lr=elr, weight_decay=0.01)
     return ob, oe
 
-def _clip_base_grads(model, max_norm=1.0):
+def _clip_base_grads(model, max_norm=None):
     """Clip only dense base-model grads; engram rows are sparse and coalesce in SparseAdam."""
     torch.nn.utils.clip_grad_norm_(
         [p for n, p in model.named_parameters() if p.requires_grad and not n.startswith('engram.')],
-        max_norm,
+        GRAD_CLIP_NORM if max_norm is None else max_norm,
     )
 
 def _trim_heap():
@@ -3091,12 +3195,17 @@ def _parse_task_meta(md, emit):
     cc_accum = cc_cfg.get("targetAccumSteps") if cohort_mode else None
     cc_autocast = cc_cfg.get("targetAutocast") if cohort_mode else None
     cc_optim = (cc_cfg.get("targetOptimizer") if cohort_mode else None) or "any"
+    # A1: optimizer steps per round, dictated by the server (0/absent = legacy client-derived accum)
+    cc_opt_steps = (cc_cfg.get("targetOptimizerSteps") if cohort_mode else None)
+    try: cc_opt_steps = int(cc_opt_steps or 0)
+    except (TypeError, ValueError): cc_opt_steps = 0
+    if cc_opt_steps < 0: cc_opt_steps = 0
     if cohort_mode and (cc_seed is None or cc_steps is None or cc_bs is None or cc_accum is None or cc_autocast is None):
         emit('log', "⚠️ Cross-check metadata incomplete; disabling cohort mode for this round")
-        cohort_mode = False; cc_seed = cc_steps = cc_bs = cc_accum = cc_autocast = None
-    if cohort_mode: emit('log', f"[COHORT] ENABLED: seed={cc_seed} steps={cc_steps} bs_target={cc_bs} accum={cc_accum} autocast={cc_autocast} optim={cc_optim}")
+        cohort_mode = False; cc_seed = cc_steps = cc_bs = cc_accum = cc_autocast = None; cc_opt_steps = 0
+    if cohort_mode: emit('log', f"[COHORT] ENABLED: seed={cc_seed} steps={cc_steps} bs_target={cc_bs} accum={cc_accum} autocast={cc_autocast} optim={cc_optim} optSteps={cc_opt_steps or 'legacy'}")
     else: emit('log', "[COHORT] disabled (server will use Krum for this shard)")
-    return tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim
+    return tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim, cc_opt_steps
 
 # ---- v3.1: background uploader (max 1 upload in flight; training continues meanwhile) ----
 _upload_lock = threading.Lock()
@@ -3379,6 +3488,7 @@ def run_single_round_wrapper(srv, at, se, emit):
     model = ob = oe = x = y = lo = iw = ie = iew = ds = ladder = None
     micro_step = 0; lval = 10.0; tt = 0; tid = ""; tried_cpu_fallback = False
     cohort_mode = False; cc_seed = cc_steps = cc_bs = cc_accum = cc_autocast = None; cc_optim = "any"
+    cc_opt_steps = 0
     optim_mode = None
     round_loss_sum = 0.0; round_loss_sq_sum = 0.0; round_loss_count = 0
     last_step_loss = None
@@ -3386,7 +3496,7 @@ def run_single_round_wrapper(srv, at, se, emit):
     try:
         emit('log', "Fetching task metadata..."); md = fetch_task_metadata(srv, h, se, emit, hb=hb)
         if md is None: return
-        tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim = _parse_task_meta(md, emit)
+        tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim, cc_opt_steps = _parse_task_meta(md, emit)
         if not tid: return
         if tid == _inflight_task_id and _upload_active():
             emit('log', f"⏳ Task {tid} is the one whose delta is still uploading; waiting for it to land before taking new work.")
@@ -3414,7 +3524,7 @@ def run_single_round_wrapper(srv, at, se, emit):
             emit('log', "Downloading weights from coordinator...")
             md, wb = fetch_task(srv, h, "bf16", se, emit, hb=hb)
             if md is None: return
-            tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim = _parse_task_meta(md, emit)
+            tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim, cc_opt_steps = _parse_task_meta(md, emit)
             hb.tid = tid
             if not tid: emit('log', "Coordinator task metadata missing taskId."); return
             bbl = EXPECTED_MODEL_SIZE * 2; ebl = EXPECTED_ENGRAM_SIZE * 2
@@ -3445,6 +3555,12 @@ def run_single_round_wrapper(srv, at, se, emit):
             else:
                 emit('log', f"[COHORT] unknown targetOptimizer={cc_optim!r} — using native")
 
+        # A1: inner optimizer + lr follow the round's optimizer-step budget (server-dictated).
+        inner_opt = _resolve_inner_optim(cc_opt_steps)
+        inner_lr = _resolve_inner_lr(cc_opt_steps)
+        emit('log', f"[OPTIM] inner={inner_opt} lr={inner_lr:.3e} engram_lr={ENGRAM_LR:.3e} "
+                    f"rule={INNER_LR_RULE} refSteps={INNER_LR_REF_STEPS:g} optSteps={cc_opt_steps or 'legacy'}")
+
         # Resolve autocast BEFORE model build so the VRAM planner sees the
         # ACTUAL activation dtype, not the client's native one.
         _ua, _ad = _pick_autocast(train_backend)
@@ -3458,6 +3574,7 @@ def run_single_round_wrapper(srv, at, se, emit):
 
         # Planner overrides from the ACTUAL (post-cohort) plan.
         _u8_override = True if optim_mode == "adamw8bit" else (False if optim_mode == "adamw32" else None)
+        if inner_opt == "sgd_nesterov": _u8_override = "sgd"    # 1 fp32 momentum buffer, not 2 AdamW moments
         _act_bytes_override = 2 if ua else 4
 
         emit('status', 'preparing'); emit('log', "Preparing model...")
@@ -3465,7 +3582,7 @@ def run_single_round_wrapper(srv, at, se, emit):
         if cohort_mode: slot = 0; emit('log', "[COHORT] slot forced to 0 (identical shard for all members)")
         ds = StreamingShardDataset(dc.get("repoId", DATASET_REPO_ID), dc.get("chunkIdx", 0), dc.get("subChunkSize", 10 * 1024 * 1024), dc.get("tokensPerSample", sl + 1), slot, at, cohort_mode=cohort_mode)
 
-        _bs_est = recommend_batch_size(sl, force_mode=optim_mode)
+        _bs_est = recommend_batch_size(sl, force_mode=optim_mode, state_mode=inner_opt)
         bs = _bs_est
         predegrade = False
         if cohort_mode and cc_bs and int(cc_bs) > 0:
@@ -3498,8 +3615,11 @@ def run_single_round_wrapper(srv, at, se, emit):
         if cohort_mode and cc_bs and bs < int(cc_bs): emit('log', f"[COHORT] OOM at target bs={cc_bs}; aborting round"); return
 
         iew = ie.view(model.engram.table.weight.shape) if (ENGRAM_ACTIVE and ie is not None) else None; ie = None; _trim_heap()
-        mbt = bs * sl; as_ = int(cc_accum) if (cohort_mode and cc_accum) else max(1, round(131072 / mbt))
-        ls = 1.0 / as_; ob, oe = _build_optimizers(model, lr=1e-4, force_mode=optim_mode)
+        as_ = _accum_steps_for_round(cohort_mode, cc_steps, cc_opt_steps, cc_accum, bs, sl)
+        ls = 1.0 / as_
+        ob, oe = _build_optimizers(model, lr=inner_lr, force_mode=optim_mode,
+                                   inner=inner_opt, engram_lr=ENGRAM_LR)
+        opt_steps_taken = 0
         uck = UnitCheckpoint.from_env(tid)
         _resumed = uck.load(model, [ob, oe])
         if _resumed:
@@ -3519,10 +3639,11 @@ def run_single_round_wrapper(srv, at, se, emit):
                 return
             # Preserve optim_mode: flipping back to native mid-round would submit a delta trained
             # with the wrong optimizer for the pool, silently failing cross-check
-            ob, oe = _build_optimizers(model, lr=1e-4, force_mode=optim_mode); emit('log', "   rebuilt optimizers for new placement")
+            ob, oe = _build_optimizers(model, lr=inner_lr, force_mode=optim_mode,
+                                       inner=inner_opt, engram_lr=ENGRAM_LR); emit('log', "   rebuilt optimizers for new placement")
 
         ladder = DegradeLadder(model, on_step_down=_on_step_down)
-        emit('log', f"Backend: {train_backend} | autocast: {ua} | bs={bs} | accum={as_} | dtype={'bf16' if ua else 'fp32'} | engram={'on' if ENGRAM_ACTIVE else 'off'} | optim={_predict_optim(train_backend, force_mode=optim_mode)}")
+        emit('log', f"Backend: {train_backend} | autocast: {ua} | bs={bs} | accum={as_} | dtype={'bf16' if ua else 'fp32'} | engram={'on' if ENGRAM_ACTIVE else 'off'} | optim={_predict_optim(train_backend, force_mode=optim_mode) if inner_opt == 'adamw' else inner_opt}")
         cs_ = time.time(); _train_t0 = time.monotonic(); target_micro_steps = 100
         if cohort_mode: target_micro_steps = int(cc_steps); emit('status', 'training')
         else:
@@ -3554,6 +3675,7 @@ def run_single_round_wrapper(srv, at, se, emit):
             _clip_base_grads(model)
             ob.step(); ob.zero_grad(set_to_none=True)
             oe.step(); oe.zero_grad(set_to_none=True)
+            opt_steps_taken += 1
             uck.maybe_save(model, [ob, oe], micro_step=micro_step, tt=tt,
                            loss_sum=round_loss_sum, loss_sq=round_loss_sq_sum,
                            loss_count=round_loss_count); gc.collect()
@@ -3600,6 +3722,7 @@ def run_single_round_wrapper(srv, at, se, emit):
             _clip_base_grads(model)
             ob.step(); ob.zero_grad(set_to_none=True)
             oe.step(); oe.zero_grad(set_to_none=True)
+            opt_steps_taken += 1
             uck.maybe_save(model, [ob, oe], micro_step=micro_step, tt=tt,
                            loss_sum=round_loss_sum, loss_sq=round_loss_sq_sum,
                            loss_count=round_loss_count)
@@ -3634,15 +3757,11 @@ def run_single_round_wrapper(srv, at, se, emit):
         else: si, sv = np.array([], dtype=np.uint32), np.array([], dtype=np.uint16)
         iew = None; has_engram = bool(len(si) > 0); engram_sparse_count = int(len(si))
 
-        submit_extra = {
-            "crossCheckUsed": cohort_mode,
-            "actualSeed": int(cc_seed) if (cohort_mode and cc_seed is not None) else None,
-            "actualSteps": int(micro_step),
-            "actualBatchSize": int(bs),
-            "lastLoss": float(last_step_loss) if last_step_loss is not None else None,
-            "lossStd": float(fl_std),
-            "lossSamples": int(round_loss_count),
-        }
+        submit_extra = _build_submit_extra(
+            cohort_mode=cohort_mode, cc_seed=cc_seed, micro_step=micro_step, bs=bs,
+            opt_steps_taken=opt_steps_taken, accum=as_, inner_opt=inner_opt, inner_lr=inner_lr,
+            last_step_loss=last_step_loss, loss_std=fl_std, loss_samples=round_loss_count,
+        )
         _codec = "ngd1" if (DELTA_CODEC == "ngd1" and not has_engram) else "off"
         pl = json.dumps({"taskId": tid, "loss": fl, "localSteps": micro_step, "tokensProcessed": tt, "loraRank": 0, "isDelta": True, "weightFormat": "bf16", "hasEngram": has_engram, "engramSparseCount": engram_sparse_count, "deltaCodec": _codec, **submit_extra}).encode()
         delta_fd, delta_path = tempfile.mkstemp(prefix="delta-", suffix=".gz", dir=str(CHECKPOINT_DIR)); os.close(delta_fd)
