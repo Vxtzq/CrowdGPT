@@ -33,7 +33,7 @@
   <strong>The best 0$ AI.</strong>
 </p>
 
-# Benchmarks (epoch 374)
+# Crowd-v1 Benchmarks
 <p align="center">
   <a href="https://crowdgpt.net">
     <picture>
@@ -49,11 +49,8 @@
 
 **Disclaimer: This does not mean Crowd-v1 is an intelligent model. It just means it is good at general english** (these benchmarks are generally not hard)
 
-# CrowdGPT v3.4 changelog
-- Merged numerous pull requests
-- Prepared ground for Crowd-v2
-- Released evaluation toolkit 🥳
-- Implemented auto-pause which should work (while not pausing the client for no reason 😭)
+# CrowdGPT v3.5 changelog
+- Crowd-v2 is coming...
   
 ## What is CrowdGPT?
 
