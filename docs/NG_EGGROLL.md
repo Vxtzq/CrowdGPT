@@ -154,6 +154,64 @@ monotonic step to step.
 
 Tiny CPU configurations cover a finite-metrics run, loss improvement,
 same-seed determinism, fused-vs-materialised forward equivalence, payload
-projection, and CLI flag parsing. The tests skip cleanly when torch is absent or
-stubbed, so `python -m unittest discover -s tests` still passes in the
-stdlib-only CI.
+projection, per-member seed derivation, draw-order independence, and CLI flag
+parsing. The tests skip cleanly when torch is absent or stubbed, so
+`python -m unittest discover -s tests` still passes in the stdlib-only CI.
+
+## Coordinator-side seed regeneration
+
+The scalar-upload claim only pays off if the coordinator can rebuild what each
+client actually evaluated. A scalar alone says "member 7 scored 3.91"; it does
+not say which perturbation member 7 was.
+
+The original driver drew every member from one `torch.Generator` stream, so
+member 7 was reproducible only by replaying members 0-6 first, in order, with
+the same population size. That is a fragile contract: any change to the ordering
+or the population size breaks it silently.
+
+`--per-member-seeds` (and `--verify-regen`, which implies it) derive each member
+independently:
+
+```
+seed(step, member) = int.from_bytes(blake2b(f"{base}:{step}:{member}", 8), "little") >> 1
+```
+
+`sample_member()` then builds that member's `Perturbation` from its own
+generator, so a coordinator that knows `(base_seed, step, member_index)` can
+reconstruct the exact factors without receiving them.
+
+`--verify-regen` proves this on the run it is about to measure:
+
+```
+python3 tools/bench_eggroll_model.py --device cuda --verify-regen
+```
+
+`check_seed_regen()` rebuilds every member twice - once in population order and
+once in reverse - and requires that
+
+- each member rebuilds identically regardless of draw order (`reproducible`),
+- the seeds are all distinct (`distinct`),
+- the seed changes with the step and with the member index.
+
+The run aborts if any of that fails. The result JSON records the outcome:
+
+```json
+"seeds": {
+  "perMember": true,
+  "scheme": "blake2b(base_seed:step:member)[0:8] >> 1",
+  "regeneration": {
+    "reproducible": true,
+    "distinct": true,
+    "changesWithStep": true,
+    "changesWithMember": true,
+    "passes": true
+  }
+}
+```
+
+What this does **not** do yet: it does not shrink any upload by itself. This
+benchmark ships nothing, and a production loop would still need a coordinator
+that accepts `(member, fitness)` pairs plus the shared seed and applies the
+update itself. This change makes that possible and checkable; it does not
+implement the coordinator side. The single-generator stream also remains the
+default, so the earlier measured runs stay reproducible.

@@ -126,6 +126,86 @@ class EggrollModelTests(unittest.TestCase):
         self.assertEqual((args.dim, args.layers, args.heads), (8, 1, 2))
         self.assertEqual((args.seq, args.vocab, args.seed, args.steps), (4, 8, 7, 2))
 
+    def test_member_seeds_are_deterministic_and_distinct(self):
+        seeds = BENCH.member_seeds(11, 0, 6)
+        self.assertEqual(seeds, BENCH.member_seeds(11, 0, 6))
+        self.assertEqual(len(seeds), 6)
+        self.assertEqual(len(set(seeds)), 6)
+        self.assertNotEqual(BENCH.member_seed(11, 0, 0), BENCH.member_seed(11, 1, 0))
+        self.assertNotEqual(BENCH.member_seed(11, 0, 0), BENCH.member_seed(11, 0, 1))
+        self.assertNotEqual(BENCH.member_seed(11, 0, 0), BENCH.member_seed(12, 0, 0))
+
+    def test_member_perturbations_do_not_depend_on_draw_order(self):
+        model = self.tiny_model()
+        params = BENCH.init_params(model, seed=5, device=TORCH.device("cpu"))
+        seeds = BENCH.member_seeds(5, 0, 4)
+        forward = [BENCH.sample_member(params, 2, TORCH.device("cpu"), s) for s in seeds]
+        reverse = [BENCH.sample_member(params, 2, TORCH.device("cpu"), s) for s in reversed(seeds)]
+        reverse.reverse()
+        for first, second in zip(forward, reverse):
+            self.assertTrue(BENCH._perturbations_equal(first, second))
+        self.assertFalse(BENCH._perturbations_equal(forward[0], forward[1]))
+
+    def test_check_seed_regen_passes(self):
+        model = self.tiny_model()
+        params = BENCH.init_params(model, seed=2, device=TORCH.device("cpu"))
+        options = self.tiny_options(population=4)
+        regen = BENCH.check_seed_regen(params, model, options, TORCH.device("cpu"), 3)
+        self.assertTrue(regen["reproducible"])
+        self.assertTrue(regen["distinct"])
+        self.assertTrue(regen["changesWithStep"])
+        self.assertTrue(regen["changesWithMember"])
+        self.assertTrue(regen["passes"])
+        self.assertEqual(regen["step"], 3)
+        self.assertEqual(len(regen["seeds"]), 4)
+
+    def test_eggroll_step_accepts_seeds_without_a_generator(self):
+        model = self.tiny_model()
+        options = self.tiny_options(population=4, steps=1)
+        params = BENCH.init_params(model, seed=6, device=TORCH.device("cpu"))
+        tokens = BENCH.make_batch(
+            model, TORCH.Generator(device="cpu").manual_seed(0), TORCH.device("cpu")
+        )
+        seeds = BENCH.member_seeds(options.seed, 0, options.population)
+        losses, updated = BENCH.eggroll_step(params, model, options, None, tokens, seeds=seeds)
+        self.assertEqual(len(losses), 4)
+        self.assertEqual(set(updated), set(params))
+        again, _ = BENCH.eggroll_step(params, model, options, None, tokens, seeds=seeds)
+        self.assertEqual(losses, again)
+
+    def test_eggroll_step_rejects_a_bad_seed_count(self):
+        model = self.tiny_model()
+        options = self.tiny_options(population=4)
+        params = BENCH.init_params(model, seed=6, device=TORCH.device("cpu"))
+        tokens = BENCH.make_batch(
+            model, TORCH.Generator(device="cpu").manual_seed(0), TORCH.device("cpu")
+        )
+        with self.assertRaises(ValueError):
+            BENCH.eggroll_step(params, model, options, None, tokens, seeds=[1, 2])
+
+    def test_run_benchmark_records_the_regeneration_check(self):
+        result = BENCH.run_benchmark(
+            self.tiny_model(), self.tiny_options(population=4, steps=2), "cpu", verify_regen=True
+        )
+        self.assertTrue(result["seeds"]["perMember"])
+        self.assertTrue(result["seeds"]["regeneration"]["passes"])
+        self.assertEqual(result["seeds"]["regeneration"]["population"], 4)
+
+    def test_legacy_run_keeps_the_single_generator(self):
+        result = BENCH.run_benchmark(
+            self.tiny_model(), self.tiny_options(population=4, steps=1), "cpu"
+        )
+        self.assertFalse(result["seeds"]["perMember"])
+        self.assertIsNone(result["seeds"]["regeneration"])
+
+    def test_cli_exposes_the_regen_flags(self):
+        args = BENCH.parse_args(["--device", "cpu", "--verify-regen", "--per-member-seeds"])
+        self.assertTrue(args.verify_regen)
+        self.assertTrue(args.per_member_seeds)
+        args = BENCH.parse_args(["--device", "cpu"])
+        self.assertFalse(args.verify_regen)
+        self.assertFalse(args.per_member_seeds)
+
 
 if __name__ == "__main__":
     unittest.main()
