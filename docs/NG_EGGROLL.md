@@ -215,3 +215,47 @@ that accepts `(member, fitness)` pairs plus the shared seed and applies the
 update itself. This change makes that possible and checkable; it does not
 implement the coordinator side. The single-generator stream also remains the
 default, so the earlier measured runs stay reproducible.
+
+## Measured at 11M parameters
+
+Run on a Radeon 890M (gfx1150, 30.48 GB shared RAM, ROCm 7.2, torch
+2.14.1+rocm7.2) with per-member seeds and the regeneration check enabled:
+
+```
+python3 tools/bench_eggroll_model.py --device cuda \
+  --dim 320 --layers 8 --heads 8 --vocab 4096 --seq 128 \
+  --batch 2 --population 32 --rank 8 --sigma 0.02 --lr 0.05 --steps 20 \
+  --verify-regen
+```
+
+| measure | value |
+|---|---|
+| parameters | 11,192,960 |
+| steps x population x batch x seq | 163,840 tokens |
+| wall clock | 10.72 s |
+| throughput | 15,283 tok/s |
+| peak GPU memory | 173.75 MB |
+| scalar payload (32 members) | 384 B (58,297x under dense bf16) |
+| low-rank factors, if shipped | 53,559,296 B (0.42x dense) |
+
+The regeneration block reported `reproducible`, `distinct`, `changesWithStep`,
+`changesWithMember` and `passes` all true at step 0 with population 32, which is
+the whole point of the flag: the population this run trained with can be
+rebuilt from `(seed, step, member)` alone.
+
+Two honest readings:
+
+- **The loss went up** (8.364213 -> 8.676544 over 20 steps). That is a property
+  of the benchmark, not a convergence result: `make_batch()` draws uniform
+  random token ids, so there is no learnable signal in the data and the ES
+  update is fitting noise. The tiny CPU test that asserts loss improvement
+  passes at its own fixed seed, which is luck rather than evidence -- treat any
+  loss number from this tool as a smoke signal only.
+- **Shipping the factors would defeat the purpose.** 53.6 MB of fp32 factors is
+  2.4x the 22.4 MB dense bf16 upload for the same model, so seed regeneration is
+  not an optimisation here; it is what makes a scalar-only upload honest.
+
+The 658M rung is not attempted. 20 steps at 11.2 M parameters already take
+10.7 s on 8 compute units; the production model would not finish a useful run
+on this hardware, and extrapolating from 11 M would be a guess dressed as a
+measurement.
