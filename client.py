@@ -2962,32 +2962,17 @@ def _resolve_inner_lr(target_opt_steps):
     if INNER_LR_RULE == "sqrt": return INNER_BASE_LR * math.sqrt(factor)
     return INNER_BASE_LR * factor
 
-def _accum_steps_for_round(cohort_mode, cc_steps, cc_opt_steps, cc_accum, bs, sl,
-                           cc_tokens_per_step=0):
-    """Micro-batches per optimizer step — tokens/step is the authority, steps are derived.
+def _accum_steps_for_round(cohort_mode, cc_accum, bs, sl):
+    """Micro-batches per optimizer step.
 
-    Token mode (server sends `targetTokensPerStep`, v1's parameterisation): accum is pinned to
-    ~that many tokens per step for *this* client's micro-batch, so a round keeps v1's per-step
-    batch and the optimizer-step count falls out of the round budget.  cc_steps=500, bs=2,
-    sl=2048, tokens/step=131072 -> accum=32 -> ~16 steps, exactly what v1 did.
-
-    Step mode (server sends only `targetOptimizerSteps`) is kept for compatibility; it is the
-    mode that grouped 500 micro-steps into 2 steps of ~1.02 M tokens (accum=250), which measured
-    ~26 % slower per token than v1's batch.  An explicit `targetAccumSteps` overrides both.
+    The server's `targetAccumSteps` is authoritative in a cohort round (32 = v1's batch); the
+    client never re-derives it from a step budget.  Outside cohort mode this is v1's formula.
     """
     mbt = max(1, int(bs) * int(sl))
-    try: opt_steps = int(cc_opt_steps or 0)
-    except (TypeError, ValueError): opt_steps = 0
-    try: tps = int(cc_tokens_per_step or 0)
-    except (TypeError, ValueError): tps = 0
-    if cohort_mode and cc_accum:
-        accum = max(1, int(cc_accum))
-        return min(accum, int(cc_steps)) if cc_steps else accum
-    if cohort_mode and tps > 0:
-        accum = max(1, int(round(tps / mbt)))
-        return min(accum, int(cc_steps)) if cc_steps else accum
-    if cohort_mode and opt_steps > 0 and cc_steps:
-        return max(1, min(int(cc_steps), math.ceil(int(cc_steps) / opt_steps)))
+    try: payload_accum = int(cc_accum or 0)
+    except (TypeError, ValueError): payload_accum = 0
+    if cohort_mode and payload_accum > 0:
+        return max(1, payload_accum)
     return max(1, round(131072 / mbt))
 
 def _build_submit_extra(*, cohort_mode, cc_seed, micro_step, bs, opt_steps_taken, accum,
@@ -3206,23 +3191,12 @@ def _parse_task_meta(md, emit):
     cc_accum = cc_cfg.get("targetAccumSteps") if cohort_mode else None
     cc_autocast = cc_cfg.get("targetAutocast") if cohort_mode else None
     cc_optim = (cc_cfg.get("targetOptimizer") if cohort_mode else None) or "any"
-    # A1: optimizer steps per round, dictated by the server (0/absent = legacy client-derived accum)
-    cc_opt_steps = (cc_cfg.get("targetOptimizerSteps") if cohort_mode else None)
-    try: cc_opt_steps = int(cc_opt_steps or 0)
-    except (TypeError, ValueError): cc_opt_steps = 0
-    if cc_opt_steps < 0: cc_opt_steps = 0
-    # A1 inversion: tokens per optimizer step is v1's knob; when the server sends it, the
-    # optimizer-step count is *derived* from the round budget instead of dictated.
-    cc_tps = (cc_cfg.get("targetTokensPerStep") if cohort_mode else None)
-    try: cc_tps = int(cc_tps or 0)
-    except (TypeError, ValueError): cc_tps = 0
-    if cc_tps < 0: cc_tps = 0
     if cohort_mode and (cc_seed is None or cc_steps is None or cc_bs is None or cc_accum is None or cc_autocast is None):
         emit('log', "⚠️ Cross-check metadata incomplete; disabling cohort mode for this round")
-        cohort_mode = False; cc_seed = cc_steps = cc_bs = cc_accum = cc_autocast = None; cc_opt_steps = 0; cc_tps = 0
-    if cohort_mode: emit('log', f"[COHORT] ENABLED: seed={cc_seed} steps={cc_steps} bs_target={cc_bs} accum={cc_accum} autocast={cc_autocast} optim={cc_optim} optSteps={cc_opt_steps or 'derived'} tokensPerStep={cc_tps or 'unset'}")
+        cohort_mode = False; cc_seed = cc_steps = cc_bs = cc_accum = cc_autocast = None
+    if cohort_mode: emit('log', f"[COHORT] ENABLED: seed={cc_seed} steps={cc_steps} bs_target={cc_bs} accum={cc_accum} autocast={cc_autocast} optim={cc_optim}")
     else: emit('log', "[COHORT] disabled (server will use Krum for this shard)")
-    return tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim, cc_opt_steps, cc_tps
+    return tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim
 
 # ---- v3.1: background uploader (max 1 upload in flight; training continues meanwhile) ----
 _upload_lock = threading.Lock()
@@ -3505,7 +3479,7 @@ def run_single_round_wrapper(srv, at, se, emit):
     model = ob = oe = x = y = lo = iw = ie = iew = ds = ladder = None
     micro_step = 0; lval = 10.0; tt = 0; tid = ""; tried_cpu_fallback = False
     cohort_mode = False; cc_seed = cc_steps = cc_bs = cc_accum = cc_autocast = None; cc_optim = "any"
-    cc_opt_steps = 0; cc_tps = 0
+
     optim_mode = None
     round_loss_sum = 0.0; round_loss_sq_sum = 0.0; round_loss_count = 0
     last_step_loss = None
@@ -3513,7 +3487,7 @@ def run_single_round_wrapper(srv, at, se, emit):
     try:
         emit('log', "Fetching task metadata..."); md = fetch_task_metadata(srv, h, se, emit, hb=hb)
         if md is None: return
-        tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim, cc_opt_steps, cc_tps = _parse_task_meta(md, emit)
+        tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim = _parse_task_meta(md, emit)
         if not tid: return
         if tid == _inflight_task_id and _upload_active():
             emit('log', f"⏳ Task {tid} is the one whose delta is still uploading; waiting for it to land before taking new work.")
@@ -3541,7 +3515,7 @@ def run_single_round_wrapper(srv, at, se, emit):
             emit('log', "Downloading weights from coordinator...")
             md, wb = fetch_task(srv, h, "bf16", se, emit, hb=hb)
             if md is None: return
-            tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim, cc_opt_steps, cc_tps = _parse_task_meta(md, emit)
+            tid, gs, sl, cohort_mode, cc_seed, cc_steps, cc_bs, cc_accum, cc_autocast, cc_optim = _parse_task_meta(md, emit)
             hb.tid = tid
             if not tid: emit('log', "Coordinator task metadata missing taskId."); return
             bbl = EXPECTED_MODEL_SIZE * 2; ebl = EXPECTED_ENGRAM_SIZE * 2
@@ -3573,10 +3547,10 @@ def run_single_round_wrapper(srv, at, se, emit):
                 emit('log', f"[COHORT] unknown targetOptimizer={cc_optim!r} — using native")
 
         # A1: inner optimizer + lr follow the round's optimizer-step budget (server-dictated).
-        inner_opt = _resolve_inner_optim(cc_opt_steps)
-        inner_lr = _resolve_inner_lr(cc_opt_steps)
+        inner_opt = _resolve_inner_optim(0)
+        inner_lr = _resolve_inner_lr(0)
         emit('log', f"[OPTIM] inner={inner_opt} lr={inner_lr:.3e} engram_lr={ENGRAM_LR:.3e} "
-                    f"rule={INNER_LR_RULE} refSteps={INNER_LR_REF_STEPS:g} optSteps={cc_opt_steps or 'legacy'}")
+                    f"rule={INNER_LR_RULE} refSteps={INNER_LR_REF_STEPS:g} accum={cc_accum or 'legacy'}")
 
         # Resolve autocast BEFORE model build so the VRAM planner sees the
         # ACTUAL activation dtype, not the client's native one.
@@ -3632,18 +3606,10 @@ def run_single_round_wrapper(srv, at, se, emit):
         if cohort_mode and cc_bs and bs < int(cc_bs): emit('log', f"[COHORT] OOM at target bs={cc_bs}; aborting round"); return
 
         iew = ie.view(model.engram.table.weight.shape) if (ENGRAM_ACTIVE and ie is not None) else None; ie = None; _trim_heap()
-        as_ = _accum_steps_for_round(cohort_mode, cc_steps, cc_opt_steps, cc_accum, bs, sl,
-                                     cc_tokens_per_step=cc_tps)
-        # The step count is derived from tokens/step, so the lr rule and inner optimizer follow
-        # the *actual* count for this client's batch rather than a dictated one.
-        h_round = max(1, math.ceil(int(cc_steps) / as_)) if (cohort_mode and cc_steps) else 0
-        if h_round and h_round != cc_opt_steps:
-            inner_opt = _resolve_inner_optim(h_round)
-            inner_lr = _resolve_inner_lr(h_round)
-        if cohort_mode:
-            emit('log', f"[STEPS] tokens/step={as_ * bs * sl} accum={as_} steps≈{h_round} "
-                        f"(tokensPerStep={cc_tps or 'unset'}, requested={cc_opt_steps or 'legacy'}, "
-                        f"lr={inner_lr:g}, optim={inner_opt})")
+        as_ = _accum_steps_for_round(cohort_mode, cc_accum, bs, sl)
+        if cohort_mode and cc_steps:
+            emit('log', f"[STEPS] accum={as_} tokens/update={as_ * bs * sl} "
+                        f"steps≈{math.ceil(int(cc_steps) / as_)}")
         ls = 1.0 / as_
         ob, oe = _build_optimizers(model, lr=inner_lr, force_mode=optim_mode,
                                    inner=inner_opt, engram_lr=ENGRAM_LR)
