@@ -50,7 +50,7 @@
 **Disclaimer: This does not mean Crowd-v1 is an intelligent model. It just means it is good at general english** (these benchmarks are generally not hard)
 
 # CrowdGPT v3.5 changelog
-- Crowd-v2 is coming...
+- Crowd-v1.5 is coming...
   
 ## What is CrowdGPT?
 
