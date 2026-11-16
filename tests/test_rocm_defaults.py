@@ -174,5 +174,63 @@ class InstallerRocmIndexTests(unittest.TestCase):
         self.assertTrue(self.installer._rocm_torch_index("garbage").endswith("/rocm6.1"))
 
 
+class RecommendBatchSizeTests(unittest.TestCase):
+    """The ROCm VRAM fraction must not be applied twice on unified memory."""
+
+    def setUp(self):
+        self._saved = (client.train_backend, client.train_device, dict(client.memory_config),
+                       getattr(client.torch, "cuda", None))
+        client.train_device = None
+        self._env = mock.patch.dict("os.environ", {
+            "CROWDGPT_ROCM_VRAM_FRACTION": "0.85",
+            "CROWDGPT_UMA_VRAM_SHARE": "",
+            "CROWDGPT_ROCM_BATCH": "",
+        })
+        self._env.start()
+
+    def tearDown(self):
+        self._env.stop()
+        backend, device, cfg, cuda = self._saved
+        client.train_backend = backend
+        client.train_device = device
+        client.memory_config.clear()
+        client.memory_config.update(cfg)
+        client.torch.cuda = cuda
+
+    def _recommend(self, total_gb, free_gb, ram_gb, integrated, sl, arch="gfx1150"):
+        client.train_backend = "ROCM"
+        client.torch.cuda = _cuda(total_gb, free_gb, integrated=integrated, arch=arch)
+        with mock.patch.dict(sys.modules, {"psutil": _fake_psutil(ram_gb)}):
+            client.auto_detect_vram_budget()
+        return client.recommend_batch_size(sl, force_mode="adamw32")
+
+    def test_unified_memory_is_not_discounted_twice(self):
+        # 30.48 GB RAM * 0.75 - 1.0 margin = 21.86 GB budget. The batch-32
+        # estimate at seq 512 is 18.77 GB; the old 0.85 factor cut the budget to
+        # 18.58 GB and rejected batch 32 by 0.19 GB, even though it measured a
+        # 13.17 GB peak on gfx1150.
+        best = self._recommend(32.0, 31.84, 30.48, True, 512)
+        self.assertIs(client.memory_config.get("unified"), True)
+        self.assertEqual(best, 32)
+    def test_unified_memory_reaches_batch_16_at_max_seq(self):
+        # Seq 2048 estimate for batch 16 is 20.30 GB: inside 21.86, outside the
+        # doubly-discounted 18.58.
+        self.assertEqual(self._recommend(32.0, 31.84, 30.48, True, 2048), 16)
+
+    def test_discrete_card_still_applies_the_vram_fraction(self):
+        # 24 GB card, 23.5 GB free, 64 GB RAM: budget 22.0 GB, fraction -> 18.7,
+        # so the 18.77 GB batch-32 estimate stays rejected. Guards against the
+        # fix loosening discrete cards, where mem_get_info is the only signal.
+        self.assertEqual(self._recommend(24.0, 23.5, 64.0, False, 512, arch="gfx1100"), 16)
+
+    def test_rocm_batch_cap_still_wins(self):
+        client.train_backend = "ROCM"
+        client.torch.cuda = _cuda(32.0, 31.84, integrated=True)
+        with mock.patch.dict(sys.modules, {"psutil": _fake_psutil(30.48)}), \
+                mock.patch.dict("os.environ", {"CROWDGPT_ROCM_BATCH": "2"}):
+            client.auto_detect_vram_budget()
+            self.assertEqual(client.recommend_batch_size(512, force_mode="adamw32"), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
