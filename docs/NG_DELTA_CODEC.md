@@ -125,4 +125,43 @@ individual value can land further from its target even though the mean error fal
 - `ngd1r` is not free: it doubles the payload for a ~1.8× reduction in mean error. Prefer
   `ngd1` unless the coordinator's loss ratchet is actually rejecting rounds on codec
   error.
-- A production delta fixture is still unmeasured; the numbers above are synthetic.
+- The fixture numbers above are synthetic; the real-model numbers are below.
+
+## Measured on the real model (658M base, gfx1150)
+
+Reference checkpoint `Vxtzq/Crowd-v1`, `CROWDGPT_ENGRAM=1`, three rounds of 20
+steps at `bs 4`/`seq 512` (122,880 tokens per arm), same batch plan per arm. The
+coded arm wrote with the real `_write_delta_file_ngd1` and decoded with the real
+server `iter_frames`, so both sides of the wire format are the shipped code.
+
+Dense bf16 per round: 1,315,574,784 B (1,315,574,784 / 325 frames).
+
+| codec | round | bytes | ratio | MAE | relL2 | cosine | enc+dec |
+|---|---|---|---|---|---|---|---|
+| `ngd1` | 1 | 56,746,158 | 23.18x | 2.3751e-04 | 0.5612 | 0.6878 | 4.47 s |
+| `ngd1` | 2 | 55,689,373 | 23.62x | 2.4991e-04 | 0.5377 | 0.7124 | 4.08 s |
+| `ngd1` | 3 | 56,561,216 | 23.26x | 2.3138e-04 | 0.5666 | 0.6830 | 3.46 s |
+| `ngd1r` | 1 | 118,813,924 | 11.07x | 1.3193e-04 | 0.3233 | 0.8707 | 13.82 s |
+| `ngd1r` | 2 | 117,078,758 | 11.24x | 1.3655e-04 | 0.3032 | 0.8930 | 10.50 s |
+| `ngd1r` | 3 | 118,373,954 | 11.11x | 1.2951e-04 | 0.3278 | 0.8614 | 10.35 s |
+
+So on a real delta the residual plane buys **~1.8x lower mean absolute error for
+~2x the bytes**, exactly as the synthetic fixture predicted, and the ratio is
+about **23x** (`ngd1`) or **11x** (`ngd1r`) on this checkpoint rather than the
+31.6x / 15.8x of the fixture.
+
+Held-out loss (`ng-eval-v1`, 8 windows, `seed 0`) against the same dense arm:
+`ngd1` **-0.180 nats**, `ngd1r` **-0.077 nats**, both negative (the coded round
+handoff scored marginally better). **Neither is evidence that the codec is
+harmless at the level the loss gate cares about:** each confidence interval is
+about +-0.16 nats, eight times the 0.02-nat gate, so 8 windows cannot resolve a
+0.02 difference in either direction. Read these as "no detectable codec damage"
+and nothing stronger.
+
+Two honest limits from these runs:
+
+- Round-to-round delta size does not shrink monotonically, because each round
+  here restarts from the freshly decoded weights rather than accumulating a
+  fixed offset.
+- `ngd1r` costs about 10 s of encode+decode per round versus 3-4 s for `ngd1`.
+  On a 500-step round that is noise; on a tiny round it is not.
