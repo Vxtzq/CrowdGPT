@@ -177,6 +177,7 @@ and `--vram-gb` are honored for the checks.
 | `CROWDGPT_CLIENT_LR` | Inner learning rate. Unset = derived from the server's optimizer-step budget |
 | `CROWDGPT_CLIENT_LR_RULE` | `linear` (default), `sqrt` or `none`: how the lr scales with the larger batch a shorter round implies |
 | `CROWDGPT_CLIENT_LR_REF_STEPS` | `16`: the optimizer steps per round the base lr (`CROWDGPT_CLIENT_BASE_LR`, default `1e-4`) was tuned at |
+| — | Micro-batches per optimizer step come from the task payload: `targetTokensPerStep` (default 131072) or an explicit `targetAccumSteps`; the optimizer-step count is derived from the round budget, not dictated |
 | `CROWDGPT_CLIENT_ENGRAM_LR` | Engram learning rate, default `1e-4`. Independent of the base lr |
 | `CROWDGPT_CLIENT_GRAD_CLIP` | Gradient-clip norm for the base model, default `1.0` |
 

@@ -30,25 +30,43 @@ def patched(**globals_):
 
 
 class AccumStepsTest(unittest.TestCase):
-    """A1: the server's optimizer-step budget, not bs*sl, decides the accum count."""
+    """A1 inversion: tokens per optimizer step (or an explicit accum) sets the batch size, and
+    the optimizer-step count is *derived* from the round's micro-step budget."""
 
-    def test_target_optimizer_steps_sets_accum(self):
+    def test_tokens_per_step_sets_accum(self):
         a = client._accum_steps_for_round
-        self.assertEqual(a(True, 500, 2, 32, 2, 2048), 250)   # 2 steps of ~1.02 M tokens
-        self.assertEqual(a(True, 500, 1, 32, 2, 2048), 500)   # 1 step of ~2.05 M tokens
-        self.assertEqual(a(True, 500, 8, 32, 2, 2048), 63)    # ceil(500/8)
-        self.assertEqual(a(True, 500, 16, 32, 2, 2048), 32)   # ceil(500/16) = v1's 32
-        self.assertEqual(a(True, 500, 3, 32, 2, 2048), 167)   # non-divisor rounds up
+        # v1's parameterisation: 131072 tokens per step whatever the client's micro-batch is
+        self.assertEqual(a(True, 500, 0, 0, 2, 2048, 131072), 32)   # ~16 steps of 131k tokens
+        self.assertEqual(a(True, 500, 0, 0, 1, 2048, 131072), 64)   # half the batch, double accum
+        self.assertEqual(a(True, 500, 0, 0, 8, 2048, 131072), 8)    # 4x the batch, quarter accum
+        self.assertEqual(a(True, 125, 0, 0, 2, 2048, 131072), 32)   # a short round keeps the batch
+
+    def test_tokens_per_step_beats_dicted_steps(self):
+        # the failure this fixes: asking for H=2 must not turn 131k tokens/step into 1.02 M
+        self.assertEqual(client._accum_steps_for_round(True, 500, 2, 0, 2, 2048, 131072), 32)
+        self.assertEqual(client._accum_steps_for_round(True, 500, 2, 0, 2, 2048, 0), 250)
+
+    def test_explicit_accum_wins_over_tokens(self):
+        self.assertEqual(client._accum_steps_for_round(True, 500, 2, 8, 2, 2048, 131072), 8)
+
+    def test_step_budget_still_supported(self):
+        a = client._accum_steps_for_round
+        self.assertEqual(a(True, 500, 8, 0, 2, 2048, 0), 63)
+        self.assertEqual(a(True, 500, 16, 0, 2, 2048, 0), 32)
+        self.assertEqual(a(True, 500, 3, 0, 2, 2048, 0), 167)
 
     def test_tokens_per_round_are_unchanged(self):
         for h in (1, 2, 4, 8, 16):
-            accum = client._accum_steps_for_round(True, 500, h, 32, 2, 2048)
+            accum = client._accum_steps_for_round(True, 500, h, 0, 2, 2048, 0)
             # every micro-step is bs*sl tokens and the round always spends 500 of them
             self.assertLessEqual(accum * h, 500 + accum)      # ceil() overshoot < one accum
             self.assertEqual(accum * (h - 1) < 500, True)
 
     def test_optimizer_steps_never_exceed_micro_steps(self):
-        self.assertEqual(client._accum_steps_for_round(True, 4, 99, 32, 2, 2048), 1)
+        a = client._accum_steps_for_round
+        self.assertEqual(a(True, 4, 99, 0, 2, 2048, 0), 1)          # H-first: ceil(4/99) = 1
+        self.assertEqual(a(True, 4, 0, 32, 2, 2048), 4)             # explicit accum clamped
+        self.assertEqual(a(True, 4, 0, 0, 2, 2048, 131072), 4)      # token budget clamped
 
     def test_legacy_paths(self):
         self.assertEqual(client._accum_steps_for_round(True, 500, 0, 32, 2, 2048), 32)
@@ -165,6 +183,14 @@ class TaskMetaTest(unittest.TestCase):
         self.assertEqual(got[9], "any")
         self.assertEqual(got[10], 2)
         self.assertTrue(any("optSteps=2" in m for m in logs))
+
+    def test_parses_tokens_per_step(self):
+        logs = []
+        cc = {"enabled": True, "targetSeed": 1, "targetLocalSteps": 500, "targetBatchSize": 2,
+              "targetAccumSteps": 0, "targetAutocast": "bf16", "targetTokensPerStep": 131072}
+        got = client._parse_task_meta(self._meta(cc), lambda k, m: logs.append(m))
+        self.assertEqual(got[11], 131072)
+        self.assertTrue(any("tokensPerStep=131072" in m for m in logs))
 
     def test_missing_field_is_legacy(self):
         cc = {"enabled": True, "targetSeed": 1, "targetLocalSteps": 500, "targetBatchSize": 2,
