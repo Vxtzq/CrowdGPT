@@ -612,7 +612,11 @@ ENG_NUM_BUCKETS = 227865
 ENGRAM_ACTIVE = os.environ.get("CROWDGPT_ENGRAM", "1") == "1"
 # Opt-in 1-bit delta container (see _ngd1_compress). "off" keeps the dense gzip path; a
 # coordinator only accepts "ngd1" once it ships the decoder, so this stays opt-in.
+# "ngd1r" is the same container with a second, residual bit-plane per block: twice the
+# bytes of "ngd1" and roughly a third of the reconstruction error.
 DELTA_CODEC = (os.environ.get("CROWDGPT_DELTA_CODEC", "off") or "off").strip().lower()
+DELTA_CODECS = ("ngd1", "ngd1r")
+DELTA_CODEC_RESIDUAL = {"ngd1": False, "ngd1r": True}
 
 LOSS_CHUNK = 256; UPLOAD_BUFFER_MIN = 25; ALLOWED_BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128]
 SAFETY_MARGIN_GB = 1.0; ALLOCATOR_RESERVE_GB = 0.5; MIN_HEADROOM_GB = 0.25
@@ -3010,17 +3014,44 @@ def _engram_sparse_delta(table, iew_bf16, frac=None, chunk=32768):
     sv = (table[ai] - ref[ai].float()).to(torch.bfloat16).view(torch.int16).detach().cpu().numpy().view(np.uint16)
     return ai.detach().cpu().numpy().astype(np.uint32), sv
 
-def _ngd1_frame(n, scales_f16, packed_bits):
+_NGD1_FRAME_MAGIC = b"NGD1"
+_NGD1R_FRAME_MAGIC = b"NGD1R"
+_NGD2_CONTAINER_MAGIC = b"NGD2"
+_NGD3_CONTAINER_MAGIC = b"NGD3"
+
+def _ngd1_frame(n, scales_f16, packed_bits, residual_scales_f16=None, residual_bits=None):
     """One NGD1 frame: magic, (count, block) header, fp16 block scales, sign bits, zlib.
 
     ``bitorder="little"`` packing and the 1024-param block size are a wire contract with the
     coordinator's decoder; change both sides together. Kept free of numpy so the layout is
     testable without the training stack.
-    """
-    return zlib.compress(b"NGD1" + struct.pack("<QI", n, 1024) + scales_f16 + packed_bits, 6)
 
-def _ngd1_compress(values):
-    """1-bit signs + per-1024 fp16 mean-abs scale + zlib (server-compatible)."""
+    Passing ``residual_bits`` switches the frame magic to ``NGD1R`` and adds a second bit
+    plane plus its own fp16 scales after the first plane's scales:
+    ``s1 | s2 | rbits | bits``. The coordinator's decoder picks the layout from the magic,
+    so a residual frame is never mistaken for a 1-plane one.
+    """
+    if residual_bits is None:
+        return zlib.compress(_NGD1_FRAME_MAGIC + struct.pack("<QI", n, 1024) + scales_f16 + packed_bits, 6)
+    body = scales_f16 + residual_scales_f16 + residual_bits + packed_bits
+    return zlib.compress(_NGD1R_FRAME_MAGIC + struct.pack("<QI", n, 1024) + body, 6)
+
+def _ngd1_block_stats(matrix, counts):
+    """Per-block mean-abs scale plus the sign bit plane, as the decoder reconstructs it."""
+    scales = (np.abs(matrix).sum(axis=1) / counts).astype(np.float16)
+    bits = (matrix >= 0).astype(np.uint8)
+    packed = np.packbits(bits.reshape(-1), bitorder="little").tobytes()
+    return scales, bits, packed
+
+def _ngd1_compress(values, residual=False):
+    """1-bit signs + per-1024 fp16 mean-abs scale + zlib (server-compatible).
+
+    ``residual=True`` appends a second bit plane describing ``x - decoded(x)``. A per-block
+    scalar correction would be pointless here because the scale already *is* the block mean
+    magnitude, so the mean residual is ~0; the error that matters is the magnitude
+    quantisation, which a second sign plane captures for 2 bits/value instead of a
+    full-precision element-wise residual buffer.
+    """
     arr = np.asarray(values, dtype=np.float32).reshape(-1)
     n = int(arr.size)
     nb = max(1, (n + 1023) // 1024)
@@ -3030,13 +3061,27 @@ def _ngd1_compress(values):
     # The last block is zero-padded: divide by its real length or its scale comes out short.
     counts = np.full(nb, 1024, dtype=np.float64)
     counts[-1] = n - (nb - 1) * 1024
-    scales = (np.abs(matrix).sum(axis=1) / counts).astype(np.float16)
-    bits = (matrix >= 0).astype(np.uint8)
-    packed = np.packbits(bits.reshape(-1), bitorder="little").tobytes()
-    return _ngd1_frame(n, scales.tobytes(), packed)
+    scales, bits, packed = _ngd1_block_stats(matrix, counts)
+    if not residual:
+        return _ngd1_frame(n, scales.tobytes(), packed)
+    recon = np.repeat(scales.astype(np.float32)[:, None], 1024, axis=1)
+    recon *= np.where(bits == 1, np.float32(1.0), np.float32(-1.0))
+    resid = matrix - recon
+    del recon
+    if n < nb * 1024:
+        # Zero padding reconstructs to +/-scale rather than to zero, so it would
+        # otherwise dominate the residual scale of the final block.
+        resid = resid.reshape(-1)
+        resid[n:] = 0.0
+        resid = resid.reshape(nb, 1024)
+    rscales, _, rpacked = _ngd1_block_stats(resid, counts)
+    return _ngd1_frame(n, scales.tobytes(), packed, rscales.tobytes(), rpacked)
 
-def _write_delta_file_ngd1(path, header_bytes, model, iw_bf16, piece=4_000_000):
-    """Framed 1-bit container (NGD2). Only used when no engram tail is present."""
+def _write_delta_file_ngd1(path, header_bytes, model, iw_bf16, piece=4_000_000, residual=None):
+    """Framed bit-plane container (NGD2 for one plane, NGD3 for two). No engram tail."""
+    if residual is None:
+        residual = DELTA_CODEC_RESIDUAL.get(DELTA_CODEC, False)
+    container = _NGD3_CONTAINER_MAGIC if residual else _NGD2_CONTAINER_MAGIC
     frames = []
     total = 0
     for name, p in model.named_parameters():
@@ -3045,7 +3090,7 @@ def _write_delta_file_ngd1(path, header_bytes, model, iw_bf16, piece=4_000_000):
         for i in range(0, size, piece):
             cur = flat[i:i + piece].to('cpu', torch.float32)
             delta = (cur - iw_bf16[total:total + cur.numel()].float()).numpy()
-            frames.append(_ngd1_compress(delta))
+            frames.append(_ngd1_compress(delta, residual=residual))
             total += int(cur.numel())
             del cur, delta
         flat = None
@@ -3054,7 +3099,7 @@ def _write_delta_file_ngd1(path, header_bytes, model, iw_bf16, piece=4_000_000):
         raise RuntimeError(f"ngd1 delta size mismatch: {total} vs {iw_bf16.numel()}")
     with open(path, 'wb') as f:
         f.write(header_bytes)
-        f.write(b"NGD2" + struct.pack("<QI", total, len(frames)))
+        f.write(container + struct.pack("<QI", total, len(frames)))
         for frame in frames:
             f.write(struct.pack("<I", len(frame)))
             f.write(frame)
@@ -3643,13 +3688,14 @@ def run_single_round_wrapper(srv, at, se, emit):
             "lossStd": float(fl_std),
             "lossSamples": int(round_loss_count),
         }
-        _codec = "ngd1" if (DELTA_CODEC == "ngd1" and not has_engram) else "off"
+        _codec = DELTA_CODEC if (DELTA_CODEC in DELTA_CODECS and not has_engram) else "off"
         pl = json.dumps({"taskId": tid, "loss": fl, "localSteps": micro_step, "tokensProcessed": tt, "loraRank": 0, "isDelta": True, "weightFormat": "bf16", "hasEngram": has_engram, "engramSparseCount": engram_sparse_count, "deltaCodec": _codec, **submit_extra}).encode()
         delta_fd, delta_path = tempfile.mkstemp(prefix="delta-", suffix=".gz", dir=str(CHECKPOINT_DIR)); os.close(delta_fd)
         try:
-            if _codec == "ngd1":
-                delta_size = _write_delta_file_ngd1(delta_path, struct.pack('<I', len(pl)) + pl, model, iw)
-                emit('log', f"[CODEC] ngd1 payload {delta_size / (1024 * 1024):.1f} MB")
+            if _codec in DELTA_CODECS:
+                residual = DELTA_CODEC_RESIDUAL.get(_codec, False)
+                delta_size = _write_delta_file_ngd1(delta_path, struct.pack('<I', len(pl)) + pl, model, iw, residual=residual)
+                emit('log', f"[CODEC] {_codec} payload {delta_size / (1024 * 1024):.1f} MB")
             else:
                 delta_size = _write_delta_file(delta_path, struct.pack('<I', len(pl)) + pl, model, iw, (si, sv))
         except BaseException:
