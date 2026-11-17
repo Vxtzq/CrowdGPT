@@ -33,6 +33,11 @@
   <strong>The best 0$ AI.</strong>
 </p>
 
+# Crowd-v1 training run finished
+Thanks for contributing
+A weight decay too high made the model utilise only ~4/24 layers. This will be fixed in next iterations (starting soon)
+This means Crowd-v1 is very sub-optimal.
+
 # Crowd-v1 Benchmarks
 <p align="center">
   <a href="https://crowdgpt.net">
