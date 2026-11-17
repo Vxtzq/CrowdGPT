@@ -59,6 +59,25 @@ Cross-device agreement is <=0.002 on every arm that ran on both.
 7. **muP is not required for depth scaling** at this scale: the LR optimum is 1e-2 at
    both 4 and 12 layers under stock init. Its width-transfer claim was not tested.
 
+## ROCm repeat of the last two bites
+
+Both were re-run on the second machine (AMD Radeon 890M, gfx1150, ROCm 7.2,
+torch 2.14.1+rocm7.2) so that every row in the table above has both-device
+evidence.
+
+**muP / LR transfer** (`mup_bite.py`): under stock init the best learning rate is
+`1e-2` at both depths (L=4 6.9361, L=12 6.9299); under the muP residual scaling it
+is `3e-2` at both (L=4 6.9420, L=12 6.9076). That is the same structure as CUDA
+(1e-2 at both depths under std), so depth LR transfer holds on both devices and
+muP shows no advantage on this axis either.
+
+**Data ablation** (`data_ablation.py`): duplicate rate is again **0.00 %** (2 of
+453,128 chunks) and deduplication makes held-out *worse* by +0.0569 (seed 0) and
++0.0940 (seed 1) -- the same direction as CUDA (+0.023 / +0.102). A duplicate rate
+is a property of the corpus, and the raw-vs-dedup delta is smaller than the seed
+spread, so this is seed noise rather than a device effect. Exact dedup is not a
+lever on this corpus on either machine.
+
 ## Limits of this evidence
 
 Tiny 1.32 M-param model, 8 M tokens per arm, one seed per arm (two for the data
