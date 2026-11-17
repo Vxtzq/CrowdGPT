@@ -69,6 +69,10 @@ def _load_client():
     root = logging.getLogger(); saved_handlers, saved_level = list(root.handlers), root.level
     missing = object()  # distinguishes "no entry" from an entry whose value is None (a blocked import)
     saved_modules = {name: sys.modules.get(name, missing) for name in _STUBBED}
+    # Anything client-local imported for the first time inside the stub window
+    # (crowd_solo, crowd_jepa, anything under tmp) is bound to the stubs for
+    # good; restoring the nine stubbed names cannot fix that.
+    loaded_before = set(sys.modules)
     _install_stubs()
     spec = importlib.util.spec_from_file_location("crowdgpt_client_under_test", Path(tmp) / "client.py")
     mod = importlib.util.module_from_spec(spec)
@@ -90,6 +94,12 @@ def _load_client():
         for name, orig in saved_modules.items():                          # keep the stubs private to this module
             if orig is missing: sys.modules.pop(name, None)
             else: sys.modules[name] = orig
+        for name in list(sys.modules):                                    # drop what the window imported
+            if name in loaded_before or name in saved_modules:
+                continue
+            mod_file = str(getattr(sys.modules[name], "__file__", "") or "")
+            if name in ("crowd_solo", "crowd_jepa") or mod_file.startswith(tmp):
+                sys.modules.pop(name, None)
     return mod, tmp
 
 

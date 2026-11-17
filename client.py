@@ -100,6 +100,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import requests
 from torch.utils.checkpoint import checkpoint
+from crowd_solo import build_solo_heads, is_uploaded_param, solo_step, split_layers
 import http.client
 from requests.exceptions import ChunkedEncodingError
 import gzip
@@ -615,6 +616,11 @@ ENGRAM_ACTIVE = os.environ.get("CROWDGPT_ENGRAM", "1") == "1"
 DELTA_CODEC = (os.environ.get("CROWDGPT_DELTA_CODEC", "off") or "off").strip().lower()
 
 LOSS_CHUNK = 256; UPLOAD_BUFFER_MIN = 25; ALLOWED_BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128]
+# SOLO (arXiv:2609.35440v1) replaces the single whole-trunk backward with K local
+# losses that each see a read-only copy of the terminal readout. Off by default so
+# the shipped backprop path is unchanged; the local heads never leave the client.
+SOLO_ACTIVE = os.environ.get("CROWDGPT_SOLO", "0") == "1"
+SOLO_MODULES = int(os.environ.get("CROWDGPT_SOLO_MODULES", "4") or "4")
 SAFETY_MARGIN_GB = 1.0; ALLOCATOR_RESERVE_GB = 0.5; MIN_HEADROOM_GB = 0.25
 # The planner's byte estimate is tight enough that a 512 MiB allocation can
 # still fail on a 12 GB card. Keep a full gigabyte out of placement decisions.
@@ -2017,7 +2023,8 @@ class SotaGPT(nn.Module):
         if dtype is not None and w.dtype != dtype: return w.to(dtype)
         return w
 
-    def forward_features(self, idx, use_chunked=True, use_ckpt=True, stream_dtype=None, head_w=None):
+    def embed(self, idx, head_w=None):
+        """Embedding lookup plus the engram contribution: the input to block 0."""
         dev = self.main_device; wdev = self.wte.weight.device
         if head_w is not None and not self.head_on_gpu and head_w.device == dev:
             x = F.embedding(idx.to(dev), head_w)
@@ -2029,9 +2036,22 @@ class SotaGPT(nn.Module):
             eng = self.engram(idx)
             if eng.dtype != x.dtype: eng = eng.to(x.dtype)
             x = x + eng
+        return x
+
+    def run_blocks(self, x, start=0, stop=None, use_chunked=True, use_ckpt=True, stream_dtype=None):
+        """Run blocks[start:stop].
+
+        This is the module boundary SOLO needs: a module is a contiguous depth
+        interval, so it can be run (and its activations freed) on its own. The
+        placement handling is the same as the whole-trunk path, so a module may
+        still span GPU and streamed CPU-resident blocks.
+        """
+        dev = self.main_device
         if dev.type == 'cpu': cos, sin = self.freqs_cos_cpu, self.freqs_sin_cpu
         else: cos, sin = self.freqs_cos_main, self.freqs_sin_main
-        for i, block in enumerate(self.blocks):
+        stop = len(self.blocks) if stop is None else min(int(stop), len(self.blocks))
+        for i in range(max(0, int(start)), stop):
+            block = self.blocks[i]
             if dev.type == 'cpu' or i in self.gpu_layer_set:
                 if use_ckpt: x = checkpoint(block, x, cos, sin, use_chunked, use_reentrant=False, preserve_rng_state=False)
                 else: x = block(x, cos, sin, use_chunked)
@@ -2041,14 +2061,18 @@ class SotaGPT(nn.Module):
                     x = checkpoint(_streamed_block_cached, block, params, dev, stream_dtype, x, cos, sin, use_chunked, use_reentrant=False, preserve_rng_state=False)
                 else:
                     x = checkpoint(_streamed_block, block, dev, stream_dtype, x, cos, sin, use_chunked, use_reentrant=False, preserve_rng_state=False)
-        return self.ln_f(x)
+        return x
+
+    def forward_features(self, idx, use_chunked=True, use_ckpt=True, stream_dtype=None, head_w=None):
+        x = self.embed(idx, head_w=head_w)
+        return self.ln_f(self.run_blocks(x, use_chunked=use_chunked, use_ckpt=use_ckpt, stream_dtype=stream_dtype))
 
     def forward(self, idx, use_chunked=True, use_ckpt=True): return F.linear(self.forward_features(idx, use_chunked, use_ckpt), self.head_weight())
 
     def load_base_weights(self, fw):
         ft = torch.from_numpy(fw) if not isinstance(fw, torch.Tensor) else fw; o = 0
         for n, p in self.named_parameters():
-            if not n.startswith('engram.'):
+            if is_uploaded_param(n):
                 s = 1
                 for d in p.shape: s *= int(d)
                 src = ft[o:o + s].view(p.shape)
@@ -2684,6 +2708,49 @@ def _fwl(m, x, y, sl, ua, ad, ls=1.0, preview=False, loss_chunk=LOSS_CHUNK):
         except Exception: cards = []
     return lo * ls, cards
 
+def _attach_solo_heads(model, emit=None):
+    """Give the model per-module SOLO heads and the layer split they own."""
+    if not SOLO_ACTIVE: return None
+    splits = split_layers(len(model.blocks), SOLO_MODULES)
+    if len(splits) < 2:
+        if emit: emit('log', "SOLO needs at least 2 modules; falling back to backprop.")
+        return None
+    model.solo_splits = splits
+    model.solo_heads = build_solo_heads(DIM, VOCAB_SIZE, len(splits)).to(model.main_device)
+    if emit:
+        emit('log', "🧩 SOLO active: %d modules (%s blocks), terminal readout shared. Local heads are client-local."
+             % (len(splits), ", ".join("%d-%d" % (lo, hi - 1) for lo, hi in splits)))
+    return splits
+
+
+def _solo_step_safe(model, x, y, sl, ua, ad, ls, ladder, emit):
+    """SOLO counterpart of ``_train_step_safe``: same OOM ladder, K local backwards."""
+    while True:
+        try:
+            lo, _ = solo_step(model, x, y, splits=model.solo_splits, loss_scale=ls,
+                              loss_chunk=ladder.loss_chunk, use_ckpt=bool(getattr(model, 'use_ckpt', True)),
+                              use_autocast=bool(ua), autocast_dtype=ad)
+            return lo, []
+        except RuntimeError as e:
+            if not _is_oom(e): raise
+            emit('log', "💥 OOM detected: %s" % str(e).split('\n')[0][:160])
+            _clear_accel_cache(model.accel_device)
+            if not getattr(model, 'use_ckpt', True):
+                model.use_ckpt = True
+                for p_ in model.parameters(): p_.grad = None
+                emit('log', "↘️ Retrying with activation checkpointing.")
+                continue
+            for p_ in model.parameters(): p_.grad = None
+            if not ladder.step_down(emit): raise
+
+
+def _train_step(model, x, y, sl, ua, ad, ls, preview, ladder, emit):
+    """One micro-step: SOLO when heads are attached, backprop otherwise."""
+    if getattr(model, 'solo_heads', None) is not None:
+        return _solo_step_safe(model, x, y, sl, ua, ad, ls, ladder, emit)
+    return _train_step_safe(model, x, y, sl, ua, ad, ls, preview=preview, ladder=ladder, emit=emit)
+
+
 def _is_oom(e):
     if isinstance(e, torch.cuda.OutOfMemoryError): return True
     if isinstance(e, RuntimeError): return "out of memory" in str(e).lower()
@@ -2892,6 +2959,7 @@ def _build_model(bn, device, iw, ie, emit, bs=1, sl=MAX_SEQ_LEN,
                     force_head_cpu=force_head_cpu)
     model.engram.table.to(model.engram_device); model.load_base_weights(iw)
     if ENGRAM_ACTIVE and ie is not None: model.engram.table.weight.data.copy_(ie.view(model.engram.table.weight.shape))
+    _attach_solo_heads(model, emit)
     model.engram.table.to(model.engram_device); model.train(); return model
 
 class _MultiOpt:
@@ -2943,7 +3011,7 @@ def _bf16_from_bytes(buf, offset, nbytes):
 def _write_base_delta_bf16(gz, model, iw_bf16, piece=16 * 1024 * 1024):
     o = 0
     for n, p in model.named_parameters():
-        if n.startswith('engram.'): continue
+        if not is_uploaded_param(n): continue
         s = p.numel(); flat = p.detach().reshape(-1)
         for i in range(0, s, piece):
             cur = flat[i:i + piece].to('cpu', torch.float32)
@@ -3040,7 +3108,7 @@ def _write_delta_file_ngd1(path, header_bytes, model, iw_bf16, piece=4_000_000):
     frames = []
     total = 0
     for name, p in model.named_parameters():
-        if name.startswith('engram.'): continue
+        if not is_uploaded_param(name): continue
         flat = p.detach().reshape(-1); size = flat.numel()
         for i in range(0, size, piece):
             cur = flat[i:i + piece].to('cpu', torch.float32)
@@ -3535,7 +3603,7 @@ def run_single_round_wrapper(srv, at, se, emit):
                 x, y = ds.get_batch(bs, seed=(abs(hash("cal")) % 10000) + micro_step)
                 step_x, step_y, step_sl = _cpu_calibration_batch(x, y, sl) if model.main_device.type == 'cpu' else (x, y, sl)
                 want_preview = ((micro_step + 1) % PREVIEW_EVERY == 0) if train_backend == 'ROCM' else ((micro_step == 0) or ((micro_step + 1) % PREVIEW_EVERY == 0))
-                try: lo, cards = _train_step_safe(model, step_x, step_y, step_sl, ua, ad, ls, preview=want_preview, ladder=ladder, emit=emit)
+                try: lo, cards = _train_step(model, step_x, step_y, step_sl, ua, ad, ls, preview=want_preview, ladder=ladder, emit=emit)
                 except CohortAbort: return
                 lval = float(lo.item()); micro_step += 1
                 _unscaled = lval * as_
@@ -3580,7 +3648,7 @@ def run_single_round_wrapper(srv, at, se, emit):
                 sd = (int(cc_seed) * 100_003 + micro_step * 1009) & 0xFFFFFFFF if cohort_mode else (abs(hash("t")) % 10000) + micro_step * 1000 + mi
                 x, y = ds.get_batch(bs, seed=sd)
                 want_preview = (model.main_device.type != 'cpu') and ((micro_step == 0) or ((micro_step + 1) % PREVIEW_EVERY == 0))
-                try: lo, cards = _train_step_safe(model, x, y, sl, ua, ad, ls, preview=want_preview, ladder=ladder, emit=emit)
+                try: lo, cards = _train_step(model, x, y, sl, ua, ad, ls, preview=want_preview, ladder=ladder, emit=emit)
                 except CohortAbort: return
                 lval = float(lo.item()) * as_
                 als += lval; tt += x.numel(); accum_count += 1; micro_step += 1
