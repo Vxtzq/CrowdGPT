@@ -100,7 +100,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import requests
 from torch.utils.checkpoint import checkpoint
-from crowd_solo import build_solo_heads, is_uploaded_param, solo_step, split_layers
+from crowd_solo import (build_solo_heads, is_uploaded_param, solo_module_step, solo_step,
+                        split_layers, uploaded_for_module)
 import http.client
 from requests.exceptions import ChunkedEncodingError
 import gzip
@@ -621,6 +622,10 @@ LOSS_CHUNK = 256; UPLOAD_BUFFER_MIN = 25; ALLOWED_BATCH_SIZES = [1, 2, 4, 8, 16,
 # the shipped backprop path is unchanged; the local heads never leave the client.
 SOLO_ACTIVE = os.environ.get("CROWDGPT_SOLO", "0") == "1"
 SOLO_MODULES = int(os.environ.get("CROWDGPT_SOLO_MODULES", "4") or "4")
+# Which module this peer trains. -1 keeps the whole-model behaviour (every module
+# stepped locally in one process, useful for a single-box run); 0..K-1 makes the
+# peer a module-parallel replica that only trains and uploads its own chunk.
+SOLO_MODULE = int(os.environ.get("CROWDGPT_SOLO_MODULE", "-1") or "-1")
 SAFETY_MARGIN_GB = 1.0; ALLOCATOR_RESERVE_GB = 0.5; MIN_HEADROOM_GB = 0.25
 # The planner's byte estimate is tight enough that a 512 MiB allocation can
 # still fail on a 12 GB card. Keep a full gigabyte out of placement decisions.
@@ -2708,6 +2713,12 @@ def _fwl(m, x, y, sl, ua, ad, ls=1.0, preview=False, loss_chunk=LOSS_CHUNK):
         except Exception: cards = []
     return lo * ls, cards
 
+def _upload_allowed(model, name):
+    """Whether this peer may submit ``name`` given the module it trains."""
+    return is_uploaded_param(name) and uploaded_for_module(
+        name, getattr(model, 'solo_splits', None), getattr(model, 'solo_module', None))
+
+
 def _attach_solo_heads(model, emit=None):
     """Give the model per-module SOLO heads and the layer split they own."""
     if not SOLO_ACTIVE: return None
@@ -2717,9 +2728,15 @@ def _attach_solo_heads(model, emit=None):
         return None
     model.solo_splits = splits
     model.solo_heads = build_solo_heads(DIM, VOCAB_SIZE, len(splits)).to(model.main_device)
+    model.solo_module = SOLO_MODULE if 0 <= SOLO_MODULE < len(splits) else None
     if emit:
         emit('log', "🧩 SOLO active: %d modules (%s blocks), terminal readout shared. Local heads are client-local."
              % (len(splits), ", ".join("%d-%d" % (lo, hi - 1) for lo, hi in splits)))
+        if model.solo_module is not None:
+            lo, hi = splits[model.solo_module]
+            emit('log', "🎯 This peer trains module %d only (blocks %d-%d)%s."
+                 % (model.solo_module, lo, hi - 1,
+                    " including the shared readout" if model.solo_module == len(splits) - 1 else ""))
     return splits
 
 
@@ -2727,9 +2744,17 @@ def _solo_step_safe(model, x, y, sl, ua, ad, ls, ladder, emit):
     """SOLO counterpart of ``_train_step_safe``: same OOM ladder, K local backwards."""
     while True:
         try:
-            lo, _ = solo_step(model, x, y, splits=model.solo_splits, loss_scale=ls,
-                              loss_chunk=ladder.loss_chunk, use_ckpt=bool(getattr(model, 'use_ckpt', True)),
-                              use_autocast=bool(ua), autocast_dtype=ad)
+            if getattr(model, 'solo_module', None) is not None:
+                # Module-parallel replica: a redundant forward over the prefix under
+                # no_grad, then forward+backward inside this peer's own module only.
+                lo, _ = solo_module_step(model, x, y, splits=model.solo_splits,
+                                         module=model.solo_module, loss_scale=ls,
+                                         loss_chunk=ladder.loss_chunk,
+                                         use_ckpt=bool(getattr(model, 'use_ckpt', True)))
+            else:
+                lo, _ = solo_step(model, x, y, splits=model.solo_splits, loss_scale=ls,
+                                  loss_chunk=ladder.loss_chunk, use_ckpt=bool(getattr(model, 'use_ckpt', True)),
+                                  use_autocast=bool(ua), autocast_dtype=ad)
             return lo, []
         except RuntimeError as e:
             if not _is_oom(e): raise
@@ -3008,11 +3033,27 @@ def _bf16_from_bytes(buf, offset, nbytes):
     a = np.frombuffer(buf, dtype=np.int16, count=nbytes // 2, offset=offset).copy()
     return torch.from_numpy(a).view(torch.bfloat16)
 
+def _write_module_zeros(gz, count, piece):
+    """Write ``count`` zero bf16 values, so a module-scoped delta keeps the full layout."""
+    block = torch.zeros(min(piece, count), dtype=torch.bfloat16).view(torch.int16).numpy()
+    done = 0
+    while done < count:
+        k = min(piece, count - done)
+        gz.write(memoryview(block[:k]).cast('B'))
+        done += k
+
+
 def _write_base_delta_bf16(gz, model, iw_bf16, piece=16 * 1024 * 1024):
     o = 0
     for n, p in model.named_parameters():
         if not is_uploaded_param(n): continue
-        s = p.numel(); flat = p.detach().reshape(-1)
+        s = p.numel()
+        if not _upload_allowed(model, n):
+            # A module-parallel peer trains one module but the server still reads a
+            # single flat vector for the whole model, so pad with zeros rather than
+            # shortening the file. Still advances o or every later tensor misaligns.
+            _write_module_zeros(gz, s, piece); o += s; continue
+        flat = p.detach().reshape(-1)
         for i in range(0, s, piece):
             cur = flat[i:i + piece].to('cpu', torch.float32)
             d = (cur - iw_bf16[o + i:o + i + cur.numel()].float()).to(torch.bfloat16)
@@ -3109,7 +3150,16 @@ def _write_delta_file_ngd1(path, header_bytes, model, iw_bf16, piece=4_000_000):
     total = 0
     for name, p in model.named_parameters():
         if not is_uploaded_param(name): continue
-        flat = p.detach().reshape(-1); size = flat.numel()
+        size = p.numel()
+        if not _upload_allowed(model, name):
+            # Zero frames keep the container's total equal to the full model while
+            # this peer only ever contributes its own module.
+            for i in range(0, size, piece):
+                k = min(piece, size - i)
+                frames.append(_ngd1_compress(np.zeros(k, dtype=np.float32)))
+                total += k
+            continue
+        flat = p.detach().reshape(-1)
         for i in range(0, size, piece):
             cur = flat[i:i + piece].to('cpu', torch.float32)
             delta = (cur - iw_bf16[total:total + cur.numel()].float()).numpy()
@@ -3710,6 +3760,13 @@ def run_single_round_wrapper(srv, at, se, emit):
             "lastLoss": float(last_step_loss) if last_step_loss is not None else None,
             "lossStd": float(fl_std),
             "lossSamples": int(round_loss_count),
+            # SOLO module identity: which module this peer trained and the split it
+            # was working from. The server checks the submitted names against it
+            # (`check_module_scope`) instead of inferring scope from the tensor list.
+            "soloModules": len(model.solo_splits) if getattr(model, 'solo_splits', None) else None,
+            "soloModule": getattr(model, 'solo_module', None),
+            "soloSplit": [list(map(int, pair)) for pair in model.solo_splits]
+                         if getattr(model, 'solo_splits', None) else None,
         }
         _codec = "ngd1" if (DELTA_CODEC == "ngd1" and not has_engram) else "off"
         pl = json.dumps({"taskId": tid, "loss": fl, "localSteps": micro_step, "tokensProcessed": tt, "loraRank": 0, "isDelta": True, "weightFormat": "bf16", "hasEngram": has_engram, "engramSparseCount": engram_sparse_count, "deltaCodec": _codec, **submit_extra}).encode()
@@ -4620,6 +4677,8 @@ def parse_args():
     p.add_argument("--no-tokenizer", action="store_true")
     p.add_argument("--no-update", action="store_true")
     p.add_argument("--no-engram", action="store_true")
+    p.add_argument("--solo-module", type=int, default=-1,
+                   help="train only this SOLO module (0..K-1); -1 trains every module locally")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--debug", action="store_true")
     p.add_argument("--tui", action="store_true", help="force the full-screen terminal dashboard in headless mode")
@@ -4628,6 +4687,13 @@ def parse_args():
     p.add_argument("--json", action="store_true", help="with --doctor, print the report as JSON")
     p.add_argument("--version", action="version", version=f"crowdgpt-client {CLIENT_VERSION}")
     args = p.parse_args()
+    if getattr(args, "solo_module", -1) >= 0:
+        # A module-parallel peer trains one chunk; SOLO_* are module globals read at
+        # attach time, so the flag has to land before the model is built.
+        os.environ["CROWDGPT_SOLO"] = "1"
+        os.environ["CROWDGPT_SOLO_MODULE"] = str(args.solo_module)
+        globals()["SOLO_ACTIVE"] = True
+        globals()["SOLO_MODULE"] = args.solo_module
     if args.json and not args.doctor:
         p.error("--json requires --doctor")
     return args

@@ -159,7 +159,7 @@ def test_local_gradient_equals_backprop_through_the_same_readout():
 
 
 def test_solo_step_trains_every_module_and_every_head():
-    model = _FakeModel()
+    model = _FakeModel(modules=2)
     x, y = _batch()
     loss, local = solo_step(model, x, y, splits=model.solo_splits)
 
@@ -176,7 +176,7 @@ def test_solo_step_trains_every_module_and_every_head():
 
 def test_module_gradients_do_not_cross_the_boundary():
     """Module 0's gradient must be the one its own local loss produces alone."""
-    model = _FakeModel()
+    model = _FakeModel(modules=2)
     x, y = _batch()
     solo_step(model, x, y, splits=model.solo_splits)
     got = model.blocks[0].lin.weight.grad.clone()
@@ -206,7 +206,7 @@ def test_a_local_loss_cannot_move_the_shared_readout():
 
 
 def test_only_the_terminal_loss_writes_the_readout():
-    model = _FakeModel()
+    model = _FakeModel(modules=2)
     x, y = _batch()
     solo_step(model, x, y, splits=model.solo_splits)
     assert model.lm_head.weight.grad is not None
@@ -230,7 +230,7 @@ def test_solo_heads_are_client_local():
 
 
 def test_solo_step_requires_heads_and_two_modules():
-    model = _FakeModel()
+    model = _FakeModel(modules=2)
     x, y = _batch()
     with pytest.raises(ValueError):
         solo_step(model, x, y, splits=[(0, LAYERS)])
@@ -241,7 +241,7 @@ def test_solo_step_requires_heads_and_two_modules():
 
 
 def test_loss_scale_scales_both_local_and_terminal_gradients():
-    model = _FakeModel()
+    model = _FakeModel(modules=2)
     x, y = _batch()
     solo_step(model, x, y, splits=model.solo_splits, loss_scale=1.0)
     full = model.blocks[-1].lin.weight.grad.clone()
@@ -250,3 +250,67 @@ def test_loss_scale_scales_both_local_and_terminal_gradients():
     solo_step(model, x, y, splits=model.solo_splits, loss_scale=0.5)
     half = model.blocks[-1].lin.weight.grad
     assert torch.allclose(half, full * 0.5, atol=1e-7)
+
+
+# --- module-parallel replicas -------------------------------------------------
+
+def test_uploaded_for_module_keeps_only_its_own_blocks():
+    from crowd_solo import uploaded_for_module
+
+    splits = [(0, 6), (6, 12), (12, 18), (18, 24)]
+    assert uploaded_for_module("blocks.3.mlp.down.weight", splits, 0)
+    assert not uploaded_for_module("blocks.7.mlp.down.weight", splits, 0)
+    assert uploaded_for_module("blocks.7.mlp.down.weight", splits, 1)
+    assert not uploaded_for_module("blocks.23.attn.qkv.weight", splits, 2)
+
+
+def test_uploaded_for_module_gives_the_readout_to_the_terminal_module():
+    from crowd_solo import uploaded_for_module
+
+    splits = [(0, 6), (6, 12)]
+    for name in ("lm_head.weight", "wte.weight", "ln_f.weight"):
+        assert uploaded_for_module(name, splits, 1), name
+        assert not uploaded_for_module(name, splits, 0), name
+
+
+def test_uploaded_for_module_never_ships_heads_or_engrams():
+    from crowd_solo import uploaded_for_module
+
+    splits = [(0, 6), (6, 12)]
+    for module in (0, 1):
+        assert not uploaded_for_module("solo_heads.0.phi.weight", splits, module)
+        assert not uploaded_for_module("engram.table.weight", splits, module)
+
+
+def test_uploaded_for_module_without_a_module_is_the_old_behaviour():
+    from crowd_solo import uploaded_for_module
+
+    assert uploaded_for_module("blocks.19.attn.qkv.weight", None, None)
+    assert uploaded_for_module("lm_head.weight", None, None)
+
+
+def test_solo_module_step_rejects_a_bad_module_index():
+    import pytest
+
+    from crowd_solo import solo_module_step
+
+    model = _FakeModel(modules=2)
+    x, y = _batch(2, 4)
+    with pytest.raises(ValueError):
+        solo_module_step(model, x, y, splits=model.solo_splits, module=2)
+    with pytest.raises(ValueError):
+        solo_module_step(model, x, y, splits=model.solo_splits, module=-1)
+
+
+def test_solo_module_step_trains_one_module_and_skips_the_rest():
+    from crowd_solo import solo_module_step
+
+    model = _FakeModel(modules=2)
+    x, y = _batch(2, 4)
+    loss, local = solo_module_step(model, x, y, splits=model.solo_splits, module=1)
+    assert loss.item() > 0 and len(local) == 1
+    grads = {n: p.grad is not None for n, p in model.named_parameters()}
+    assert grads["blocks.2.lin.weight"] and grads["blocks.3.lin.weight"]
+    assert not grads["blocks.0.lin.weight"] and not grads["blocks.1.lin.weight"]
+    assert grads["lm_head.weight"]          # terminal module owns the readout
+    assert not any(k.startswith("solo_heads.") and v for k, v in grads.items())

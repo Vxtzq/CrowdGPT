@@ -248,3 +248,66 @@ def reference_local_gradient(
     loss = chunked_solo_ce(xs, w, ys)
     loss.backward()
     return xs.grad
+
+
+def solo_module_step(model, x, y, *, splits, module, loss_scale=1.0, loss_chunk=256,
+                     use_ckpt=True, stream_dtype=None):
+    """One module-parallel step: a peer trains only module ``module`` of ``splits``.
+
+    This is the shape Crowd actually runs, because its peers are independent
+    replicas rather than stages of one co-located pipeline. A peer spends a
+    redundant forward over the blocks before its own module (under ``no_grad``,
+    so no activations are kept), then a normal forward+backward inside the
+    module it owns. Nothing crosses peers: no activation pipe, no gradient
+    return, no barrier. That redundancy is what buys the throughput -- the
+    prefix is one forward instead of a full forward+backward.
+    """
+    heads = getattr(model, "solo_heads", None)
+    if heads is None:
+        raise RuntimeError("model has no solo_heads; build them before stepping")
+    if not 0 <= int(module) < len(splits):
+        raise ValueError(f"module {module} is outside {len(splits)} splits")
+    module = int(module)
+    terminal = module == len(splits) - 1
+    if not terminal and str(module) not in heads:
+        raise ValueError(f"no solo head for module {module}")
+    lo, hi = splits[module]
+    with torch.no_grad():
+        h = model.embed(x)
+        if lo > 0:
+            h = model.run_blocks(h, 0, lo, use_ckpt=False, stream_dtype=stream_dtype)
+    h = h.detach()
+    h = model.run_blocks(h, lo, hi, use_ckpt=use_ckpt, stream_dtype=stream_dtype)
+    ydev = y.to(h.device)
+    if terminal:
+        loss = chunked_solo_ce(model.ln_f(h), model.head_weight(stream_dtype), ydev,
+                               pos_step=loss_chunk)
+    else:
+        head = heads[str(module)]
+        wbar = model.head_weight(stream_dtype).detach()
+        loss = chunked_solo_ce(head.project(h), wbar, ydev, tau=head.tau, bias=head.bias,
+                               pos_step=loss_chunk)
+    (loss * loss_scale).backward()
+    return (loss * loss_scale).detach(), [float(loss.detach())]
+
+
+def uploaded_for_module(name, splits, module):
+    """Whether a peer training ``module`` may upload ``name``.
+
+    A module owns its own blocks and nothing else; the terminal module also owns
+    the readout, the final norm and the embedding, because those are what its
+    true loss actually moves. ``splits``/``module`` of ``None`` means the peer is
+    training the whole model, so the answer is the legacy one.
+    """
+    if splits is None or module is None:
+        return True
+    if name.startswith(LOCAL_ONLY_PREFIXES):
+        return False
+    if name.startswith("blocks."):
+        try:
+            idx = int(name.split(".")[1])
+        except (IndexError, ValueError):
+            return False
+        lo, hi = splits[int(module)]
+        return lo <= idx < hi
+    return int(module) == len(splits) - 1
