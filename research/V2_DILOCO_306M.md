@@ -42,12 +42,23 @@ Reproduce: `DL_TARGET_M=2 DL_INNER=1,25 SOLO_DEV=cuda python experiments/v2/dilo
 
 ## Second device (ROCm / gfx1150)
 
-The same inner=25 configuration was launched on aptai2 (`DL_TARGET_M=0.35 DL_INNER=25`,
-890M iGPU, ROCm 7.2) and is **still in flight** at the time of writing: the harness
-prints only at the end of a round, and one round here is 100 inner steps x 4
-sequential worker passes on 306 M parameters, which the iGPU runs at ~100-300 tok/s.
-Lowering the token target cannot shorten it below that single round.
+The same inner=25 configuration was launched on aptai2 (890M iGPU, ROCm 7.2,
+torch 2.14.1+rocm7.2) with `DL_TARGET_M=0.35 DL_INNER=25`. It completed **one
+round** — 100 inner steps x 4 sequential worker passes = 400 steps, 204,800
+tokens:
 
-Cross-device agreement for the DiLoCo inner-step result is therefore currently
-established at the **1.32 M scale** (inner=25: 6.2640 CUDA vs 6.2642 ROCm) and not yet
-at 306 M. This section is updated with the ROCm row when the arm prints.
+```
+inner=25  params=306.5M  rounds=1  tokens=204,800  curve=['8.5240']  held-out 8.5240
+          388 tok/s  527.6 s  uploads=1
+```
+
+Read this for what it is. One round is 0.00067 tokens/param, and at that budget
+nothing can learn: the 4060 Ti needed 1.84 M tokens to reach 6.4495. What the arm
+does establish is that the harness is sound on ROCm — it starts at 8.5240 against
+a uniform baseline of `ln(4096)` = 8.3178 (the same self-check as the 4060 Ti's
+8.5367), completes a full round with no divergence and no OOM, at 388 tok/s.
+
+It does **not** confirm the inner-step ordering on this device at 306 M. That
+would need at least ~5 rounds per arm (~45 min/arm at 388 tok/s), which the APU
+cannot supply in a session. Cross-device agreement for the inner-step result
+therefore still rests on the 1.32 M runs (inner=25: 6.2640 CUDA vs 6.2642 ROCm).
