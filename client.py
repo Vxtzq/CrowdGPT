@@ -2017,7 +2017,8 @@ class SotaGPT(nn.Module):
         if dtype is not None and w.dtype != dtype: return w.to(dtype)
         return w
 
-    def forward_features(self, idx, use_chunked=True, use_ckpt=True, stream_dtype=None, head_w=None):
+    def embed(self, idx, head_w=None):
+        """Token (+ engram) embedding. Split out so a paradigm can run the trunk in pieces."""
         dev = self.main_device; wdev = self.wte.weight.device
         if head_w is not None and not self.head_on_gpu and head_w.device == dev:
             x = F.embedding(idx.to(dev), head_w)
@@ -2029,9 +2030,16 @@ class SotaGPT(nn.Module):
             eng = self.engram(idx)
             if eng.dtype != x.dtype: eng = eng.to(x.dtype)
             x = x + eng
+        return x
+
+    def run_blocks(self, x, start=0, stop=None, use_chunked=True, use_ckpt=True, stream_dtype=None):
+        """Blocks ``[start, stop)``. The SOLO/MOSAIC paradigms train a slice at a time."""
+        dev = self.main_device
+        stop = len(self.blocks) if stop is None else min(int(stop), len(self.blocks))
         if dev.type == 'cpu': cos, sin = self.freqs_cos_cpu, self.freqs_sin_cpu
         else: cos, sin = self.freqs_cos_main, self.freqs_sin_main
-        for i, block in enumerate(self.blocks):
+        for i in range(max(0, int(start)), stop):
+            block = self.blocks[i]
             if dev.type == 'cpu' or i in self.gpu_layer_set:
                 if use_ckpt: x = checkpoint(block, x, cos, sin, use_chunked, use_reentrant=False, preserve_rng_state=False)
                 else: x = block(x, cos, sin, use_chunked)
@@ -2041,7 +2049,11 @@ class SotaGPT(nn.Module):
                     x = checkpoint(_streamed_block_cached, block, params, dev, stream_dtype, x, cos, sin, use_chunked, use_reentrant=False, preserve_rng_state=False)
                 else:
                     x = checkpoint(_streamed_block, block, dev, stream_dtype, x, cos, sin, use_chunked, use_reentrant=False, preserve_rng_state=False)
-        return self.ln_f(x)
+        return x
+
+    def forward_features(self, idx, use_chunked=True, use_ckpt=True, stream_dtype=None, head_w=None):
+        x = self.embed(idx, head_w=head_w)
+        return self.ln_f(self.run_blocks(x, use_chunked=use_chunked, use_ckpt=use_ckpt, stream_dtype=stream_dtype))
 
     def forward(self, idx, use_chunked=True, use_ckpt=True): return F.linear(self.forward_features(idx, use_chunked, use_ckpt), self.head_weight())
 
@@ -2892,7 +2904,84 @@ def _build_model(bn, device, iw, ie, emit, bs=1, sl=MAX_SEQ_LEN,
                     force_head_cpu=force_head_cpu)
     model.engram.table.to(model.engram_device); model.load_base_weights(iw)
     if ENGRAM_ACTIVE and ie is not None: model.engram.table.weight.data.copy_(ie.view(model.engram.table.weight.shape))
-    model.engram.table.to(model.engram_device); model.train(); return model
+    model.engram.table.to(model.engram_device)
+    _attach_paradigm(model, emit)
+    model.train(); return model
+
+def _paradigm_name():
+    """The v2 paradigm this run selected, or "" for the stock backprop path."""
+    return (os.environ.get("CROWDGPT_PARADIGM", "") or "").strip().lower()
+
+
+def _attach_paradigm(model, emit=None):
+    """Prepare ``model`` for the selected paradigm. Returns the object, or None.
+
+    Selection is by env/CLI only, so an unset ``CROWDGPT_PARADIGM`` leaves the
+    stock backprop round completely unchanged — that is the default path and it
+    must stay bit-identical for the existing fleet.
+    """
+    name = _paradigm_name()
+    if not name or name == "backprop":
+        return None
+    try:
+        import crowd_paradigm as cp
+        par = cp.select(
+            name,
+            solo_modules=int(os.environ.get("CROWDGPT_SOLO_MODULES", "2") or 2),
+            relora_rank=int(os.environ.get("CROWDGPT_RELORA_RANK", "8") or 8),
+            mosaic_slices=int(os.environ.get("CROWDGPT_MOSAIC_SLICES", "2") or 2),
+            mosaic_local_steps=int(os.environ.get("CROWDGPT_MOSAIC_LOCAL_STEPS", "30") or 30),
+            dust_population=int(os.environ.get("CROWDGPT_DUST_POPULATION", "16") or 16),
+            dust_sigma=float(os.environ.get("CROWDGPT_DUST_SIGMA", "0.01") or 0.01),
+        )
+        info = par.attach(model)
+    except Exception as exc:
+        if emit: emit('log', f"⚠️ paradigm {name!r} could not attach ({exc}); staying on backprop")
+        return None
+    model.paradigm_obj = par
+    if emit: emit('log', f"🧠 paradigm {name} active: {info}")
+    return par
+
+
+def _paradigm_step_safe(model, x, y, sl, ua, ad, ls, ladder, emit):
+    """One step through the attached paradigm, with the same OOM ladder as backprop.
+
+    The paradigm owns credit assignment, so this is the seam where a foreign
+    method plugs into the round loop: ``_fwl``'s single whole-trunk backward is
+    only the backprop case.
+    """
+    par = getattr(model, "paradigm_obj", None)
+    if par is None: return _train_step_safe(model, x, y, sl, ua, ad, ls, False, ladder, emit)
+    chunk = getattr(ladder, "loss_chunk", LOSS_CHUNK)
+    while True:
+        try:
+            if ua:
+                with torch.autocast(device_type=model.main_device.type, dtype=ad):
+                    loss = par.step(model, x, y, loss_scale=ls, loss_chunk=chunk)
+            else:
+                loss = par.step(model, x, y, loss_scale=ls, loss_chunk=chunk)
+            # DUST/MOSAIC ignore loss_scale because they build grads themselves, so
+            # gradient accumulation has to be applied here or `ls` is silently lost.
+            if par.name in ("dust", "mosaic") and ls != 1.0:
+                for prm in model.parameters():
+                    if prm.grad is not None: prm.grad.mul_(ls)
+            return torch.tensor(float(loss)), []
+        except RuntimeError as e:
+            if not _is_oom(e): raise
+            if emit: emit('log', f"💥 OOM in paradigm {par.name}; walking the degrade ladder")
+            _clear_accel_cache(model.accel_device)
+            for prm in model.parameters(): prm.grad = None
+            if not getattr(model, 'use_ckpt', True):
+                model.use_ckpt = True; continue
+            if not ladder.step_down(emit): raise
+
+
+def _train_step(model, x, y, sl, ua, ad, ls, preview, ladder, emit):
+    """Dispatch one step: paradigm-driven when one is attached, else backprop."""
+    if getattr(model, "paradigm_obj", None) is not None:
+        return _paradigm_step_safe(model, x, y, sl, ua, ad, ls, ladder, emit)
+    return _train_step_safe(model, x, y, sl, ua, ad, ls, preview, ladder, emit)
+
 
 class _MultiOpt:
     def __init__(self, opts): self.opts = [o for o in opts if o is not None]
@@ -3535,7 +3624,7 @@ def run_single_round_wrapper(srv, at, se, emit):
                 x, y = ds.get_batch(bs, seed=(abs(hash("cal")) % 10000) + micro_step)
                 step_x, step_y, step_sl = _cpu_calibration_batch(x, y, sl) if model.main_device.type == 'cpu' else (x, y, sl)
                 want_preview = ((micro_step + 1) % PREVIEW_EVERY == 0) if train_backend == 'ROCM' else ((micro_step == 0) or ((micro_step + 1) % PREVIEW_EVERY == 0))
-                try: lo, cards = _train_step_safe(model, step_x, step_y, step_sl, ua, ad, ls, preview=want_preview, ladder=ladder, emit=emit)
+                try: lo, cards = _train_step(model, step_x, step_y, step_sl, ua, ad, ls, preview=want_preview, ladder=ladder, emit=emit)
                 except CohortAbort: return
                 lval = float(lo.item()); micro_step += 1
                 _unscaled = lval * as_
@@ -3580,7 +3669,7 @@ def run_single_round_wrapper(srv, at, se, emit):
                 sd = (int(cc_seed) * 100_003 + micro_step * 1009) & 0xFFFFFFFF if cohort_mode else (abs(hash("t")) % 10000) + micro_step * 1000 + mi
                 x, y = ds.get_batch(bs, seed=sd)
                 want_preview = (model.main_device.type != 'cpu') and ((micro_step == 0) or ((micro_step + 1) % PREVIEW_EVERY == 0))
-                try: lo, cards = _train_step_safe(model, x, y, sl, ua, ad, ls, preview=want_preview, ladder=ladder, emit=emit)
+                try: lo, cards = _train_step(model, x, y, sl, ua, ad, ls, preview=want_preview, ladder=ladder, emit=emit)
                 except CohortAbort: return
                 lval = float(lo.item()) * as_
                 als += lval; tt += x.numel(); accum_count += 1; micro_step += 1
@@ -3635,6 +3724,8 @@ def run_single_round_wrapper(srv, at, se, emit):
         iew = None; has_engram = bool(len(si) > 0); engram_sparse_count = int(len(si))
 
         submit_extra = {
+            "paradigm": _paradigm_name() or "backprop",
+            "dilocoInner": int(os.environ.get("CROWDGPT_DILOCO_INNER", "0") or 0),
             "crossCheckUsed": cohort_mode,
             "actualSeed": int(cc_seed) if (cohort_mode and cc_seed is not None) else None,
             "actualSteps": int(micro_step),
@@ -4552,6 +4643,12 @@ def parse_args():
     p.add_argument("--no-tokenizer", action="store_true")
     p.add_argument("--no-update", action="store_true")
     p.add_argument("--no-engram", action="store_true")
+    p.add_argument("--paradigm", default=os.environ.get("CROWDGPT_PARADIGM", ""),
+                   choices=("", "backprop", "solo", "relora", "dust", "mosaic"),
+                   help="v2 training paradigm (default backprop; per-paradigm knobs are env vars)")
+    p.add_argument("--diloco-inner", type=int,
+                   default=int(os.environ.get("CROWDGPT_DILOCO_INNER", "0") or 0),
+                   help="DiLoCo inner steps per outer round (0 = sync every round, v1 behaviour)")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--debug", action="store_true")
     p.add_argument("--tui", action="store_true", help="force the full-screen terminal dashboard in headless mode")
@@ -4560,6 +4657,8 @@ def parse_args():
     p.add_argument("--json", action="store_true", help="with --doctor, print the report as JSON")
     p.add_argument("--version", action="version", version=f"crowdgpt-client {CLIENT_VERSION}")
     args = p.parse_args()
+    if getattr(args, "paradigm", ""): os.environ["CROWDGPT_PARADIGM"] = str(args.paradigm)
+    os.environ["CROWDGPT_DILOCO_INNER"] = str(int(getattr(args, "diloco_inner", 0) or 0))
     if args.json and not args.doctor:
         p.error("--json requires --doctor")
     return args

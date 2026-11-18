@@ -128,13 +128,27 @@ def dust_step(model, x, y, *, cfg: DustConfig = DustConfig(), step: int = 0, los
             coef = (loss_plus - loss_minus) / (2.0 * cfg.sigma * cfg.population)
             for name, layer in layers.items():
                 weight = layer.weight
+                inp = plus_inputs.get(name)
+                if inp is None:
+                    # A layer the forward never reached (or a CPU-parked head) has
+                    # no input to correlate with, so it gets no estimate rather
+                    # than a wrong one.
+                    continue
+                # The real 1.01B model parks some layers on CPU (head/streamed
+                # blocks), so the estimate has to be built on the *weight's*
+                # device: mixing a cuda noise draw with a cpu weight raises
+                # "Expected all tensors to be on the same device" (found by the
+                # real-model smoke, invisible to the CPU unit tests).
+                wdev = weight.device
+                n = noise[name].to(wdev, torch.float32)
+                xi = inp.to(wdev, torch.float32)
+                # dL/dW estimate for this layer: coef * sum_{b,t} noise[b,t,out] * x[b,t,in]
+                contrib = torch.einsum("bto,bti->oi", n, xi)
                 if weight.grad is None:
                     weight.grad = torch.zeros_like(weight)
-                # dL/dW estimate for this layer: coef * sum_{b,t} noise[b,t,out] * x[b,t,in]
-                contrib = torch.einsum("bto,bti->oi", noise[name].float(), plus_inputs[name].float())
-                weight.grad += (coef * contrib).to(weight.dtype)
+                weight.grad += (coef * contrib).to(dtype=weight.dtype)
                 if layer.bias is not None and layer.bias.grad is not None:
-                    layer.bias.grad += (coef * noise[name].float().sum(dim=(0, 1))).to(layer.bias.dtype)
+                    layer.bias.grad += (coef * n.sum(dim=(0, 1))).to(dtype=layer.bias.dtype)
             if draw == start:
                 clean = 0.5 * (loss_plus + loss_minus)
     return clean
