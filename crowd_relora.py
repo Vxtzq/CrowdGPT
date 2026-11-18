@@ -31,8 +31,12 @@ class LoRALinear(nn.Module):
         for p in self.base.parameters():
             p.requires_grad_(False)
         out_f, in_f = base.weight.shape
-        self.A = nn.Parameter(torch.zeros(self.rank, in_f))
-        self.B = nn.Parameter(torch.zeros(out_f, self.rank))
+        # Adapters must be born on the base weight's device and dtype: attaching after
+        # model.to('cuda') otherwise leaves A/B on CPU and every forward raises
+        # "Expected all tensors to be on the same device" (found by the GPU e2e run).
+        kw = {"device": base.weight.device, "dtype": base.weight.dtype}
+        self.A = nn.Parameter(torch.zeros(self.rank, in_f, **kw))
+        self.B = nn.Parameter(torch.zeros(out_f, self.rank, **kw))
         nn.init.kaiming_uniform_(self.A, a=5 ** 0.5)
         # B starts at zero, so the wrapped module is exactly the base at attach time.
 
