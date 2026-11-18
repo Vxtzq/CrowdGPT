@@ -67,8 +67,7 @@ def test_merge_and_restart_is_a_noop_for_non_relora_models():
 def test_pending_paradigms_refuse_with_the_reason():
     with pytest.raises(ParadigmError, match="V2I-3"):
         select("mosaic")
-    with pytest.raises(ParadigmError, match="V2I-4"):
-        select("dust")
+    assert select("dust").name == "dust"   # V2I-4 ported
 
 
 def test_unknown_and_invalid_configs_are_rejected():
@@ -78,4 +77,4 @@ def test_unknown_and_invalid_configs_are_rejected():
         select("solo", solo_modules=1)
     with pytest.raises(ParadigmError, match="rank must be positive"):
         select("relora", relora_rank=0)
-    assert PARADIGMS == ("backprop", "solo", "relora")
+    assert PARADIGMS == ("backprop", "solo", "relora", "dust")

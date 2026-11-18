@@ -15,8 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-PARADIGMS = ("backprop", "solo", "relora")
-PENDING = ("dust", "mosaic")
+PARADIGMS = ("backprop", "solo", "relora", "dust")
+PENDING = ("mosaic",)
 
 
 class ParadigmError(ValueError):
@@ -28,6 +28,9 @@ class ParadigmConfig:
     name: str = "backprop"
     solo_modules: int = 2
     relora_rank: int = 8
+    dust_population: int = 16
+    dust_sigma: float = 0.01
+    dust_seed: int = 0
     relora_alpha: float = 1.0
 
     def __post_init__(self) -> None:
@@ -84,6 +87,12 @@ class Paradigm:
             model.solo_heads = build_solo_heads(dim, vocab, len(splits)).to(model.main_device)
             return {"paradigm": "solo", "splits": splits, "heads": len(splits) - 1}
 
+        if self.name == "dust":
+            from crowd_dust import linear_layers
+
+            return {"paradigm": "dust", "layers": len(linear_layers(model)),
+                    "population": self.type.dust_population, "sigma": self.type.dust_sigma}
+
         from crowd_relora import attach
 
         n = attach(model, rank=self.type.relora_rank, alpha=self.type.relora_alpha)
@@ -104,6 +113,13 @@ class Paradigm:
             loss, _ = solo_step(model, x, y, splits=model.solo_splits,
                                 loss_scale=loss_scale, loss_chunk=loss_chunk)
             return float(loss)
+
+        if self.name == "dust":
+            from crowd_dust import DustConfig, dust_step
+
+            cfg = DustConfig(population=self.type.dust_population, sigma=self.type.dust_sigma,
+                             seed=self.type.dust_seed)
+            return float(dust_step(model, x, y, cfg=cfg, loss_fn=_ce))
 
         from crowd_relora import trainable_parameters
 
