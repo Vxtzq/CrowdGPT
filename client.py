@@ -100,6 +100,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import requests
 from torch.utils.checkpoint import checkpoint
+from crowd_relora import LoRALinear as _LoRALinear
 import http.client
 from requests.exceptions import ChunkedEncodingError
 import gzip
@@ -2059,8 +2060,9 @@ class SotaGPT(nn.Module):
 
     def load_base_weights(self, fw):
         ft = torch.from_numpy(fw) if not isinstance(fw, torch.Tensor) else fw; o = 0
+        lora = _lora_layers(self)
         for n, p in self.named_parameters():
-            if not n.startswith('engram.'):
+            if _is_server_param(n, lora):
                 s = 1
                 for d in p.shape: s *= int(d)
                 src = ft[o:o + s].view(p.shape)
@@ -3029,13 +3031,51 @@ def _bf16_from_bytes(buf, offset, nbytes):
     a = np.frombuffer(buf, dtype=np.int16, count=nbytes // 2, offset=offset).copy()
     return torch.from_numpy(a).view(torch.bfloat16)
 
+# ---------------------------------------------------------------------------
+# Upload layout
+#
+# The server merges one flat vector of exactly ``model_size`` values in
+# base-model order, and it sends the same vector back for the next round. Two
+# paradigms add client-side tensors -- ReLoRA's rank-r factors and the
+# SOLO/MOSAIC local heads -- so walking ``named_parameters()`` blindly both
+# shifts every offset after them and, for ReLoRA, renames the base weight to
+# ``<module>.base.weight``. A real round under those paradigms therefore died in
+# the writer with "The size of tensor a (256) must match the size of tensor b
+# (192)" (relora) or "a (32) must match b (0)" (solo/mosaic): the tensors ran
+# past the reference vector. The helpers below keep the wire format
+# byte-identical to the stock model: local tensors are skipped, and a ReLoRA
+# adapter is folded into the weight position it actually updates, so the server
+# needs no new layout to merge another round.
+_LOCAL_ONLY_PREFIXES = ('engram.', 'solo_heads.')
+
+def _lora_layers(model):
+    """Map dotted module path -> LoRALinear wrapper (empty when ReLoRA is off)."""
+    out = {}
+    for name, mod in model.named_modules():
+        if isinstance(mod, _LoRALinear):
+            out[name] = mod
+    return out
+
+def _is_server_param(name, lora_paths):
+    """True when ``name`` occupies a slot in the server's flat vector."""
+    if name.startswith(_LOCAL_ONLY_PREFIXES):
+        return False
+    parent, _, leaf = name.rpartition('.')
+    return not (parent in lora_paths and leaf in ('A', 'B'))
+
 def _write_base_delta_bf16(gz, model, iw_bf16, piece=16 * 1024 * 1024):
     o = 0
+    lora = _lora_layers(model)
     for n, p in model.named_parameters():
-        if n.startswith('engram.'): continue
+        if not _is_server_param(n, lora): continue
         s = p.numel(); flat = p.detach().reshape(-1)
+        extra = None
+        if n.endswith('.base.weight'):
+            mod = lora.get(n[:-len('.base.weight')])
+            if mod is not None: extra = mod.delta_weight().detach().reshape(-1).float()
         for i in range(0, s, piece):
             cur = flat[i:i + piece].to('cpu', torch.float32)
+            if extra is not None: cur = cur + extra[i:i + cur.numel()]
             d = (cur - iw_bf16[o + i:o + i + cur.numel()].float()).to(torch.bfloat16)
             gz.write(memoryview(d.view(torch.int16).numpy()).cast('B'))
         flat = cur = d = None; p.data = torch.empty(0, dtype=p.dtype, device=p.device); o += s
@@ -3128,11 +3168,17 @@ def _write_delta_file_ngd1(path, header_bytes, model, iw_bf16, piece=4_000_000):
     """Framed 1-bit container (NGD2). Only used when no engram tail is present."""
     frames = []
     total = 0
+    lora = _lora_layers(model)
     for name, p in model.named_parameters():
-        if name.startswith('engram.'): continue
+        if not _is_server_param(name, lora): continue
         flat = p.detach().reshape(-1); size = flat.numel()
+        extra = None
+        if name.endswith('.base.weight'):
+            mod = lora.get(name[:-len('.base.weight')])
+            if mod is not None: extra = mod.delta_weight().detach().reshape(-1).float()
         for i in range(0, size, piece):
             cur = flat[i:i + piece].to('cpu', torch.float32)
+            if extra is not None: cur = cur + extra[i:i + cur.numel()]
             delta = (cur - iw_bf16[total:total + cur.numel()].float()).numpy()
             frames.append(_ngd1_compress(delta))
             total += int(cur.numel())
