@@ -14,8 +14,16 @@ Harness: `experiments/v2/scale_306m.py`.
 |---|---|---|---|---|---|---|
 | backprop | 8.5367 | 6.2236 | 5.9203 | **5.6862** | 478.0 s | 4,181 tok/s |
 | MOSAIC K=2 H=30 | 8.5367 | 7.8544 | 7.7257 | **7.7166** | 331.6 s | see below |
+| MOSAIC K=2 H=5 | 8.5367 | 7.4897 | 7.4125 | **7.4921** | 347.4 s | 5,719 tok/s |
 
-`delta(MOSAIC - backprop) = +2.0303`. MOSAIC is not close.
+`delta(MOSAIC - backprop) = +2.0303` at H=30 and `+1.8059` at H=5. MOSAIC is not
+close on this budget — but read the next section before concluding anything.
+
+Lowering H from 30 to 5 halves the gap and leaves the same pathology, which is
+the signature of the *budget*, not of the outer rule: at `--budget inner` a
+smaller H buys more rounds and more unique data (97 rounds, 397,312 unique
+tokens at H=5, versus 16 rounds and 65,536 at H=30), so quality tracks data seen
+rather than the local-step count.
 
 ## Why that number is not yet a verdict on MOSAIC
 
@@ -64,9 +72,11 @@ if it matches, the local-step data reuse is.
 ## Status
 
 - CUDA H=30 (`--budget inner`): measured, above.
-- CUDA H=5 (`--budget inner`): running.
-- ROCm 890M: running, same `--budget inner` configuration.
-- `--budget unique` runs: pending the above.
+- CUDA H=5 (`--budget inner`): measured, above.
+- ROCm 890M (`--budget inner`): running, same configuration.
+- `--budget unique` H=1 and H=5 (CUDA): running — these are the fair comparison.
+- No MOSAIC number here is a verdict on the outer rule yet; only `--budget
+  unique` at H=1 compares the rule on identical data and identical step count.
 
 Numbers land here as they finish; the table is updated rather than replaced so
 the correction stays visible.
