@@ -39,3 +39,15 @@ peer; 9 uploads is ~17 GB.
 - One seed, one model size.
 
 Reproduce: `DL_TARGET_M=2 DL_INNER=1,25 SOLO_DEV=cuda python experiments/v2/diloco_306m.py`
+
+## Second device (ROCm / gfx1150)
+
+The same inner=25 configuration was launched on aptai2 (`DL_TARGET_M=0.35 DL_INNER=25`,
+890M iGPU, ROCm 7.2) and is **still in flight** at the time of writing: the harness
+prints only at the end of a round, and one round here is 100 inner steps x 4
+sequential worker passes on 306 M parameters, which the iGPU runs at ~100-300 tok/s.
+Lowering the token target cannot shorten it below that single round.
+
+Cross-device agreement for the DiLoCo inner-step result is therefore currently
+established at the **1.32 M scale** (inner=25: 6.2640 CUDA vs 6.2642 ROCm) and not yet
+at 306 M. This section is updated with the ROCm row when the arm prints.
