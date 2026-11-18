@@ -15,8 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-PARADIGMS = ("backprop", "solo", "relora", "dust")
-PENDING = ("mosaic",)
+PARADIGMS = ("backprop", "solo", "relora", "dust", "mosaic")
+PENDING = ()
 
 
 class ParadigmError(ValueError):
@@ -31,6 +31,8 @@ class ParadigmConfig:
     dust_population: int = 16
     dust_sigma: float = 0.01
     dust_seed: int = 0
+    mosaic_slices: int = 2
+    mosaic_local_steps: int = 30
     relora_alpha: float = 1.0
 
     def __post_init__(self) -> None:
@@ -92,6 +94,12 @@ class Paradigm:
 
             return {"paradigm": "dust", "layers": len(linear_layers(model)),
                     "population": self.type.dust_population, "sigma": self.type.dust_sigma}
+
+        if self.name == "mosaic":
+            from crowd_mosaic import MosaicConfig, attach as mosaic_attach
+
+            return mosaic_attach(model, MosaicConfig(slices=self.type.mosaic_slices,
+                                                    local_steps=self.type.mosaic_local_steps))
 
         from crowd_relora import attach
 
