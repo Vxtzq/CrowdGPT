@@ -51,15 +51,21 @@ def test_aggregate_takes_an_outer_step_from_the_mean():
     cur = {"w": torch.zeros(3)}
     d1, d2 = {"w": torch.full((3,), 2.0)}, {"w": torch.full((3,), 2.0)}
     out, state = aggregate(cur, [d1, d2], cfg=MosaicConfig(outer_lr=0.7, outer_momentum=0.0))
-    assert torch.allclose(out["w"], torch.full((3,), -1.4))
+    # deltas are additive: 0 + 0.7 * mean(2.0, 2.0) = 1.4
+    assert torch.allclose(out["w"], torch.full((3,), 1.4))
     assert "w" in state.prev
 
 
-def test_aggregate_rejects_empty_or_mismatched_uploads():
+def test_aggregate_rejects_empty_but_accepts_disjoint_slices():
     with pytest.raises(MosaicError):
         aggregate({"w": torch.zeros(2)}, [])
-    with pytest.raises(MosaicError):
-        aggregate({"w": torch.zeros(2)}, [{"w": torch.zeros(2)}, {"v": torch.zeros(2)}])
+    # Two volunteers on different slices: disjoint key sets are the normal case,
+    # and each slice must be merged independently rather than rejected.
+    current = {"w": torch.zeros(2), "v": torch.zeros(2)}
+    out, _ = aggregate(current, [{"w": torch.full((2,), 2.0)}, {"v": torch.full((2,), -2.0)}],
+                       cfg=MosaicConfig(outer_lr=1.0, outer_momentum=0.0))
+    assert torch.allclose(out["w"], torch.full((2,), 2.0))
+    assert torch.allclose(out["v"], torch.full((2,), -2.0))
 
 
 def test_local_delta_touches_only_its_slice():

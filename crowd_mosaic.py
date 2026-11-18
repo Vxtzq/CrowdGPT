@@ -90,18 +90,28 @@ def aggregate(current: dict[str, torch.Tensor], deltas: list[dict[str, torch.Ten
     """Clip, average and apply one outer step. Returns new weights and new state."""
     if not deltas:
         raise MosaicError("no uploads to aggregate")
-    names = set(deltas[0])
-    for d in deltas[1:]:
-        if set(d) != names:
-            raise MosaicError("uploads disagree about which parameters they carry")
-    clipped = median_clip(deltas) if cfg.clip_median else deltas
+    # Uploads are per-slice, so different slices carry disjoint parameter sets and
+    # two volunteers on the same slice overlap entirely. Group by key-set: the
+    # median clip is a per-slice rule, so it must not compare a slice against
+    # another slice's norm, and the average is taken within a group.
+    groups: dict[frozenset[str], list[dict[str, torch.Tensor]]] = {}
+    for d in deltas:
+        groups.setdefault(frozenset(d), []).append(d)
+    clipped: list[dict[str, torch.Tensor]] = []
+    for members in groups.values():
+        clipped.extend(median_clip(members) if cfg.clip_median else members)
+    seen: set[str] = set().union(*map(set, clipped)) if clipped else set()
     state = state or MosaicState()
     out = {}
-    for name in names:
-        mean = torch.stack([d[name].float() for d in clipped]).mean(dim=0)
+    for name in seen:
+        parts = [d[name].float() for d in clipped if name in d]
+        mean = torch.stack(parts).mean(dim=0) if len(parts) > 1 else parts[0]
         prev = state.prev.get(name)
         step = mean if prev is None else mean + cfg.outer_momentum * (mean - prev)
-        out[name] = current[name] - cfg.outer_lr * step
+        base = current.get(name)
+        # MOSAIC uploads are deltas (theta_k - theta), so the merge ADDS them.
+        # Subtracting would move the model away from every slice's training.
+        out[name] = (base if base is not None else torch.zeros_like(mean)) + cfg.outer_lr * step
         state.prev[name] = mean.clone()
     return out, state
 

@@ -33,6 +33,7 @@ class ParadigmConfig:
     dust_seed: int = 0
     mosaic_slices: int = 2
     mosaic_local_steps: int = 30
+    mosaic_inner_lr: float = 3e-3
     relora_alpha: float = 1.0
 
     def __post_init__(self) -> None:
@@ -121,6 +122,29 @@ class Paradigm:
             loss, _ = solo_step(model, x, y, splits=model.solo_splits,
                                 loss_scale=loss_scale, loss_chunk=loss_chunk)
             return float(loss)
+
+        if self.name == "mosaic":
+            # One MOSAIC round: every slice takes H local steps from the current
+            # weights, uploads only its own delta, and the coordinator clips and
+            # averages them into one outer step. Slower per call than the other
+            # paradigms (H x slices), which is the method's actual cost.
+            from crowd_mosaic import MosaicConfig, aggregate, local_delta
+
+            cfg = MosaicConfig(slices=self.type.mosaic_slices,
+                               local_steps=self.type.mosaic_local_steps)
+            splits = model.mosaic_splits
+            current = {n: p.detach().clone() for n, p in model.named_parameters()}
+            deltas = [local_delta(model, slices=splits, k=k, x=x, y=y,
+                                  steps=cfg.local_steps, lr=self.type.mosaic_inner_lr,
+                                  loss_chunk=loss_chunk) for k in range(len(splits))]
+            new_w, state = aggregate(current, deltas, cfg=cfg,
+                                     state=getattr(model, "_mosaic_state", None))
+            with __import__("torch").no_grad():
+                for n, p in model.named_parameters():
+                    if n in new_w:
+                        p.copy_(new_w[n].to(p.device, p.dtype))
+            model._mosaic_state = state
+            return float(_ce(model(x), y))
 
         if self.name == "dust":
             from crowd_dust import DustConfig, dust_step
