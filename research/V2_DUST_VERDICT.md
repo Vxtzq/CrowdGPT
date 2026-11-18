@@ -9,7 +9,7 @@ learning rate before any verdict is recorded.
 
 - Tiny model: V=4096, d=128, 4 layers, 4 heads, tied readout, init 8.3236
   (`ln(4096)` = 8.3178 uniform).
-- B=8, T=256 → **8,192 tokens per step**, **40 steps = 327,680 tokens** per arm.
+- B=8, T=256 → **2,048 tokens per step**, **40 steps = 81,920 tokens** per arm.
 - Held-out: 8 fixed non-overlapping windows from `val.bin`.
 - DUST: population 32, sigma 0.02, forward-only (no backward anywhere); cost is
   `2 * population` forwards per step.
@@ -31,9 +31,13 @@ Radeon 890M (gfx1150, ROCm 7.2):
 | arm | lr | held-out | delta | tok/s |
 |---|---|---|---|---|
 | DUST | 1e-4 | 8.3250 | −0.0014 | 565 |
+| DUST | 3e-4 | 8.3294 | −0.0058 | 566 |
+| DUST | 1e-3 | 8.3411 | −0.0176 | 563 |
 
-The two devices agree to four decimal places at lr 1e-4 (8.3250 on both), which is
-the same cross-device agreement the rest of the v2 evidence shows.
+The two devices agree to four decimal places on **every** learning rate
+(8.3250 / 8.3294 / 8.3411 on both), which is the same cross-device agreement the
+rest of the v2 evidence shows — the flatness is a property of the estimator, not of
+one vendor's kernels.
 
 ## Reading
 
