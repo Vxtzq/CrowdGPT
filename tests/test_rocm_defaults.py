@@ -58,15 +58,15 @@ class UmaBudgetTests(unittest.TestCase):
         client.memory_config.update(cfg)
         client.torch.cuda = cuda
 
-    def _budget(self, total_gb, free_gb, ram_gb, integrated):
+    def _budget(self, total_gb, free_gb, ram_gb, integrated, arch="gfx1150"):
         client.train_backend = "ROCM"
-        client.torch.cuda = _cuda(total_gb, free_gb, integrated=integrated)
+        client.torch.cuda = _cuda(total_gb, free_gb, integrated=integrated, arch=arch)
         with mock.patch.dict(sys.modules, {"psutil": _fake_psutil(ram_gb)}):
             client.auto_detect_vram_budget()
         return client.memory_config["ram_gb"], client.memory_config.get("unified")
 
     def test_discrete_card_keeps_mem_get_info_budget(self):
-        budget, unified = self._budget(24.0, 23.5, 64.0, integrated=False)
+        budget, unified = self._budget(24.0, 23.5, 64.0, integrated=False, arch="gfx1100")
         self.assertFalse(unified)
         self.assertAlmostEqual(budget, 23.5 - client.SAFETY_MARGIN_GB - client.ALLOCATOR_RESERVE_GB, places=2)
 
