@@ -40,6 +40,45 @@ peer; 9 uploads is ~17 GB.
 
 Reproduce: `DL_TARGET_M=2 DL_INNER=1,25 SOLO_DEV=cuda python experiments/v2/diloco_306m.py`
 
+## Matched comparison: both devices, 1.1 M tokens per arm
+
+Both machines ran the identical protocol at `DL_TARGET_M=1.1` (306.5 M params,
+K=4, B=4 x T=512, outer Nesterov SGD 0.7/0.9), so the two devices are directly
+comparable. Uniform baseline `ln(4096)` = 8.3178; each device starts at its own
+uniform-adjacent value, which is the harness self-check.
+
+| device | arm | uploads | tokens | final held-out | vs inner=1 | tok/s |
+|---|---|---|---|---|---|---|
+| RTX 4060 Ti (CUDA 12.4) | inner=1 | 134 | 1,097,728 | 8.0368 | — | 1,575 |
+| RTX 4060 Ti (CUDA 12.4) | inner=25 | **5** | 1,024,000 | **6.6490** | **1.39 better** | 3,929 |
+| Radeon 890M (ROCm 7.2) | inner=1 | 134 | 1,097,728 | 7.9649 | — | 355 |
+| Radeon 890M (ROCm 7.2) | inner=25 | **5** | 1,024,000 | **6.7962** | **1.17 better** | 378 |
+
+Curves: CUDA inner=1 `8.5367 -> 9.6594 -> 8.0368`, inner=25 `8.5367 -> 6.8582 ->
+6.6490`; ROCm inner=1 `8.5240 -> 10.5626 -> 7.9649`, inner=25 `8.5240 -> 6.9191 ->
+6.7962`.
+
+Both devices show the same ordering and the same magnitude: **inner=25 beats
+inner=1 by 1.17-1.39 held-out at equal tokens while making 27x fewer uploads**
+(5 vs 134), and inner=1 never leaves the neighbourhood of uniform while inner=25
+learns. The earlier longer CUDA run (~2 M tokens per arm: 8.7581 vs 6.4495) is
+consistent with this.
+
+An earlier single-round ROCm run (`DL_TARGET_M=0.35`, 204,800 tokens) printed
+`8.5240` unchanged; that was a harness-soundness check (one round, 0.00067
+tokens/param, nothing can learn there), not a comparison, and is superseded by
+the matched table above.
+
+## What this does not establish
+
+- 2 M tokens is 0.0065 tokens/param — nothing here says where the curve ends.
+- Workers run sequentially with bf16 CPU snapshots, not on separate machines.
+- Each worker keeps its own AdamW across rounds, but the harness does not carry
+  inner optimizer state across an outer step the way a true DiLoCo run would.
+- One seed, one model size.
+
+Reproduce: `DL_TARGET_M=2 DL_INNER=1,25 SOLO_DEV=cuda python experiments/v2/diloco_306m.py`
+
 ## Second device (ROCm / gfx1150)
 
 The same inner=25 configuration was launched on aptai2 (890M iGPU, ROCm 7.2,
