@@ -4,6 +4,16 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import unittest
+
+# The repo's CI job is deliberately standard-library only (no pytest, no torch),
+# and runs `python -m unittest discover`. Skip this module there instead of
+# erroring on import; the tests run under pytest locally and in any env with deps.
+try:  # pragma: no cover - depends on the environment, not on the code
+    import pytest  # noqa: F401
+    import torch  # noqa: F401
+except ImportError as _missing:  # pragma: no cover
+    raise unittest.SkipTest(f"needs pytest and torch: {_missing}")
 import pytest
 import torch
 
