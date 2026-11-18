@@ -7,8 +7,11 @@ prepare the model, how to take one training step, and which parameters may be
 uploaded. DiLoCo stays a *round layer* underneath any of them (`crowd_diloco`),
 because it changes when peers exchange, not what gradient a block gets.
 
-DUST is deliberately not selectable here: it was measured at 90 tok/s and closed
-as a core paradigm, and porting it is TODO V2I-4 pending the founder's word.
+All five are selectable. DUST is the one measured *badly*: at lr 1e-4/3e-4/1e-3 it
+ended at 8.3250/8.3294/8.3411 against an 8.3236 init (research/V2_DUST_VERDICT.md),
+and at 200-400x backprop's cost per step it needs a population of >=512 before the
+numbers mean anything. It stays selectable because a peer with spare compute and a
+large round is exactly the population that could make it work; it is never a default.
 """
 from __future__ import annotations
 
