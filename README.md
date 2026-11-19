@@ -119,6 +119,20 @@ the wire. Backprop path only — a MOSAIC or SOLO slice has no readout of its ow
   gate logs an error every round instead of silently accepting everything.
 
   
+### Pre-flight a coordinator before a real round
+
+`tools/rocm_client_push.py --url <coordinator> --token <token>` syncs the current
+client to the ROCm test box, runs `--doctor`, then `--dry-run` — which exercises
+auth and `GET /fl/task?skip_weights=true` and returns before any training or
+upload, so exit 0 means a real round will get that far. (Bulk file transfer goes
+over `scp`, not the shell helper: an inlined client is ~633 KB and exceeds the
+~128 KB per-argument ceiling.)
+
+First real round stays conservative: `--rounds 1 --paradigm backprop
+--no-tokenizer --no-update` with **dense** deltas, because a coordinator built
+before this branch has no `SPK1` sparse decoder. Then repeat the same round count
+with `--paradigm mosaic` to compare.
+
 ## What is CrowdGPT?
 
 CrowdGPT is a **project for training arbitrary big LLMs** using volunteered compute.
