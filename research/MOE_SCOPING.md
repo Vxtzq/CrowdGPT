@@ -158,10 +158,71 @@ job — it is the only place a global-loss step on the router can happen — so
 None of these need new infrastructure — `scale_306m.py` already builds arbitrary
 shapes via `--dim/--layers/--heads` and owns the round loop.
 
+## What those four tests returned (measured, ROCm gfx1150)
+
+`experiments/v2/moe_probe.py` (committed, 3.9 M-param model: 8 experts, top-2, one
+shared expert, dense control matched on **active** MLP rows — 147,456 rows/layer
+each). Real BPE-4096 tokens, 8 fixed val windows, `crowd_mosaic.aggregate` as the
+merge rule.
+
+| arm | data | final | wall | expert share (1/8 = 0.125) |
+|---|---|---|---|---|
+| dense, active-matched | 1,000 full steps (~1.02 M tokens) | **5.7647** | 51.9 s | — |
+| MoE, full backprop | 1,000 full steps | **5.7371** | 125.0 s | 0.036–0.178, healthy |
+| columns, trunk trained by **nobody** | 200 rounds | 7.9725 | 142.8 s | drifting |
+| columns, trunk by anchor, no balance loss | 200 rounds | 6.6090 | 150.4 s | 0.020–0.196 |
+| columns, trunk by anchor, balance 0.01 | 200 rounds | 6.5748 | 122.8 s | 0.013–0.245 |
+| the same arm repeated | 200 rounds | **6.5748** | 122.8 s | identical |
+| columns, **column 0 owns the trunk** | 200 rounds | 8.0611 | 167.9 s | oscillating 8.03→8.11 |
+| columns under MOSAIC's tuned throttle (outer 0.15, mom 0.9) | 200 rounds | 6.7181 | 141.6 s | 0.042–0.241 |
+| columns, 4x data | 800 rounds (per-expert tokens ≍ dense) | **6.1015** | 546.9 s | 0.076–0.226 |
+
+Answers to the four questions:
+
+1. **Does our loop train a MoE at all? Yes.** Full backprop lands 0.028 *ahead* of
+   the active-matched dense control with healthy routing, so the architecture is not
+   the problem. (One backprop step is slower — 8 experts evaluated per layer — which
+   is the compute-sparsity trade showing up honestly.)
+2. **Slicing by expert behaves like slicing by layer, with one difference that
+   matters:** the slice is no longer contiguous in the residual stream, so a column
+   *must* be given the trunk. The trunk (attention, LayerNorms, embedding, tied
+   readout, router, shared expert) is **2,306,560 of 3,879,424 params = 59%**, and in
+   the first column runs it sat in **no** optimiser — the same silent-allow-list bug
+   as MOSAIC's tied readout, worth **~1.4 nats** here (7.97 → 6.61).
+3. **Router ownership: the anchor step, decisively.** A column owning the trunk and
+   router is fatal (8.06 and oscillating): it trains them on the ~25% of tokens its
+   own router sends it, and the router bias feeds back into which tokens it gets.
+   This resolves the open question above against the `share_trunk` analogy.
+4. **MTP**: untested here; the synergy argument stands (client-local heads, no wire
+   cost).
+
+Two further readings that change the plan:
+
+- **Expert columns are viable but not free.** At 4x data (per-expert masked tokens
+  matched to the dense arm) the gap is **0.34 nats** (6.1015 vs 5.7647), down from
+  0.81 at 1/4 data. It narrows with data at a decreasing rate — the greedy gap, the
+  same shape MOSAIC shows. Repeatability is exact (6.5748 twice), so these are real
+  differences, not noise.
+- **The outer rate should be near 1.0 for expert columns, not MOSAIC's 0.15.**
+  Throttling cost 0.14 nats. A column emits a genuine parameter delta for the
+  experts it owns, not a full-model re-proposal, so there is nothing to discount —
+  the opposite of the layer-sliced case where the aggregate re-applied a whole local
+  displacement.
+
+Contractual consequence for a deployment: a MoE client and coordinator need an
+explicit **ownership table** — experts by column, trunk + router + shared expert by
+the anchor — because "not in my slice" and "not in anyone's optimiser" look
+identical in the wire format. That is the same span-map work as V2I-14, now with a
+second reason to exist.
+
 ## Bottom line
 
 - **4 B A1B first.** 7 B does not fit a 16 GB volunteer's memory even in bf16, so it
   presupposes the expert-parallel work; 4 B runs either way and gives the control.
+- **Expert parallelism works, at a measured price.** 0.34 nats behind dense at
+  matched per-expert tokens, closing with data, and stable (exact repeat). The
+  aggregator must own the trunk and router (1.4 nats if it does not; 8.06 if a
+  column does), and the outer rate there is ~1.0, not 0.15.
 - The gating work is **transfer**, not architecture: chunked scatter + slice-scoped
   upload, both of which we have already half-built.
 - The gating *question* is **corpus size**: below ~10 B tokens, MoE is the wrong
