@@ -475,32 +475,56 @@ per-step token count (4096 vs 2048), and that is the entire point.
 Preset V=4096, D=1024, L=24, H=16, T=512, B=4 (306 M parameters), 8 fixed val
 windows, init 8.5367. MOSAIC used the tuned configuration (H=5, inner 1e-3, outer
 0.15, momentum 0.9, `share_trunk`, trunk owned by the first slice, persistent inner
-state). Two updates of 4096 tokens = 488 and 976, i.e. the same round counts as the
-65 M table.
+state). The round-matched control is `--grad-accum 2` at B=4: **one 4096-token
+update per round**, which is exactly what a round costs.
 
 | arm | updates / rounds | tokens | held-out | wall |
 |---|---|---|---|---|
-| backprop, round-matched (`--grad-accum 2`) | 488 | 2.00 M | **5.7631** | 430 s |
-| MOSAIC + anchor every 1 | 488 + 488 | 3.00 M | **5.5941** | 1658 s |
-| backprop, round-matched (`--grad-accum 2`) | 976 | 4.00 M | **5.3523** | 862 s |
-| MOSAIC + anchor every 2 | 488 + 244 | 2.50 M | pending | — |
+| backprop, round-matched | 488 | 2.00 M | **5.7631** | 430 s |
+| MOSAIC + anchor every 1 (2048-token anchors) | 488 + 488 | 3.00 M | **5.5941** | 1658 s |
+| MOSAIC + anchor every 2 (512-token anchors) | 488 + 244 | 2.13 M | **5.7269** | 1476 s |
+| backprop, round-matched | 732 | 3.00 M | **5.5286** | 646 s |
+| backprop, round-matched | 976 | 4.00 M | **5.3523** | 862 s |
+| MOSAIC + anchor every 2 (512-token anchors) | 976 + 488 | 4.25 M | **5.6381** | 2957 s |
 
-**At equal rounds the hybrid wins at 306 M too: 5.5941 vs 5.7631, −0.17 nats**,
-against −0.25 at 65 M. The effect is slightly smaller with scale, not larger, so
-the 65 M number was not a small-model artifact but it does not magnify either.
+### At equal rounds
 
-**At equal total tokens it is now roughly level, not behind.** The anchor/1 arm
-spends 3.00 M tokens for 5.5941; backprop between 2 M (5.7631) and 4 M (5.3523)
-is worth about 5.56 at 3 M, and a backprop 3 M arm is queued to replace that
-interpolation with a measurement. At 65 M the same comparison was a clear loss
-(5.5854 at 3 M vs 5.4341), so if 306 M is level the gap *narrows* with scale —
-which is the opposite of the MOSAIC-without-anchoring trend (0.18 → 0.30).
+488 rounds: backprop **5.7631**, anchored MOSAIC **5.5941** (anchor every 1) and
+**5.7269** (anchor every 2). So the hybrid wins by **0.17 nats** at the configured
+frequency, against 0.25 at 65 M. The effect is slightly *smaller* with scale, not
+larger: the 65 M number was not a small-model artifact, but it does not magnify
+either, and that is the honest direction of travel.
 
-Two arms are still in flight and are named as such rather than left implied:
-`anchor every 2` at 306 M (the configuration that won at 65 M) on CUDA, where the
-anchor step had to drop to a 512-token batch because the anchor optimiser's own
-state plus gradients pushed a 2048-token step past 15.5 GB; and the same arm on
-ROCm gfx1150 at the full 2048-token batch, where 30 GB fits it.
+976 rounds is the exception and it is stated plainly: **5.6381 vs 5.3523, 0.29
+behind**. That arm is not the configuration that won at 65 M — the 16 GB card
+forced its anchor step down to a 512-token batch, so over 976 rounds it gets 250 k
+anchor tokens where anchor-every-1 gets 1 M. Whether the win survives 976 rounds
+at full anchor volume is the open question, and it is the one arm the local GPU
+cannot hold (the anchor optimiser's own state is 2× params in fp32).
+
+### At equal total tokens
+
+| tokens | backprop | anchored MOSAIC | delta |
+|---|---|---|---|
+| 2.0 / 2.13 M | 5.7631 | 5.7269 | −0.036 |
+| 3.0 M | 5.5286 | 5.5941 | +0.065 |
+| 4.0 / 4.25 M | 5.3523 | 5.6381 | +0.29 |
+
+**Level at 2 M, behind beyond it.** At 65 M the same comparison was a clear loss
+at every scale (5.5854 vs 5.4341 at 3 M), so the token gap narrows but does not
+close. This is exactly why the metric had to be declared before the runs: the
+honest sentence is *matches backprop at equal rounds, behind at equal tokens*, and
+which of those is the project's budget is an argument about the deployment, not
+about the numbers.
+
+The deployment argument, stated so it can be refuted: a round is one aggregation in
+which every parameter is updated exactly once from volunteer deltas, and the slices
+run in parallel on different volunteers, so round latency does not grow with slice
+count or with local-step count. Tokens, by contrast, are volunteer-donated compute
+that would otherwise be idle. If that is right, the round column is the one to
+optimise and the token column is a constraint on volunteer cost, not on latency.
+If a deployment ends up token-bound, backprop wins and anchoring should stay off
+(`CROWDGPT_ANCHOR_EVERY` defaults to 0).
 
 ## Aggregator anchoring: the first candidate that closes the gap
 
