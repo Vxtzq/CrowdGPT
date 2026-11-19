@@ -91,25 +91,47 @@ class SoloHead(nn.Module):
     value at which the readout term of the gap to backprop vanishes.
     """
 
-    def __init__(self, dim: int, vocab: int):
+    def __init__(self, dim: int, vocab: int, mlp: bool = False):
         super().__init__()
         self.ln = nn.LayerNorm(dim)
         self.phi = nn.Linear(dim, dim)
+        # The head is the only teacher a non-terminal slice has, and it sees just
+        # that slice's output. DGL gives its auxiliary network the module's input
+        # as well; for a residual stream the input still carries most of what the
+        # next token depends on, so a head that cannot see it has to reconstruct
+        # it through `h` and its gradient asks the slice to preserve rather than
+        # add. Zero-initialised: at step 0 this is bit-identical to phi(ln(h)).
+        self.skip = nn.Linear(dim, dim)
+        nn.init.zeros_(self.skip.weight)
+        nn.init.zeros_(self.skip.bias)
+        # Optional hidden layer. A slice squeezes six blocks into one linear
+        # map before the frozen readout, so head capacity bounds how sharply
+        # its teacher can point; `None` keeps the original single-linear head
+        # bit-identical.
+        self.phi2 = nn.Linear(dim, dim) if mlp else None
         self.tau = nn.Parameter(torch.ones(()))
         self.bias = nn.Parameter(torch.zeros(vocab))
 
-    def project(self, h: torch.Tensor) -> torch.Tensor:
-        return self.phi(self.ln(h))
+    def project(self, h: torch.Tensor, z: torch.Tensor | None = None) -> torch.Tensor:
+        """Project `h` to readout space, plus the slice input `z` when given."""
+        y = self.phi(self.ln(h))
+        if self.phi2 is not None:
+            y = self.phi2(torch.nn.functional.gelu(y))
+        if z is not None:
+            y = y + self.skip(self.ln(z))
+        return y
 
     def extra_repr(self) -> str:
         return f"dim={self.phi.in_features}, vocab={self.bias.numel()}"
 
 
-def build_solo_heads(dim: int, vocab: int, modules: int) -> nn.ModuleDict:
+def build_solo_heads(dim: int, vocab: int, modules: int,
+                     mlp: bool = False) -> nn.ModuleDict:
     """One head per non-terminal module (the terminal module keeps the readout)."""
     if modules < 2:
         raise ValueError("SOLO needs at least two modules")
-    return nn.ModuleDict({str(k): SoloHead(dim, vocab) for k in range(modules - 1)})
+    return nn.ModuleDict({str(k): SoloHead(dim, vocab, mlp=mlp)
+                          for k in range(modules - 1)})
 
 
 def chunked_solo_ce(
