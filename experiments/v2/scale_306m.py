@@ -132,26 +132,33 @@ def build():
     return model
 
 
-def run_backprop(tokens, lr=3e-4, eval_every=500_000):
+def run_backprop(tokens, lr=3e-4, eval_every=500_000, grad_accum=1):
     model = build()
     n = sum(p.numel() for p in model.parameters())
     opt = torch.optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=0.01)
     curve, seen, nxt = [evaluate(model)], 0, eval_every
-    steps = max(1, tokens // (B * T))
+    # ``grad_accum`` exists because the round-matched control needs ONE update over
+    # 4096 tokens at the 306 M preset, and B=8 does not fit in 16 GB. Accumulating
+    # two B=4 micro-batches gives the identical optimisation step at B=4's
+    # activation footprint, so the control stays memory-feasible.
+    per_step = B * T * max(1, int(grad_accum))
+    steps = max(1, tokens // per_step)
     t0 = time.perf_counter()
     for s in range(steps):
-        x, y = batch(s)
         opt.zero_grad(set_to_none=True)
-        ce(model(x), y).backward()
+        for m in range(max(1, int(grad_accum))):
+            x, y = batch(s * max(1, int(grad_accum)) + m)
+            ce(model(x), y).backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
-        seen += B * T
+        seen += per_step
         if seen >= nxt:
             curve.append(evaluate(model))
             nxt += eval_every
     dt = time.perf_counter() - t0
     return {"paradigm": "backprop", "params": n, "tokens": seen, "steps": steps,
             "uniqueTokens": seen, "rounds": steps, "gradSteps": steps,
+            "gradAccum": int(grad_accum), "tokensPerStep": per_step,
             "curve": curve, "final": curve[-1], "seconds": round(dt, 1),
             "tokensPerSecond": round(seen / dt), "device": str(DEV)}
 
@@ -361,6 +368,8 @@ def main():
                     help="per-tensor relative outer step (outer_lr becomes relative)")
     ap.add_argument("--batch", type=int, default=B,
                     help="sequences per local step (default: the preset's B)")
+    ap.add_argument("--grad-accum", type=int, default=1,
+                    help="micro-batches accumulated per optimizer step (keeps the round-matched 4096-token step inside 16 GB)")
     ap.add_argument("--outer-lr-final", type=float, default=None,
                     help="decay the outer rate from --outer-lr to this")
     ap.add_argument("--schedule", choices=("cosine", "linear"), default="cosine")
@@ -400,7 +409,7 @@ def main():
           f"budget={a.budget} freeze_head={a.freeze_head}", flush=True)
     results = []
     if a.paradigm in ("backprop", "both"):
-        results.append(run_backprop(a.tokens))
+        results.append(run_backprop(a.tokens, grad_accum=a.grad_accum))
         r = results[-1]
         print(f"backprop curve={['%.4f' % c for c in r['curve']]} final {r['final']:.4f} "
               f"{r['seconds']}s {r['tokensPerSecond']:,} tok/s "

@@ -426,6 +426,50 @@ matches backprop**, with the loss advantage at equal total tokens still belongin
 to backprop. Configuration: `K=2 or 3, H=5, inner 1e-3, outer 0.15, momentum 0.9,
 --trunk-owner first --share-trunk --inner-state`.
 
+## Pre-declared metric (fixed before the 306 M runs)
+
+Every number in this document was measured without first saying which budget the
+comparison would use, so each new arm invited a different accounting. Stating it
+now, before the 306 M runs, and using it for everything after this line:
+
+**The project's budget is the ROUND.** A round is one aggregation: every parameter
+of the global model is updated once, from deltas produced by volunteers who each
+held one slice. It is what the network and the wall clock pay for, and a round's
+slices already run in parallel on different peers, so doubling the slice count
+does not double the round's latency — that parallelism is the reason the method
+exists.
+
+Consequences, fixed in advance:
+
+1. **Primary metric:** held-out loss at a fixed number of rounds (488 rounds for
+   the 2 M-token arms, 976 for the 4 M arms).
+2. **Backprop control at matched rounds** is `backprop --batch 8`: 4096 tokens per
+   step, one update of every parameter per step, i.e. exactly one round's
+   accounting. `--batch 4` (2048 tokens/step) is reported too, as the
+   *token-matched* control, and losing to it does not refute the round-budget
+   claim.
+3. **Every claim names its budget.** "Better" without a budget is not a claim;
+   at equal total tokens a split method that spends `slices` batches per round is
+   expected to trail, and it does.
+4. **Scale is part of the claim.** All anchoring numbers below 306 M are 65 M
+   results; the 1 B deployment target is not measured and will not be claimed.
+
+### How the round-matched control is built at 306 M
+
+One round-matched backprop update consumes 4096 tokens (`slices * B * T` = 2 * 4 *
+512), which at 306 M needs `--batch 8`. That does not fit: the first attempt at
+306 M with `--batch 8` was killed before printing a curve (the B=4 preset already
+holds ~11.4 GB of the 15.57 GB card). So the control is built from two B=4
+micro-batches with `--grad-accum 2`: identical optimisation step (one update over
+4096 tokens, same 488 steps for 2 M), identical activation footprint to the B=4
+runs that already work, 2x the wall clock. Verified on CPU that the accounting is
+right before spending GPU time: `--batch 2 --grad-accum 2 --tokens 40960` gives
+`steps=20 uniqueTokens=40960 tokensPerStep=2048`, i.e. 40960/2048.
+
+A control that cannot run is not a control, so this substitution is stated here
+rather than buried: the round-matched arm differs from the token-matched arm in
+per-step token count (4096 vs 2048), and that is the entire point.
+
 ## Aggregator anchoring: the first candidate that closes the gap
 
 Every algorithm change so far attacked the local step. This one changes *who
