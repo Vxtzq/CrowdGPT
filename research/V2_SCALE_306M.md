@@ -507,6 +507,21 @@ step cannot" predicts and what "the global step is just doing the work" would no
 (the every-1 arm would then be backprop, and it is 0.05 *better* than backprop at
 2 M).
 
+### Device check at the tuned rate
+
+ROCm gfx1150 (aptai2, `/root/rocm-venv`, base64-inlined modules) at the tuned
+configuration `--outer-lr 0.15 --inner-lr 1e-3 --local-steps 5 --share-trunk
+--trunk-owner first --inner-state`, 2 M round tokens, 488 rounds:
+
+```
+curve=['8.3978', '6.1939', '5.9851', '5.8270'] final 5.8270 5070.9s 394 tok/s rounds=488
+```
+
+against CUDA 5.8121 at the same configuration — **0.015 apart**, the same band as
+the earlier 0.025 agreement, so the tuned rate is not a CUDA artefact. (ROCm at
+4 M with the old outer 0.3 landed at 5.6526; that arm predates the tuning and is
+provenance only.)
+
 ## Noise floor (why every claim below is quoted to 0.1 nats)
 
 The harness is deterministic by construction: `build()` calls
