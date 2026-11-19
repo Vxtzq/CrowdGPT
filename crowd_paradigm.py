@@ -35,8 +35,28 @@ class ParadigmConfig:
     dust_sigma: float = 0.01
     dust_seed: int = 0
     mosaic_slices: int = 2
-    mosaic_local_steps: int = 30
-    mosaic_inner_lr: float = 3e-3
+    # Measured optimum at 65 M / 2 M tokens / 488 rounds, in that order: H=1
+    # 6.2730, H=5 5.8121, H=10 6.3883, H=20 8.0004 (it diverges), so five local
+    # steps is an interior optimum and the defaults ship that value, not the
+    # 30 steps this file was written with.
+    mosaic_local_steps: int = 5
+    # The inner rate is a weak lever (3x smaller moved nothing on either device),
+    # but the outer rate is not: `aggregate` applies `current + outer_lr * step`
+    # where `step` is already a full local AdamW displacement, so 1.0 re-applied
+    # the local step in full. Swept on fixed code: 1.0 -> 6.0902, 0.5 -> 5.9625,
+    # 0.3 -> 5.8446, 0.15 -> 5.8121, 0.1 -> 5.8825.
+    mosaic_inner_lr: float = 1e-3
+    mosaic_outer_lr: float = 0.15
+    mosaic_outer_momentum: float = 0.9
+    # The readout is `lm_head.weight is wte.weight`, so one tensor has two roles:
+    # the first slice trains it as an embedding, the terminal slice needs it as
+    # the output layer. With share_trunk the terminal slice trains it too, and
+    # `aggregate` averages the two proposals. Measured at 65 M: 7.25 (both roles
+    # on slice 0) vs 6.47 (readout only), so the ownership is worth ~0.8 nats;
+    # the extra `share_trunk` step is worth 0.03-0.05 on top of that, i.e. inside
+    # the 0.04 five-run spread, and is kept on because the tuned configuration
+    # (5.8121) was measured with it.
+    mosaic_share_trunk: bool = True
     relora_alpha: float = 1.0
 
     def __post_init__(self) -> None:
@@ -103,7 +123,9 @@ class Paradigm:
             from crowd_mosaic import MosaicConfig, attach as mosaic_attach
 
             return mosaic_attach(model, MosaicConfig(slices=self.type.mosaic_slices,
-                                                    local_steps=self.type.mosaic_local_steps))
+                                                    local_steps=self.type.mosaic_local_steps,
+                                                    outer_lr=self.type.mosaic_outer_lr,
+                                                    outer_momentum=self.type.mosaic_outer_momentum))
 
         from crowd_relora import attach
 
@@ -134,12 +156,16 @@ class Paradigm:
             from crowd_mosaic import MosaicConfig, aggregate, local_delta
 
             cfg = MosaicConfig(slices=self.type.mosaic_slices,
-                               local_steps=self.type.mosaic_local_steps)
+                               local_steps=self.type.mosaic_local_steps,
+                               outer_lr=self.type.mosaic_outer_lr,
+                               outer_momentum=self.type.mosaic_outer_momentum)
             splits = model.mosaic_splits
             current = {n: p.detach().clone() for n, p in model.named_parameters()}
             deltas = [local_delta(model, slices=splits, k=k, x=x, y=y,
                                   steps=cfg.local_steps, lr=self.type.mosaic_inner_lr,
-                                  loss_chunk=loss_chunk) for k in range(len(splits))]
+                                  loss_chunk=loss_chunk,
+                                  share_trunk=self.type.mosaic_share_trunk)
+                      for k in range(len(splits))]
             new_w, state = aggregate(current, deltas, cfg=cfg,
                                      state=getattr(model, "_mosaic_state", None))
             with __import__("torch").no_grad():

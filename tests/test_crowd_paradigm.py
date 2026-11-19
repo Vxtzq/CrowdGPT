@@ -89,3 +89,54 @@ def test_unknown_and_invalid_configs_are_rejected():
         select("relora", relora_rank=0)
     assert PARADIGMS == ("backprop", "solo", "relora", "dust", "mosaic")
     assert PENDING == ()
+
+
+def test_mosaic_ships_the_measured_optimum_and_uses_it(monkeypatch):
+    """The production defaults must be the configuration that was measured.
+
+    The rates in this file were originally the harness presets (H=30, inner
+    3e-3, outer 0.7), and at that configuration MOSAIC measured 6.4-7.2 at
+    65 M. Tuning the outer rate alone is worth 0.28 nats (1.0 -> 0.15) and the
+    local-step count matters by 0.46 (H=1 6.2730 vs H=5 5.8121), so shipping the
+    old defaults would ship the untuned method.
+    """
+    import crowd_mosaic
+
+    cfg = ParadigmConfig(name="mosaic")
+    assert cfg.mosaic_local_steps == 5
+    assert cfg.mosaic_inner_lr == 1e-3
+    assert cfg.mosaic_outer_lr == 0.15
+    assert cfg.mosaic_outer_momentum == 0.9
+    assert cfg.mosaic_share_trunk is True
+
+    seen = {}
+    real_local = crowd_mosaic.local_delta
+    real_agg = crowd_mosaic.aggregate
+
+    def spy_local(*a, **kw):
+        seen["share_trunk"] = kw.get("share_trunk")
+        seen["lr"] = kw.get("lr")
+        seen["steps"] = kw.get("steps")
+        return real_local(*a, **kw)
+
+    def spy_agg(*a, **kw):
+        cfg_ = kw.get("cfg")
+        seen["outer_lr"] = cfg_.outer_lr
+        seen["outer_momentum"] = cfg_.outer_momentum
+        return real_agg(*a, **kw)
+
+    monkeypatch.setattr(crowd_mosaic, "local_delta", spy_local)
+    monkeypatch.setattr(crowd_mosaic, "aggregate", spy_agg)
+
+    model = _Forwarding()
+    torch.manual_seed(0)
+    para = Paradigm(ParadigmConfig(name="mosaic"))
+    para.attach(model)
+    x, y = _batch(0)
+    para.step(model, x, y, loss_scale=1.0, loss_chunk=8)
+
+    assert seen["share_trunk"] is True
+    assert seen["lr"] == pytest.approx(1e-3)
+    assert seen["steps"] == 5
+    assert seen["outer_lr"] == pytest.approx(0.15)
+    assert seen["outer_momentum"] == pytest.approx(0.9)
