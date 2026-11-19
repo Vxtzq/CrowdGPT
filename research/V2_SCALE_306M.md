@@ -470,6 +470,38 @@ A control that cannot run is not a control, so this substitution is stated here
 rather than buried: the round-matched arm differs from the token-matched arm in
 per-step token count (4096 vs 2048), and that is the entire point.
 
+## 306 M, at the pre-declared round budget
+
+Preset V=4096, D=1024, L=24, H=16, T=512, B=4 (306 M parameters), 8 fixed val
+windows, init 8.5367. MOSAIC used the tuned configuration (H=5, inner 1e-3, outer
+0.15, momentum 0.9, `share_trunk`, trunk owned by the first slice, persistent inner
+state). Two updates of 4096 tokens = 488 and 976, i.e. the same round counts as the
+65 M table.
+
+| arm | updates / rounds | tokens | held-out | wall |
+|---|---|---|---|---|
+| backprop, round-matched (`--grad-accum 2`) | 488 | 2.00 M | **5.7631** | 430 s |
+| MOSAIC + anchor every 1 | 488 + 488 | 3.00 M | **5.5941** | 1658 s |
+| backprop, round-matched (`--grad-accum 2`) | 976 | 4.00 M | **5.3523** | 862 s |
+| MOSAIC + anchor every 2 | 488 + 244 | 2.50 M | pending | — |
+
+**At equal rounds the hybrid wins at 306 M too: 5.5941 vs 5.7631, −0.17 nats**,
+against −0.25 at 65 M. The effect is slightly smaller with scale, not larger, so
+the 65 M number was not a small-model artifact but it does not magnify either.
+
+**At equal total tokens it is now roughly level, not behind.** The anchor/1 arm
+spends 3.00 M tokens for 5.5941; backprop between 2 M (5.7631) and 4 M (5.3523)
+is worth about 5.56 at 3 M, and a backprop 3 M arm is queued to replace that
+interpolation with a measurement. At 65 M the same comparison was a clear loss
+(5.5854 at 3 M vs 5.4341), so if 306 M is level the gap *narrows* with scale —
+which is the opposite of the MOSAIC-without-anchoring trend (0.18 → 0.30).
+
+Two arms are still in flight and are named as such rather than left implied:
+`anchor every 2` at 306 M (the configuration that won at 65 M) on CUDA, where the
+anchor step had to drop to a 512-token batch because the anchor optimiser's own
+state plus gradients pushed a 2048-token step past 15.5 GB; and the same arm on
+ROCm gfx1150 at the full 2048-token batch, where 30 GB fits it.
+
 ## Aggregator anchoring: the first candidate that closes the gap
 
 Every algorithm change so far attacked the local step. This one changes *who

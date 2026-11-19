@@ -95,9 +95,10 @@ class Big(nn.Module):
         return self.lm_head(self.ln_f(self.run_blocks(self.embed(idx))))
 
 
-def batch(step, seed=0):
+def batch(step, seed=0, n=None):
+    n = B if n is None else int(n)
     g = torch.Generator().manual_seed(seed * 1_000_003 + step * 7919)
-    off = torch.randint(0, train.size - T - 1, (B,), generator=g).numpy()
+    off = torch.randint(0, train.size - T - 1, (n,), generator=g).numpy()
     x = np.stack([train[o:o + T] for o in off]).astype(np.int64)
     y = np.stack([train[o + 1:o + T + 1] for o in off]).astype(np.int64)
     return torch.from_numpy(x).to(DEV), torch.from_numpy(y).to(DEV)
@@ -170,7 +171,7 @@ def run_mosaic(tokens, slices=2, local_steps=30, inner_lr=3e-3,
                head_lr_mult=1.0, head_skip=False, overlap=0, head_mlp=False,
                fresh_local_batches=False, calib_every=0,
                outer_lr_final=None, schedule="cosine",
-               anchor_every=0, anchor_lr=3e-4,
+               anchor_every=0, anchor_lr=3e-4, anchor_batch=0,
                calib_steps=20, calib_lr=1e-2):
     model = build()
     n = sum(p.numel() for p in model.parameters())
@@ -270,7 +271,13 @@ def run_mosaic(tokens, slices=2, local_steps=30, inner_lr=3e-3,
                 if nm in new:
                     p.copy_(new[nm])
         if anchor_opt is not None and (r + 1) % int(anchor_every) == 0:
-            ax, ay = batch(10_000_000 + r)
+            # ``anchor_batch`` exists for the 306 M preset: the anchor optimiser's
+            # own state (2 x params fp32) plus its gradients pushed a B=4 anchor
+            # step over 15.5 GB, so the step can run at a smaller batch there while
+            # the 65 M ladder stays at the preset batch.
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            ax, ay = batch(10_000_000 + r, n=(int(anchor_batch) or B))
             anchor_opt.zero_grad(set_to_none=True)
             ce(model(ax), ay).backward()
             torch.nn.utils.clip_grad_norm_([q for q in model.parameters()
@@ -383,6 +390,8 @@ def main():
                     help="every N rounds, one full-model AdamW step on the true loss")
     ap.add_argument("--anchor-lr", type=float, default=3e-4,
                     help="lr for the periodic full-model anchoring step")
+    ap.add_argument("--anchor-batch", type=int, default=0,
+                    help="sequences per anchor step (0 = the preset batch; the 306 M preset needs a smaller one)")
     ap.add_argument("--calib-every", type=int, default=0,
                     help="re-fit each SOLO head to the frozen trunk every N rounds")
     ap.add_argument("--calib-steps", type=int, default=20,
@@ -431,7 +440,7 @@ def main():
                                   head_lr_mult=a.head_lr_mult,
                                   head_skip=a.head_skip,
                                   overlap=a.overlap,
-                                  anchor_every=a.anchor_every,
+                                  anchor_every=a.anchor_every, anchor_batch=a.anchor_batch,
                                   anchor_lr=a.anchor_lr,
                                   head_mlp=a.head_mlp,
                                   fresh_local_batches=a.fresh_local_batches,
