@@ -2757,6 +2757,7 @@ def _train_step_safe(model, x, y, sl, ua, ad, ls, preview, ladder, emit):
     while True:
         try:
             lo, cards = _fwl(model, x, y, sl, ua, ad, ls, preview=preview, loss_chunk=ladder.loss_chunk)
+            lo = _add_mtp(model, lo, x, y)
             lo.backward(); return lo, cards
         except RuntimeError as e:
             if not _is_oom(e): raise
@@ -2899,6 +2900,51 @@ def chunked_submit_delta(srv, h, delta_path, meta, emit, se):
                 emit("log", f"Chunk too large. Reducing to {chunk_size / (1024 * 1024):.0f} MB and retrying."); continue
             raise
 
+_MTP = {"loaded": False, "cfg": None}
+
+
+def _mtp_config():
+    """``CROWDGPT_MTP_TOKENS`` resolved once. None keeps the stock path untouched."""
+    if not _MTP["loaded"]:
+        try:
+            import crowd_mtp
+            _MTP["cfg"] = crowd_mtp.config_from_env()
+        except Exception as exc:
+            # A broken import must not stop a volunteer training next-token only.
+            print(f"⚠️ MTP disabled ({exc})", flush=True)
+            _MTP["cfg"] = None
+        _MTP["loaded"] = True
+    return _MTP["cfg"]
+
+
+def _attach_mtp(model, emit=None):
+    """Give the trunk extra prediction depths when the run asked for them."""
+    cfg = _mtp_config()
+    if cfg is None: return None
+    try:
+        import crowd_mtp
+        info = crowd_mtp.attach(model, cfg)
+    except Exception as exc:
+        if emit: emit('log', f"⚠️ MTP could not attach ({exc}); training next-token only")
+        return None
+    if emit: emit('log', f"🔮 MTP active: {info['depths']} extra depth(s), weight {info['weight']}")
+    return cfg
+
+
+def _add_mtp(model, loss, x, y):
+    """Fold the multi-token term into the step's loss (no-op when unattached).
+
+    Only the whole-trunk path can use it: a MOSAIC/SOLO slice has no readout of
+    its own, which is the same reason its local objective is auxiliary-head
+    based. Deliberately not wrapped in a bare except — a broken auxiliary loss
+    should fail the step loudly rather than silently train something else.
+    """
+    cfg = _mtp_config()
+    if cfg is None: return loss
+    import crowd_mtp
+    return loss + crowd_mtp.mtp_loss(model, x, y, cfg)
+
+
 def _build_model(bn, device, iw, ie, emit, bs=1, sl=MAX_SEQ_LEN,
                  u8_override=None, act_bytes_override=None, force_head_cpu=False):
     model = SotaGPT(bn, device, gpu_layers=None, bs=bs, sl=sl,
@@ -2908,6 +2954,7 @@ def _build_model(bn, device, iw, ie, emit, bs=1, sl=MAX_SEQ_LEN,
     if ENGRAM_ACTIVE and ie is not None: model.engram.table.weight.data.copy_(ie.view(model.engram.table.weight.shape))
     model.engram.table.to(model.engram_device)
     _attach_paradigm(model, emit)
+    _attach_mtp(model, emit)
     model.train(); return model
 
 def _paradigm_name():
@@ -3046,7 +3093,7 @@ def _bf16_from_bytes(buf, offset, nbytes):
 # byte-identical to the stock model: local tensors are skipped, and a ReLoRA
 # adapter is folded into the weight position it actually updates, so the server
 # needs no new layout to merge another round.
-_LOCAL_ONLY_PREFIXES = ('engram.', 'solo_heads.')
+_LOCAL_ONLY_PREFIXES = ('engram.', 'solo_heads.', 'mtp_projs.')
 
 def _lora_layers(model):
     """Map dotted module path -> LoRALinear wrapper (empty when ReLoRA is off)."""
@@ -3062,6 +3109,73 @@ def _is_server_param(name, lora_paths):
         return False
     parent, _, leaf = name.rpartition('.')
     return not (parent in lora_paths and leaf in ('A', 'B'))
+
+# Sparse-delta state, kept for the life of the process: the error-feedback
+# residual is only correct if it survives between rounds (that is the whole point).
+_SPARSE = {"feedback": None, "cfg": None}
+
+
+def _sparse_config():
+    """Resolve the sparse codec once; ``None`` means "do not use it"."""
+    if _SPARSE["cfg"] is not None: return _SPARSE["cfg"]
+    import crowd_sparse
+    cfg = crowd_sparse.config_from_env()
+    if cfg is not None:
+        _SPARSE["feedback"] = crowd_sparse.ErrorFeedback()
+        print(f"🔻 Sparse deltas: top {cfg.frac:.2%} of coordinates, "
+              f"error feedback {'on' if cfg.error_feedback else 'off'}")
+    _SPARSE["cfg"] = cfg
+    return cfg
+
+
+def _sparse_base_block(model, iw_bf16, cfg, feedback):
+    """Encode the server-visible delta as top-|value| entries (see `crowd_sparse`).
+
+    Returns ``(block_bytes, stats)``. Every entry carries a **global** index into
+    the flat server vector so the server can `index_add_` straight into the weights
+    it already holds: it never builds a dense 1.3 GB delta on the receive side.
+    The dropped mass goes back into ``feedback`` and is added to this tensor's next
+    delta, which is what keeps the codec unbiased instead of merely small.
+    """
+    import crowd_sparse
+    lora = _lora_layers(model)
+    o = 0; pairs = []
+    total_abs = sent_abs = 0.0; coords = 0; emitted = 0
+    for n, p in model.named_parameters():
+        if not _is_server_param(n, lora): continue
+        s = p.numel(); flat = p.detach().reshape(-1)
+        cur = flat.to('cpu', torch.float32)
+        if n.endswith('.base.weight'):
+            mod = lora.get(n[:-len('.base.weight')])
+            if mod is not None:
+                cur = cur + mod.delta_weight().detach().reshape(-1).to('cpu', torch.float32)
+        d = cur - iw_bf16[o:o + s].float()
+        d = feedback.correct(n, d)
+        idx, val = crowd_sparse.select(d, cfg)
+        kept = torch.zeros(s, dtype=torch.float32); kept[idx] = val
+        feedback.keep(n, d - kept)
+        total_abs += float(d.abs().sum()); sent_abs += float(val.abs().sum())
+        coords += s; emitted += int(idx.numel())
+        pairs.append((idx + o, val))
+        o += s
+    if o != iw_bf16.numel():
+        raise RuntimeError(f"delta size mismatch: {o} vs {iw_bf16.numel()}")
+    stats = {"emitted": emitted, "coords": coords,
+             "mass": total_abs, "massSent": sent_abs,
+             "feedbackBytes": feedback.bytes()}
+    return crowd_sparse.encode_block(pairs, o), stats
+
+
+def _write_delta_file_sparse(path, header_bytes, block, engram_arrays, level=6, piece=64 * 1024 * 1024):
+    """Same container as the dense path (gzip of header + base + engram tail), but the
+    base block is a sparse entry list. The header declares `baseBytes`, so the server
+    finds the engram tail after the entries instead of after `model_size * 2` bytes."""
+    with open(path, 'wb') as f, gzip.GzipFile(fileobj=f, mode='wb', compresslevel=level) as gz:
+        gz.write(header_bytes); gz.write(block)
+        for a in engram_arrays:
+            mv = memoryview(np.ascontiguousarray(a)).cast('B')
+            for i in range(0, len(mv), piece): gz.write(mv[i:i + piece])
+    return os.path.getsize(path)
 
 def _write_base_delta_bf16(gz, model, iw_bf16, piece=16 * 1024 * 1024):
     o = 0
@@ -3780,11 +3894,28 @@ def run_single_round_wrapper(srv, at, se, emit):
             "lossStd": float(fl_std),
             "lossSamples": int(round_loss_count),
         }
-        _codec = "ngd1" if (DELTA_CODEC == "ngd1" and not has_engram) else "off"
-        pl = json.dumps({"taskId": tid, "loss": fl, "localSteps": micro_step, "tokensProcessed": tt, "loraRank": 0, "isDelta": True, "weightFormat": "bf16", "hasEngram": has_engram, "engramSparseCount": engram_sparse_count, "deltaCodec": _codec, **submit_extra}).encode()
+        _sparse_cfg = _sparse_config() if DELTA_CODEC == "sparse" else None
+        _codec = ("sparse" if _sparse_cfg is not None
+                  else ("ngd1" if (DELTA_CODEC == "ngd1" and not has_engram) else "off"))
+        _block = None; _sparse_stats = None; _base_meta = {}
+        if _codec == "sparse":
+            # Built before the header: the server needs `baseBytes` to find the
+            # engram tail, and the length is only known once the entries exist.
+            _block, _sparse_stats = _sparse_base_block(model, iw, _sparse_cfg, _SPARSE["feedback"])
+            _base_meta = {"baseCodec": "sparse", "baseBytes": len(_block),
+                          "baseCount": _sparse_stats["emitted"]}
+        pl = json.dumps({"taskId": tid, "loss": fl, "localSteps": micro_step, "tokensProcessed": tt, "loraRank": 0, "isDelta": True, "weightFormat": "bf16", "hasEngram": has_engram, "engramSparseCount": engram_sparse_count, "deltaCodec": _codec, **_base_meta, **submit_extra}).encode()
         delta_fd, delta_path = tempfile.mkstemp(prefix="delta-", suffix=".gz", dir=str(CHECKPOINT_DIR)); os.close(delta_fd)
         try:
-            if _codec == "ngd1":
+            if _codec == "sparse":
+                delta_size = _write_delta_file_sparse(delta_path, struct.pack('<I', len(pl)) + pl,
+                                                      _block, (si, sv))
+                _m = (_sparse_stats["massSent"] / _sparse_stats["mass"]) if _sparse_stats["mass"] > 0 else 0.0
+                emit('log', f"[CODEC] sparse {_sparse_cfg.frac:.1%}: {_sparse_stats['emitted']:,}/"
+                            f"{_sparse_stats['coords']:,} entries ({_m:.1%} of |delta|), "
+                            f"{delta_size / (1024 * 1024):.1f} MB, residual "
+                            f"{_sparse_stats['feedbackBytes'] / (1024 * 1024):.1f} MB")
+            elif _codec == "ngd1":
                 delta_size = _write_delta_file_ngd1(delta_path, struct.pack('<I', len(pl)) + pl, model, iw)
                 emit('log', f"[CODEC] ngd1 payload {delta_size / (1024 * 1024):.1f} MB")
             else:
@@ -3793,9 +3924,9 @@ def run_single_round_wrapper(srv, at, se, emit):
             try: os.unlink(delta_path)
             except OSError: pass
             raise
-        finally: iw = None; model = None; del si, sv, pl; _clear_accel_cache(train_device); _trim_heap()
+        finally: iw = None; model = None; del si, sv, pl, _block; _clear_accel_cache(train_device); _trim_heap()
         
-        upload_size_mb = delta_size / (1024 * 1024); meta = {"taskId": tid, "loss": fl, "localSteps": micro_step, "tokensProcessed": tt, "loraRank": 0, "isDelta": True, "weightFormat": "bf16", "hasEngram": has_engram, "engramSparseCount": engram_sparse_count, "deltaCodec": _codec, **submit_extra}
+        upload_size_mb = delta_size / (1024 * 1024); meta = {"taskId": tid, "loss": fl, "localSteps": micro_step, "tokensProcessed": tt, "loraRank": 0, "isDelta": True, "weightFormat": "bf16", "hasEngram": has_engram, "engramSparseCount": engram_sparse_count, "deltaCodec": _codec, **_base_meta, **submit_extra}
         timing_handoff = _submit_delta_background(srv, h, delta_path, delta_size, meta, emit, se, hb=hb, timing=timing)   # discards the delta if refused
         uck.clear()
         threading.Thread(target=prefetch_latest_hf_weights, args=(se, emit), daemon=True).start()
