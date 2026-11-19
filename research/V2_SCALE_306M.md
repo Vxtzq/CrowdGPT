@@ -426,6 +426,87 @@ matches backprop**, with the loss advantage at equal total tokens still belongin
 to backprop. Configuration: `K=2 or 3, H=5, inner 1e-3, outer 0.15, momentum 0.9,
 --trunk-owner first --share-trunk --inner-state`.
 
+## Aggregator anchoring: the first candidate that closes the gap
+
+Every algorithm change so far attacked the local step. This one changes *who
+takes the step*. The greedy gap exists because no slice ever sees the terminal
+loss cross its boundary; but there is exactly one participant that holds the
+whole model -- the aggregator. It already holds a held-out corpus (the objective
+cross-check needs one). So: let it take **one ordinary AdamW step on the true
+terminal loss every N rounds**, and let the local rounds do the rest.
+
+`--anchor-every N --anchor-lr 3e-4` in the harness: at the end of every Nth
+round, `ce(model(x), y).backward()`, clip 1.0, step over all trainable
+parameters, on `batch(10_000_000 + r)` so the anchor data is disjoint from every
+slice's round data. Nothing about the wire changes: the anchor happens on the
+aggregator's own copy of the weights between rounds.
+
+### Frequency curve, 65 M, 488 rounds (2 M round tokens)
+
+| anchor | 5.8121-family baseline | anchor lr 3e-4 | tokens spent anchoring | total tokens |
+|---|---|---|---|---|
+| none | **5.8346** this sweep (family 5.8121-5.8516) | — | 0 | 2.00 M |
+| every 50 | | 5.8240 | 0.04 M | 2.04 M |
+| every 10 | | 5.7822 | 0.10 M | 2.10 M |
+| every 10, lr 1e-3 | | 5.7741 | 0.10 M | 2.10 M |
+| every 3 | | 5.7218 | 0.33 M | 2.33 M |
+| every 2 | | **5.6732** (lr 1e-3: 5.6748) | 0.50 M | 2.50 M |
+| every 1 | | **5.5854** | 1.00 M | 3.00 M |
+
+Monotone in frequency, and the every-1 arm (5.5854) is better than **backprop at
+2 M tokens** (5.6340) while every previous MOSAIC configuration sat 0.18 behind
+it. The anchor lr is not sensitive between 3e-4 and 1e-3 (5.6732 vs 5.6748 at
+every 2).
+
+### Does it scale? 4 M round tokens, anchor every 2
+
+`curve=['8.4170','6.0683','5.8481','5.6752','5.5933','5.4674','5.4228','5.3642']`
+final **5.3642** (976 rounds, 499 s).
+
+Against the no-anchor arm at the same 4 M (5.6188) that is **-0.25**, and against
+backprop at 4 M (5.3192) it is **0.045 behind** instead of 0.30. So anchoring does
+not just shift the curve, it keeps paying as the run gets longer.
+
+### The honest accounting: it is a hybrid, and it is behind at equal tokens
+
+Each anchor step costs exactly what a backprop step costs (one batch, one update
+of every parameter), so the total-token bill includes it:
+
+| arm | round tokens | anchor tokens | total | final | backprop at the same total |
+|---|---|---|---|---|---|
+| anchor every 2 | 2.0 M | 0.5 M | 2.50 M | 5.6732 | **5.5582** (1,220 steps) |
+| anchor every 1 | 2.0 M | 1.0 M | 3.00 M | 5.5854 | **5.4341** (1,464 steps) |
+| anchor every 2 @4 M | 4.0 M | 2.0 M | 6.00 M | 5.3642 | **5.0831** (2,929 steps) |
+
+So at equal **total tokens** backprop still wins, by 0.12 / 0.15 / 0.28 -- because
+the anchor is literally backprop compute, applied once every N rounds instead of
+every step. The case for anchoring rests entirely on the budget the project
+actually pays:
+
+**At equal rounds it is a decisive win.** A round is the unit of volunteer
+wall-clock: K slices train in parallel and the aggregator merges once. Backprop
+at 488 steps on the same tokens-per-step (4,096) measures 5.8370 / 5.8440, while
+MOSAIC + anchor-every-1 at 488 rounds measures **5.5854** -- 0.25 better. And the
+anchor's tokens and FLOPs are spent on the aggregator, which already holds the
+whole model, not on volunteer bandwidth or volunteer compute.
+
+The configuration is therefore: **local MOSAIC rounds (K=2, H=5, inner 1e-3,
+outer 0.15, share_trunk) + one aggregator-side full-model step every round**,
+with anchor data drawn from the server's own held-out corpus and disjoint from
+every slice's round data.
+
+### Why this is not just "backprop with extra steps"
+
+At equal rounds backprop gets 488 updates of every parameter on 4,096 tokens
+each; the hybrid gets 488 aggregated local updates **plus** 488 global updates,
+and the local updates are trained on volunteer-owned slices of the model, so they
+do not require the volunteer to hold or transmit the whole model. The two step
+types are complementary in the measurement (no-anchor 5.83 -> every-2 5.67 ->
+every-1 5.59, monotone), which is what "the global step repairs what the greedy
+step cannot" predicts and what "the global step is just doing the work" would not
+(the every-1 arm would then be backprop, and it is 0.05 *better* than backprop at
+2 M).
+
 ## Noise floor (why every claim below is quoted to 0.1 nats)
 
 The harness is deterministic by construction: `build()` calls

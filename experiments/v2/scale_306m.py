@@ -163,6 +163,7 @@ def run_mosaic(tokens, slices=2, local_steps=30, inner_lr=3e-3,
                head_lr_mult=1.0, head_skip=False, overlap=0, head_mlp=False,
                fresh_local_batches=False, calib_every=0,
                outer_lr_final=None, schedule="cosine",
+               anchor_every=0, anchor_lr=3e-4,
                calib_steps=20, calib_lr=1e-2):
     model = build()
     n = sum(p.numel() for p in model.parameters())
@@ -206,6 +207,18 @@ def run_mosaic(tokens, slices=2, local_steps=30, inner_lr=3e-3,
     state = None
     t0 = time.perf_counter()
     opt_state: dict | None = {} if inner_state else None
+    # Periodic anchoring: every `anchor_every` rounds, take ONE ordinary AdamW
+    # step on the true terminal loss over the WHOLE model. The point is to ask
+    # whether a cheap global gradient once in a while repairs what a round of
+    # greedy local steps cannot. Note the accounting mismatch: an anchor round
+    # processes one batch (B*T tokens) and updates every parameter once, which is
+    # exactly what an ordinary backprop step costs, so at anchor_every=10 it adds
+    # 10% to the token bill of a round and 10% to the parameter-update count.
+    anchor_opt = None
+    if anchor_every:
+        anchor_opt = torch.optim.AdamW([q for q in model.parameters() if q.requires_grad],
+                                       lr=float(anchor_lr), betas=(0.9, 0.95),
+                                       weight_decay=0.01)
     for r in range(rounds):
         # Snapshot BEFORE the local steps: aggregate() adds outer_lr*delta to the
         # base it is given, so passing the post-step weights applies the local
@@ -249,6 +262,13 @@ def run_mosaic(tokens, slices=2, local_steps=30, inner_lr=3e-3,
             for nm, p in model.named_parameters():
                 if nm in new:
                     p.copy_(new[nm])
+        if anchor_opt is not None and (r + 1) % int(anchor_every) == 0:
+            ax, ay = batch(10_000_000 + r)
+            anchor_opt.zero_grad(set_to_none=True)
+            ce(model(ax), ay).backward()
+            torch.nn.utils.clip_grad_norm_([q for q in model.parameters()
+                                            if q.requires_grad], 1.0)
+            anchor_opt.step()
         seen += per_round
         if seen >= nxt:
             curve.append(evaluate(model))
@@ -268,6 +288,7 @@ def run_mosaic(tokens, slices=2, local_steps=30, inner_lr=3e-3,
             "headLrMult": float(head_lr_mult), "headSkip": bool(head_skip), "overlap": int(overlap),
             "headMlp": bool(head_mlp), "freshLocalBatches": bool(fresh_local_batches),
             "outerLrFinal": outer_lr_final, "schedule": schedule,
+            "anchorEvery": int(anchor_every), "anchorLr": float(anchor_lr),
             "calibEvery": int(calib_every), "calibSteps": int(calib_steps),
             "outerMomentum": outer_momentum,
             "innerState": bool(inner_state),
@@ -349,6 +370,10 @@ def main():
                     help="give each auxiliary head a hidden layer")
     ap.add_argument("--overlap", type=int, default=0,
                     help="extra blocks each side of a slice boundary, trained by both")
+    ap.add_argument("--anchor-every", type=int, default=0,
+                    help="every N rounds, one full-model AdamW step on the true loss")
+    ap.add_argument("--anchor-lr", type=float, default=3e-4,
+                    help="lr for the periodic full-model anchoring step")
     ap.add_argument("--calib-every", type=int, default=0,
                     help="re-fit each SOLO head to the frozen trunk every N rounds")
     ap.add_argument("--calib-steps", type=int, default=20,
@@ -397,6 +422,8 @@ def main():
                                   head_lr_mult=a.head_lr_mult,
                                   head_skip=a.head_skip,
                                   overlap=a.overlap,
+                                  anchor_every=a.anchor_every,
+                                  anchor_lr=a.anchor_lr,
                                   head_mlp=a.head_mlp,
                                   fresh_local_batches=a.fresh_local_batches,
                                   outer_lr_final=a.outer_lr_final,
