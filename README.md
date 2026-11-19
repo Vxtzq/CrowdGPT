@@ -58,7 +58,66 @@ Crowd-v1 has been trained on **42B** total tokens.
 **Disclaimer: This does not mean Crowd-v1 is an intelligent model. It just means it is good at general english** (these benchmarks are generally not hard)
 
 # CrowdGPT v3.5 changelog
-- Crowd-v1.5 is coming...
+- Crowd-v1.5 is here: five training paradigms, multi-token prediction, and two
+  ways to send less over the wire. Everything below is **opt-in** — with no flags
+  and no environment variables the client behaves exactly as it did in v1, so a
+  v1.5 coordinator still serves v1 volunteers.
+
+## v1.5 operating notes
+
+### Choosing a training rule
+
+`--paradigm` (or `CROWDGPT_PARADIGM`) selects how a round is trained and what is
+uploaded. Unset means the stock backprop path.
+
+| paradigm | what a volunteer trains | extra switches |
+|---|---|---|
+| `backprop` | the whole model, ordinary CE | — |
+| `solo` | its module, through a local auxiliary head | `CROWDGPT_SOLO_MODULES` (default 2) |
+| `relora` | low-rank adapters only, folded into the weight slice on upload | `CROWDGPT_RELORA_RANK` (default 8) |
+| `dust` | a random-direction ensemble estimate (no gradients) | `CROWDGPT_DUST_POPULATION`, `CROWDGPT_DUST_SIGMA` |
+| `mosaic` | one contiguous slice, aggregated by the server | `CROWDGPT_MOSAIC_SLICES`, `CROWDGPT_MOSAIC_LOCAL_STEPS` |
+
+The upload is the server's flat whole-model layout under every paradigm, so the
+coordinator does not need to know which rule a volunteer used. Measured
+trade-offs, including which paradigms are *not* worth deploying, are in
+`research/V2_PARADIGMS.md`, `research/V2_SCALE_306M.md` and `research/V2_COMPAT.md`.
+
+### Sending less
+
+Two independent knobs, both off by default:
+
+- **Engram rows.** Only the rows carrying `CROWDGPT_ENGRAM_DELTA_MASS` (default
+  0.995) of the update mass are uploaded, capped at
+  `CROWDGPT_ENGRAM_DELTA_MAX_FRAC` (default 0.10) of the table.
+- **Delta codec.** `CROWDGPT_DELTA_CODEC=sparse` sends the top
+  `CROWDGPT_SPARSE_FRAC` (default 0.02) of coordinates by magnitude with error
+  feedback on the residual (`CROWDGPT_SPARSE_FEEDBACK`, default on); the server
+  reconstructs and scatters them (`SPK1` blocks, declared block length). `ngd1`
+  is the existing 1-bit sign codec. Measured cost and fidelity per setting are in
+  `research/V2_TRANSFER.md` — it is a bandwidth knob with a real fidelity price,
+  and **low-rank is the better direction** at equal bytes (0.23 vs 0.94 relative
+  error at 4.8 MB), which is why the dense default stays.
+
+### Multi-token prediction
+
+`CROWDGPT_MTP_TOKENS=4` (and optionally `CROWDGPT_MTP_WEIGHT`, default 0.2) adds
+prediction heads for the next 4 tokens on top of the next-token loss. The
+projections are identity-initialised, live only on the volunteer, and never reach
+the wire. Backprop path only — a MOSAIC or SOLO slice has no readout of its own.
+
+### Coordinator side (CrowdGPT-Server)
+
+- `CROWDGPT_OUTER_MOMENTUM` — DiLoCo's outer step (default 0.0 = plain FedAvg).
+- `CROWDGPT_ANCHOR_EVERY` + `CROWDGPT_ANCHOR_FACTORY=module:callable` — one
+  full-model step on the server every N rounds. This is the only change that beat
+  backprop at an equal round budget (306 M: 5.5941 vs 5.7631); leave it off in a
+  token-bound deployment.
+- The objective cross-check judges submissions on **paired per-window deltas** and
+  refuses to pretend when it cannot measure: `/fl/round_status` reports
+  `objectiveGate` with levels `unmeasured` / `degraded` / `ok`, and an unmeasured
+  gate logs an error every round instead of silently accepting everything.
+
   
 ## What is CrowdGPT?
 
