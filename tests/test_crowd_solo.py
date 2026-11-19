@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from crowd_solo import (  # noqa: E402
     DEFAULT_MODULES,
+    SoloHead,
     build_solo_heads,
     chunked_solo_ce,
     is_uploaded_param,
@@ -178,7 +179,10 @@ def test_solo_step_trains_every_module_and_every_head():
     assert all(v > 0 for v in local)
 
     for name, p in model.named_parameters():
-        if name.startswith("solo_heads."):
+        # The optional skip path (DGL-style input view) is zero-initialised and
+        # only fed when a caller supplies the module input, which solo_step does
+        # not; every always-active head tensor must still receive a gradient.
+        if name.startswith("solo_heads.") and ".skip." not in name:
             assert p.grad is not None, name
     for i, _ in enumerate(model.blocks):
         assert model.blocks[i].lin.weight.grad is not None, f"block {i} got no gradient"
@@ -237,6 +241,32 @@ def test_solo_heads_are_client_local():
     assert not is_uploaded_param("solo_heads.0.phi.weight")
     assert not is_uploaded_param("solo_heads.1.tau")
     assert not is_uploaded_param("engram.table.weight")
+
+
+def test_head_capacity_is_opt_in_and_off_by_default():
+    """A wider head must be an A/B, not a silent change to every SOLO run.
+
+    The single-linear head is the published SOLO form; a hidden layer is the
+    DGL-inspired capacity experiment, so it has to be bit-identical when off.
+    """
+    plain = SoloHead(dim=8, vocab=16)
+    assert plain.phi2 is None
+    assert not any(n.startswith("phi2") for n, _ in plain.named_parameters())
+
+    h = torch.randn(2, 5, 8)
+    assert torch.equal(plain.project(h), plain.phi(plain.ln(h)))
+
+    wide = SoloHead(dim=8, vocab=16, mlp=True)
+    assert wide.phi2 is not None
+    expected = wide.phi2(torch.nn.functional.gelu(wide.phi(wide.ln(h))))
+    assert torch.allclose(wide.project(h), expected)
+    assert not torch.allclose(wide.project(h), plain.project(h))
+
+
+def test_build_solo_heads_forwards_the_capacity_flag():
+    assert all(head.phi2 is None for head in build_solo_heads(8, 16, 3).values())
+    assert all(head.phi2 is not None
+               for head in build_solo_heads(8, 16, 3, mlp=True).values())
 
 
 def test_solo_step_requires_heads_and_two_modules():

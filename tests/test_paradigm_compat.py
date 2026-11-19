@@ -166,5 +166,10 @@ def test_mosaic_slices_are_name_based_so_relora_wrapping_cannot_break_them():
     assert slice_of("blocks.0.lin.weight", splits) == 0
     assert slice_of("blocks.0.lin.base.weight", splits) == 0
     assert slice_of("blocks.3.lin.B", splits) == 1
-    assert slice_of("ln_f.weight", splits) is None
+    # The trunk ends belong to a slice: leaving them out of every optimiser is
+    # what kept the tied readout frozen (measured 7.25 vs 6.47 at 65 M), so
+    # `wte` is the first slice's and `ln_f` / the readout the last slice's.
+    assert slice_of("wte.weight", splits) == 0
+    assert slice_of("ln_f.weight", splits) == 1
+    assert slice_of("solo_heads.0.phi.weight", splits) is None
     assert DIM > 0  # imported for the shared tiny model
