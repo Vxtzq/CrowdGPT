@@ -562,11 +562,21 @@ nav a.nav-with-badge {
   border-color: var(--border-strong);
 }
 
+.flag-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
 .lang-flag {
-  font-size: 1.15em;
-  line-height: 1;
-  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
   display: block;
+  width: 18px;
+  height: 12px;
+  flex-shrink: 0;
+  border-radius: 2px;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px rgba(128, 128, 128, 0.35);
 }
 
 .lang-chevron {
@@ -1038,11 +1048,16 @@ nav a.nav-with-badge {
   flex-shrink: 0;
 }
 
-.hf-emoji {
-  font-size: 1.08em;
-  line-height: 1;
-  filter: none;
-  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+.hf-logo {
+  display: inline-flex;
+  flex-shrink: 0;
+  line-height: 0;
+}
+
+.btn-hf .hf-logo svg {
+  width: 1.24em;
+  height: 1.15em;
+  display: block;
 }
 
 .hero-image-wrap {
@@ -3085,6 +3100,53 @@ footer {
 </head>
 <body>
 
+<svg class="flag-defs" aria-hidden="true" focusable="false">
+  <symbol id="fl-en" viewBox="0 0 60 40">
+    <rect width="60" height="40" fill="#012169"/>
+    <path d="M0 0 60 40M60 0 0 40" stroke="#fff" stroke-width="8"/>
+    <path d="M0 0 60 40M60 0 0 40" stroke="#C8102E" stroke-width="3"/>
+    <path d="M30 0V40M0 20H60" stroke="#fff" stroke-width="13"/>
+    <path d="M30 0V40M0 20H60" stroke="#C8102E" stroke-width="8"/>
+  </symbol>
+  <symbol id="fl-fr" viewBox="0 0 60 40">
+    <rect width="60" height="40" fill="#fff"/>
+    <rect width="20" height="40" fill="#002395"/>
+    <rect x="40" width="20" height="40" fill="#ED2939"/>
+  </symbol>
+  <symbol id="fl-de" viewBox="0 0 60 40">
+    <rect width="60" height="13.34" fill="#000"/>
+    <rect y="13.33" width="60" height="13.34" fill="#DD0000"/>
+    <rect y="26.66" width="60" height="13.34" fill="#FFCE00"/>
+  </symbol>
+  <symbol id="fl-es" viewBox="0 0 60 40">
+    <rect width="60" height="40" fill="#AA151B"/>
+    <rect y="10" width="60" height="20" fill="#F1BF00"/>
+  </symbol>
+  <symbol id="fl-tr" viewBox="0 0 60 40">
+    <rect width="60" height="40" fill="#E30A17"/>
+    <circle cx="23" cy="20" r="9" fill="#fff"/>
+    <circle cx="26.5" cy="20" r="7.2" fill="#E30A17"/>
+    <polygon fill="#fff" points="34,15.5 35.06,18.54 38.28,18.61 35.71,20.56 36.65,23.64 34,21.8 31.36,23.64 32.29,20.56 29.72,18.61 32.94,18.54"/>
+  </symbol>
+  <symbol id="fl-zh" viewBox="0 0 60 40">
+    <rect width="60" height="40" fill="#DE2910"/>
+    <polygon fill="#FFDE00" points="10.0,4.0 11.3,8.1 15.7,8.1 12.2,10.7 13.5,14.9 10.0,12.3 6.5,14.9 7.8,10.7 4.3,8.1 8.7,8.1"/>
+    <polygon fill="#FFDE00" points="18.3,5.0 19.2,3.9 18.5,2.7 19.8,3.3 20.8,2.2 20.7,3.6 22.0,4.2 20.6,4.5 20.4,5.9 19.7,4.7"/>
+    <polygon fill="#FFDE00" points="22.0,8.3 23.3,7.6 23.1,6.2 24.1,7.2 25.4,6.6 24.8,7.9 25.8,8.9 24.3,8.7 23.7,10.0 23.5,8.5"/>
+    <polygon fill="#FFDE00" points="22.1,13.5 23.5,13.4 23.9,12.0 24.4,13.4 25.9,13.3 24.7,14.2 25.2,15.6 24.0,14.8 22.9,15.7 23.3,14.3"/>
+    <polygon fill="#FFDE00" points="18.4,16.8 19.8,17.3 20.7,16.1 20.6,17.6 22.0,18.1 20.6,18.5 20.5,19.9 19.7,18.7 18.3,19.1 19.2,18.0"/>
+  </symbol>
+</svg>
+
+<div id="cgpt-ann" class="cgpt-ann" hidden>
+  <div class="cgpt-ann-inner">
+    <span class="cgpt-ann-icon" aria-hidden="true">📣</span>
+    <span class="cgpt-ann-text" id="cgpt-ann-text"></span>
+    <a class="cgpt-ann-btn" href="#status" data-view="status" data-scroll="roadmap" data-i18n="ann.roadmap">View roadmap</a>
+    <button type="button" class="cgpt-ann-close" id="cgpt-ann-close" aria-label="Dismiss announcement">×</button>
+  </div>
+</div>
+
 <header>
   <div class="header-inner">
     <div class="logo" data-view="home" role="link" tabindex="0" aria-label="GPT home">
@@ -3106,15 +3168,16 @@ footer {
     </nav>
     <div class="lang-select" id="lang-select">
       <button class="lang-btn" id="lang-btn" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="Change language">
-        <span class="lang-flag" id="lang-flag">🇬🇧</span>
+        <svg class="lang-flag" id="lang-flag" aria-hidden="true" focusable="false"><use id="lang-flag-use" href="#fl-en" xlink:href="#fl-en"/></svg>
         <svg class="lang-chevron" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
       </button>
       <div class="lang-menu" id="lang-menu" role="listbox">
-        <button class="lang-item active" data-lang="en" type="button" role="option" aria-selected="true"><span class="lang-flag">🇬🇧</span><span>English</span></button>
-        <button class="lang-item" data-lang="fr" type="button" role="option" aria-selected="false"><span class="lang-flag">🇫🇷</span><span>Français</span></button>
-        <button class="lang-item" data-lang="de" type="button" role="option" aria-selected="false"><span class="lang-flag">🇩🇪</span><span>Deutsch</span></button>
-        <button class="lang-item" data-lang="es" type="button" role="option" aria-selected="false"><span class="lang-flag">🇪🇸</span><span>Español</span></button>
-        <button class="lang-item" data-lang="tr" type="button" role="option" aria-selected="false"><span class="lang-flag">🇹🇷</span><span>Türkçe</span></button>
+        <button class="lang-item active" data-lang="en" type="button" role="option" aria-selected="true"><svg class="lang-flag" aria-hidden="true" focusable="false"><use href="#fl-en" xlink:href="#fl-en"/></svg><span>English</span></button>
+        <button class="lang-item" data-lang="fr" type="button" role="option" aria-selected="false"><svg class="lang-flag" aria-hidden="true" focusable="false"><use href="#fl-fr" xlink:href="#fl-fr"/></svg><span>Français</span></button>
+        <button class="lang-item" data-lang="de" type="button" role="option" aria-selected="false"><svg class="lang-flag" aria-hidden="true" focusable="false"><use href="#fl-de" xlink:href="#fl-de"/></svg><span>Deutsch</span></button>
+        <button class="lang-item" data-lang="es" type="button" role="option" aria-selected="false"><svg class="lang-flag" aria-hidden="true" focusable="false"><use href="#fl-es" xlink:href="#fl-es"/></svg><span>Español</span></button>
+        <button class="lang-item" data-lang="tr" type="button" role="option" aria-selected="false"><svg class="lang-flag" aria-hidden="true" focusable="false"><use href="#fl-tr" xlink:href="#fl-tr"/></svg><span>Türkçe</span></button>
+        <button class="lang-item" data-lang="zh" type="button" role="option" aria-selected="false"><svg class="lang-flag" aria-hidden="true" focusable="false"><use href="#fl-zh" xlink:href="#fl-zh"/></svg><span>简体中文</span></button>
       </div>
     </div>
     <a href="https://github.com/Vxtzq/CrowdGPT" target="_blank" class="gh-btn" rel="noopener noreferrer">
@@ -3178,8 +3241,12 @@ footer {
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
             </a>
             <a class="btn btn-hf" href="https://huggingface.co/Vxtzq/Crowd-v1.5" target="_blank" rel="noopener noreferrer">
-              <span class="hf-emoji" aria-hidden="true">🤗</span>
-              <span data-i18n="home.hero.hf">View on HuggingFace</span>
+              <span class="hf-logo" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 95 88" fill="none"> <path fill="#FFD21E" d="M47.21 76.5a34.75 34.75 0 1 0 0-69.5 34.75 34.75 0 0 0 0 69.5Z" /> <path fill="#FF9D0B" d="M81.96 41.75a34.75 34.75 0 1 0-69.5 0 34.75 34.75 0 0 0 69.5 0Zm-73.5 0a38.75 38.75 0 1 1 77.5 0 38.75 38.75 0 0 1-77.5 0Z" /> <path fill="#3A3B45" d="M58.5 32.3c1.28.44 1.78 3.06 3.07 2.38a5 5 0 1 0-6.76-2.07c.61 1.15 2.55-.72 3.7-.32ZM34.95 32.3c-1.28.44-1.79 3.06-3.07 2.38a5 5 0 1 1 6.76-2.07c-.61 1.15-2.56-.72-3.7-.32Z" /> <path fill="#FF323D" d="M46.96 56.29c9.83 0 13-8.76 13-13.26 0-2.34-1.57-1.6-4.09-.36-2.33 1.15-5.46 2.74-8.9 2.74-7.19 0-13-6.88-13-2.38s3.16 13.26 13 13.26Z" /> <path fill="#3A3B45" fill-rule="evenodd" d="M39.43 54a8.7 8.7 0 0 1 5.3-4.49c.4-.12.81.57 1.24 1.28.4.68.82 1.37 1.24 1.37.45 0 .9-.68 1.33-1.35.45-.7.89-1.38 1.32-1.25a8.61 8.61 0 0 1 5 4.17c3.73-2.94 5.1-7.74 5.1-10.7 0-2.34-1.57-1.6-4.09-.36l-.14.07c-2.31 1.15-5.39 2.67-8.77 2.67s-6.45-1.52-8.77-2.67c-2.6-1.29-4.23-2.1-4.23.29 0 3.05 1.46 8.06 5.47 10.97Z" clip-rule="evenodd" /> <path fill="#FF9D0B" d="M70.71 37a3.25 3.25 0 1 0 0-6.5 3.25 3.25 0 0 0 0 6.5ZM24.21 37a3.25 3.25 0 1 0 0-6.5 3.25 3.25 0 0 0 0 6.5ZM17.52 48c-1.62 0-3.06.66-4.07 1.87a5.97 5.97 0 0 0-1.33 3.76 7.1 7.1 0 0 0-1.94-.3c-1.55 0-2.95.59-3.94 1.66a5.8 5.8 0 0 0-.8 7 5.3 5.3 0 0 0-1.79 2.82c-.24.9-.48 2.8.8 4.74a5.22 5.22 0 0 0-.37 5.02c1.02 2.32 3.57 4.14 8.52 6.1 3.07 1.22 5.89 2 5.91 2.01a44.33 44.33 0 0 0 10.93 1.6c5.86 0 10.05-1.8 12.46-5.34 3.88-5.69 3.33-10.9-1.7-15.92-2.77-2.78-4.62-6.87-5-7.77-.78-2.66-2.84-5.62-6.25-5.62a5.7 5.7 0 0 0-4.6 2.46c-1-1.26-1.98-2.25-2.86-2.82A7.4 7.4 0 0 0 17.52 48Zm0 4c.51 0 1.14.22 1.82.65 2.14 1.36 6.25 8.43 7.76 11.18.5.92 1.37 1.31 2.14 1.31 1.55 0 2.75-1.53.15-3.48-3.92-2.93-2.55-7.72-.68-8.01.08-.02.17-.02.24-.02 1.7 0 2.45 2.93 2.45 2.93s2.2 5.52 5.98 9.3c3.77 3.77 3.97 6.8 1.22 10.83-1.88 2.75-5.47 3.58-9.16 3.58-3.81 0-7.73-.9-9.92-1.46-.11-.03-13.45-3.8-11.76-7 .28-.54.75-.76 1.34-.76 2.38 0 6.7 3.54 8.57 3.54.41 0 .7-.17.83-.6.79-2.85-12.06-4.05-10.98-8.17.2-.73.71-1.02 1.44-1.02 3.14 0 10.2 5.53 11.68 5.53.11 0 .2-.03.24-.1.74-1.2.33-2.04-4.9-5.2-5.21-3.16-8.88-5.06-6.8-7.33.24-.26.58-.38 1-.38 3.17 0 10.66 6.82 10.66 6.82s2.02 2.1 3.25 2.1c.28 0 .52-.1.68-.38.86-1.46-8.06-8.22-8.56-11.01-.34-1.9.24-2.85 1.31-2.85Z" /> <path fill="#FFD21E" d="M38.6 76.69c2.75-4.04 2.55-7.07-1.22-10.84-3.78-3.77-5.98-9.3-5.98-9.3s-.82-3.2-2.69-2.9c-1.87.3-3.24 5.08.68 8.01 3.91 2.93-.78 4.92-2.29 2.17-1.5-2.75-5.62-9.82-7.76-11.18-2.13-1.35-3.63-.6-3.13 2.2.5 2.79 9.43 9.55 8.56 11-.87 1.47-3.93-1.71-3.93-1.71s-9.57-8.71-11.66-6.44c-2.08 2.27 1.59 4.17 6.8 7.33 5.23 3.16 5.64 4 4.9 5.2-.75 1.2-12.28-8.53-13.36-4.4-1.08 4.11 11.77 5.3 10.98 8.15-.8 2.85-9.06-5.38-10.74-2.18-1.7 3.21 11.65 6.98 11.76 7.01 4.3 1.12 15.25 3.49 19.08-2.12Z" /> <path fill="#FF9D0B" d="M77.4 48c1.62 0 3.07.66 4.07 1.87a5.97 5.97 0 0 1 1.33 3.76 7.1 7.1 0 0 1 1.95-.3c1.55 0 2.95.59 3.94 1.66a5.8 5.8 0 0 1 .8 7 5.3 5.3 0 0 1 1.78 2.82c.24.9.48 2.8-.8 4.74a5.22 5.22 0 0 1 .37 5.02c-1.02 2.32-3.57 4.14-8.51 6.1-3.08 1.22-5.9 2-5.92 2.01a44.33 44.33 0 0 1-10.93 1.6c-5.86 0-10.05-1.8-12.46-5.34-3.88-5.69-3.33-10.9 1.7-15.92 2.78-2.78 4.63-6.87 5.01-7.77.78-2.66 2.83-5.62 6.24-5.62a5.7 5.7 0 0 1 4.6 2.46c1-1.26 1.98-2.25 2.87-2.82A7.4 7.4 0 0 1 77.4 48Zm0 4c-.51 0-1.13.22-1.82.65-2.13 1.36-6.25 8.43-7.76 11.18a2.43 2.43 0 0 1-2.14 1.31c-1.54 0-2.75-1.53-.14-3.48 3.91-2.93 2.54-7.72.67-8.01a1.54 1.54 0 0 0-.24-.02c-1.7 0-2.45 2.93-2.45 2.93s-2.2 5.52-5.97 9.3c-3.78 3.77-3.98 6.8-1.22 10.83 1.87 2.75 5.47 3.58 9.15 3.58 3.82 0 7.73-.9 9.93-1.46.1-.03 13.45-3.8 11.76-7-.29-.54-.75-.76-1.34-.76-2.38 0-6.71 3.54-8.57 3.54-.42 0-.71-.17-.83-.6-.8-2.85 12.05-4.05 10.97-8.17-.19-.73-.7-1.02-1.44-1.02-3.14 0-10.2 5.53-11.68 5.53-.1 0-.19-.03-.23-.1-.74-1.2-.34-2.04 4.88-5.2 5.23-3.16 8.9-5.06 6.8-7.33-.23-.26-.57-.38-.98-.38-3.18 0-10.67 6.82-10.67 6.82s-2.02 2.1-3.24 2.1a.74.74 0 0 1-.68-.38c-.87-1.46 8.05-8.22 8.55-11.01.34-1.9-.24-2.85-1.31-2.85Z" /> <path fill="#FFD21E" d="M56.33 76.69c-2.75-4.04-2.56-7.07 1.22-10.84 3.77-3.77 5.97-9.3 5.97-9.3s.82-3.2 2.7-2.9c1.86.3 3.23 5.08-.68 8.01-3.92 2.93.78 4.92 2.28 2.17 1.51-2.75 5.63-9.82 7.76-11.18 2.13-1.35 3.64-.6 3.13 2.2-.5 2.79-9.42 9.55-8.55 11 .86 1.47 3.92-1.71 3.92-1.71s9.58-8.71 11.66-6.44c2.08 2.27-1.58 4.17-6.8 7.33-5.23 3.16-5.63 4-4.9 5.2.75 1.2 12.28-8.53 13.36-4.4 1.08 4.11-11.76 5.3-10.97 8.15.8 2.85 9.05-5.38 10.74-2.18 1.69 3.21-11.65 6.98-11.76 7.01-4.31 1.12-15.26 3.49-19.08-2.12Z" /> </svg></span>
+              <span data-i18n="home.hero.hf">Huggingface</span>
+            </a>
+            <a class="btn btn-discord" href="https://discord.gg/2Shwqj3Xpx" target="_blank" rel="noopener noreferrer">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z"/></svg>
+              <span data-i18n="home.hero.discord">Discord</span>
             </a>
           </div>
         </div>
@@ -3257,6 +3324,7 @@ footer {
               <div>
                 <h3 data-i18n="home.feature.transparent.title">Transparent.</h3>
                 <p data-i18n="home.feature.transparent.body">The client is a single, human-readable Python file that anyone can audit and modify. Model weights are downloadable, 100% free and open on HuggingFace.</p>
+                <a href="#" class="feature-link" data-logs data-i18n="home.feature.transparent.logs">View server logs</a>
               </div>
             </div>
           </div>
@@ -3530,8 +3598,51 @@ footer {
       <div class="pool-breakdown-grid" id="pool-breakdown-grid"></div>
     </div>
 
-    <div style="display:flex;justify-content:flex-end;margin-bottom:29px;">
-      <button class="btn btn-ghost" id="btn-logs" data-i18n="status.logs.btn">View server logs</button>
+    <div class="roadmap-section" id="roadmap">
+      <div class="roadmap-head">
+        <h2 data-i18n="status.roadmap.title">Roadmap</h2>
+        <p data-i18n="status.roadmap.sub">What we have shipped, what we are building right now, and what comes next.</p>
+      </div>
+      <div class="roadmap-list">
+        <div class="roadmap-item rm-shipped">
+          <div class="roadmap-step">01</div>
+          <div class="roadmap-body">
+            <div class="roadmap-top">
+              <h3>Crowd-v1</h3>
+              <span class="roadmap-state" data-i18n="status.roadmap.state.shipped">Shipped</span>
+            </div>
+            <p data-i18n="status.roadmap.v1">A 1B model pretrained entirely by the community on consumer GPUs, released openly on Hugging Face.</p>
+          </div>
+        </div>
+        <div class="roadmap-item rm-active">
+          <div class="roadmap-step">02</div>
+          <div class="roadmap-body">
+            <div class="roadmap-top">
+              <h3>Crowd-v1.5</h3>
+              <span class="roadmap-state" data-i18n="status.roadmap.state.active">In progress</span>
+            </div>
+            <p data-i18n="status.roadmap.v15">The next base model. Same pipeline, rebuilt from scratch with a stricter aggregation and cross-check.</p>
+          </div>
+        </div>
+        <div class="roadmap-item rm-planned">
+          <div class="roadmap-step">03</div>
+          <div class="roadmap-body">
+            <div class="roadmap-top">
+              <h3>Crowd-Mobile</h3>
+              <span class="roadmap-state" data-i18n="status.roadmap.state.planned">Planned</span>
+            </div>
+            <p data-i18n="status.roadmap.mobile">An LLM without backprop.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="logs-cta">
+      <div class="logs-cta-text">
+        <h3 data-i18n="status.logs.cta.title">See what's happening under the hood</h3>
+        <p data-i18n="status.logs.cta.body">The coordinator writes everything it does to a plain stdout log: shards assigned, updates received, validation failures, aggregation rounds. You can view the whole history with the click of a button.</p>
+      </div>
+      <button class="btn btn-logs" id="btn-logs" data-i18n="status.logs.btn">View server logs</button>
     </div>
 
     <div class="content">
@@ -3745,13 +3856,15 @@ footer {
     </div>
   </div>
 </div>
-  
+
 <footer>
   <div class="footer-inner">
     <div data-i18n-html="footer.copy">CrowdGPT - GPL3.0 License - server.crowdgpt.net proudly hosted by <a href="https://xevex.dev" target="_blank" rel="noopener noreferrer">xevex</a></div>
     <div class="footer-links">
       <a href="https://github.com/Vxtzq/CrowdGPT" target="_blank" rel="noopener noreferrer">GitHub</a>
       <a href="https://github.com/Vxtzq/CrowdGPT/tree/main/docs" target="_blank" rel="noopener noreferrer" data-i18n="footer.docs">Docs</a>
+      <a href="#status" data-view="status" data-scroll="roadmap">Roadmap</a>
+      <a href="https://discord.gg/2Shwqj3Xpx" target="_blank" rel="noopener noreferrer">Discord</a>
       <a href="mailto:vxtzqmc@gmail.com" data-i18n="footer.contact">Contact</a>
     </div>
   </div>
@@ -3779,7 +3892,20 @@ const TRANSLATIONS = {
     'home.hero.title': 'AI owned by<span class="em"> everyone</span>.',
     'home.hero.sub': "CrowdGPT is focusing on creating the world's first 0$, datacenterless and 100% open AI. Run the app on your computer, and the AI gets better.",
     'home.hero.install': 'Install now',
-    'home.hero.hf': 'View on HuggingFace',
+    'home.hero.hf': 'Huggingface',
+    'home.hero.discord': 'Discord',
+    'ann.roadmap': 'View roadmap',
+    'status.roadmap.title': 'Roadmap',
+    'status.roadmap.sub': 'What we have shipped, what we are building right now, and what comes next.',
+    'status.roadmap.state.shipped': 'Shipped',
+    'status.roadmap.state.active': 'In progress',
+    'status.roadmap.state.planned': 'Planned',
+    'status.roadmap.v1': 'A 1B model pretrained entirely by the community on consumer GPUs, released openly on Hugging Face.',
+    'status.roadmap.v15': 'The next base model. Same pipeline, rebuilt from scratch with a stricter aggregation and cross-check.',
+    'status.roadmap.mobile': 'An LLM without backprop.',
+    'home.feature.transparent.logs': 'View server logs',
+    'status.logs.cta.title': "See what's happening under the hood",
+    'status.logs.cta.body': 'The coordinator writes everything it does to a plain stdout log: shards assigned, updates received, validation failures, aggregation rounds. You can view the whole history with the click of a button.',
     'home.stat.epoch': 'Epoch',
     'home.stat.gpus': 'GPUs currently active',
     'home.stat.tokens': 'Tokens processed',
@@ -3982,7 +4108,20 @@ const TRANSLATIONS = {
     'home.hero.title': 'IA détenue par<span class="em"> tout le monde</span>.',
     'home.hero.sub': "CrowdGPT vise à créer la première IA au monde à 0 $, sans datacenter et 100 % ouverte. Lancez l'application sur votre ordinateur et l'IA s'améliore.",
     'home.hero.install': 'Installer',
-    'home.hero.hf': 'Voir sur HuggingFace',
+    'home.hero.hf': 'Huggingface',
+    'home.hero.discord': 'Discord',
+    'ann.roadmap': 'Voir la roadmap',
+    'status.roadmap.title': 'Roadmap',
+    'status.roadmap.sub': "Ce qui est déjà livré, ce qu'on construit en ce moment, et la suite.",
+    'status.roadmap.state.shipped': 'Livré',
+    'status.roadmap.state.active': 'En cours',
+    'status.roadmap.state.planned': 'Prévu',
+    'status.roadmap.v1': 'Un modèle 1B pré-entraîné entièrement par la communauté sur des GPU grand public, publié ouvertement sur Hugging Face.',
+    'status.roadmap.v15': 'Le prochain modèle de base. Même pipeline, reconstruit de zéro avec une agrégation et un cross-check plus stricts.',
+    'status.roadmap.mobile': 'Un LLM sans backprop.',
+    'home.feature.transparent.logs': 'Voir les logs du serveur',
+    'status.logs.cta.title': 'Voir ce qui se passe sous le capot',
+    'status.logs.cta.body': "Le coordinateur écrit tout ce qu'il fait dans un log stdout brut : shards attribués, mises à jour reçues, échecs de validation, cycles d'agrégation. Tout l'historique est consultable en un clic.",
     'home.stat.epoch': 'Époque',
     'home.stat.gpus': 'GPU actifs',
     'home.stat.tokens': 'Tokens traités',
@@ -4159,7 +4298,14 @@ const TRANSLATIONS = {
 
     'footer.copy': 'CrowdGPT - Licence GPL3.0 - server.crowdgpt.net fièrement hébergé par <a href="https://xevex.dev" target="_blank" rel="noopener noreferrer">xevex</a>',
     'footer.docs': 'Docs',
-    'footer.contact': 'Contact'
+    'footer.contact': 'Contact',
+    'loss.heldout': 'Perte sur jeu de validation',
+    'loss.training': 'Perte d\'entraînement',
+    'loss.sub.heldout': 'Jeu de validation · cycle {round}',
+    'loss.sub.heldout.ci': 'Jeu de validation · IC 95 % {low}–{high} · cycle {round}',
+    'loss.sub.training': 'Dernière mise à jour agrégée · pas de validation',
+    'loss.sub.unevaluated': 'Dernière mise à jour agrégée · évaluation de validation en attente',
+    'loss.none': 'aucune donnée de perte'
   },
 
   de: {
@@ -4176,7 +4322,20 @@ const TRANSLATIONS = {
     'home.hero.title': 'KI im Besitz von<span class="em"> allen</span>.',
     'home.hero.sub': "CrowdGPT will die weltweit erste 0 $, datacenterlose und 100 % offene KI schaffen. Führen Sie die App auf Ihrem Computer aus, und die KI wird besser.",
     'home.hero.install': 'Jetzt installieren',
-    'home.hero.hf': 'Auf HuggingFace ansehen',
+    'home.hero.hf': 'Huggingface',
+    'home.hero.discord': 'Discord',
+    'ann.roadmap': 'Roadmap ansehen',
+    'status.roadmap.title': 'Roadmap',
+    'status.roadmap.sub': 'Was fertig ist, woran wir gerade arbeiten und was als Nächstes kommt.',
+    'status.roadmap.state.shipped': 'Fertig',
+    'status.roadmap.state.active': 'In Arbeit',
+    'status.roadmap.state.planned': 'Geplant',
+    'status.roadmap.v1': 'Ein 1B-Modell, vollständig von der Community auf Consumer-GPUs vorab trainiert und offen auf Hugging Face veröffentlicht.',
+    'status.roadmap.v15': 'Das nächste Basismodell. Gleiche Pipeline, von Grund auf neu mit strengerer Aggregation und Gegenprüfung.',
+    'status.roadmap.mobile': 'Ein LLM ohne Backprop.',
+    'home.feature.transparent.logs': 'Server-Logs ansehen',
+    'status.logs.cta.title': 'Sieh, was unter der Haube passiert',
+    'status.logs.cta.body': 'Der Koordinator schreibt alles in ein einfaches stdout-Log: zugewiesene Shards, empfangene Updates, fehlgeschlagene Validierungen, Aggregationsrunden. Die gesamte Historie ist mit einem Klick einsehbar.',
     'home.stat.epoch': 'Epoche',
     'home.stat.gpus': 'Aktive GPUs',
     'home.stat.tokens': 'Verarbeitete Tokens',
@@ -4353,7 +4512,14 @@ const TRANSLATIONS = {
 
     'footer.copy': 'CrowdGPT - MIT-Lizenz - server.crowdgpt.net stolz gehostet von <a href="https://xevex.dev" target="_blank" rel="noopener noreferrer">xevex</a>',
     'footer.docs': 'Docs',
-    'footer.contact': 'Kontakt'
+    'footer.contact': 'Kontakt',
+    'loss.heldout': 'Validierungsverlust',
+    'loss.training': 'Trainingsverlust',
+    'loss.sub.heldout': 'Validierungssatz · Runde {round}',
+    'loss.sub.heldout.ci': 'Validierungssatz · 95 %-KI {low}–{high} · Runde {round}',
+    'loss.sub.training': 'Neuestes aggregiertes Update · keine Validierung',
+    'loss.sub.unevaluated': 'Neuestes aggregiertes Update · Validierung ausstehend',
+    'loss.none': 'keine Verlustdaten'
   },
 
   es: {
@@ -4370,7 +4536,20 @@ const TRANSLATIONS = {
     'home.hero.title': 'IA propiedad de<span class="em"> todos</span>.',
     'home.hero.sub': 'CrowdGPT busca crear la primera IA del mundo a 0 $, sin centros de datos y 100 % abierta. Ejecuta la app en tu ordenador y la IA mejora.',
     'home.hero.install': 'Instalar ahora',
-    'home.hero.hf': 'Ver en HuggingFace',
+    'home.hero.hf': 'Huggingface',
+    'home.hero.discord': 'Discord',
+    'ann.roadmap': 'Ver roadmap',
+    'status.roadmap.title': 'Roadmap',
+    'status.roadmap.sub': 'Lo que ya está disponible, lo que estamos construyendo y lo que viene.',
+    'status.roadmap.state.shipped': 'Publicado',
+    'status.roadmap.state.active': 'En curso',
+    'status.roadmap.state.planned': 'Planeado',
+    'status.roadmap.v1': 'Un modelo de 1B preentrenado íntegramente por la comunidad en GPUs de consumo y publicado abiertamente en Hugging Face.',
+    'status.roadmap.v15': 'El siguiente modelo base. Mismo pipeline, reconstruido desde cero con una agregación y verificación cruzada más estrictas.',
+    'status.roadmap.mobile': 'Un LLM sin backprop.',
+    'home.feature.transparent.logs': 'Ver los logs del servidor',
+    'status.logs.cta.title': 'Mira lo que pasa bajo el capó',
+    'status.logs.cta.body': 'El coordinador escribe todo lo que hace en un log de stdout sin formato: shards asignados, actualizaciones recibidas, fallos de validación, rondas de agregación. Puedes ver todo el historial con un clic.',
     'home.stat.epoch': 'Época',
     'home.stat.gpus': 'GPUs activas',
     'home.stat.tokens': 'Tokens procesados',
@@ -4547,7 +4726,14 @@ const TRANSLATIONS = {
 
     'footer.copy': 'CrowdGPT - Licencia GPL3.0 - server.crowdgpt.net orgullosamente alojado por <a href="https://xevex.dev" target="_blank" rel="noopener noreferrer">xevex</a>',
     'footer.docs': 'Docs',
-    'footer.contact': 'Contacto'
+    'footer.contact': 'Contacto',
+    'loss.heldout': 'Pérdida de validación',
+    'loss.training': 'Pérdida de entrenamiento',
+    'loss.sub.heldout': 'Conjunto de validación · ronda {round}',
+    'loss.sub.heldout.ci': 'Conjunto de validación · IC 95 % {low}–{high} · ronda {round}',
+    'loss.sub.training': 'Última actualización agregada · sin validación',
+    'loss.sub.unevaluated': 'Última actualización agregada · evaluación de validación pendiente',
+    'loss.none': 'sin datos de pérdida'
   },
 
   tr: {
@@ -4564,7 +4750,20 @@ const TRANSLATIONS = {
     'home.hero.title': 'Herkesin sahip olduğu<span class="em"> yapay zeka</span>.',
     'home.hero.sub': "CrowdGPT dünyanın ilk 0 $, veri merkezi olmayan ve %100 açık yapay zekasını oluşturmayı hedefliyor. Uygulamayı bilgisayarınızda çalıştırın, yapay zeka daha iyi olsun.",
     'home.hero.install': 'Şimdi kur',
-    'home.hero.hf': "HuggingFace'de görüntüle",
+    'home.hero.hf': 'Huggingface',
+    'home.hero.discord': 'Discord',
+    'ann.roadmap': 'Roadmap\'i gör',
+    'status.roadmap.title': 'Yol haritası',
+    'status.roadmap.sub': 'Yayınlananlar, şu anda üzerinde çalıştıklarımız ve sırada olanlar.',
+    'status.roadmap.state.shipped': 'Yayınlandı',
+    'status.roadmap.state.active': 'Devam ediyor',
+    'status.roadmap.state.planned': 'Planlandı',
+    'status.roadmap.v1': 'Tamamen topluluk tarafından tüketici GPU\'larında ön-eğitilmiş ve Hugging Face\'te açıkça yayınlanmış 1B model.',
+    'status.roadmap.v15': 'Sıradaki temel model. Aynı hat, daha sıkı birleştirme ve çapraz kontrolle sıfırdan yeniden inşa ediliyor.',
+    'status.roadmap.mobile': 'Backprop olmadan bir LLM.',
+    'home.feature.transparent.logs': 'Sunucu günlüklerini gör',
+    'status.logs.cta.title': 'Kaputun altında neler olduğunu gör',
+    'status.logs.cta.body': "Koordinatör yaptığı her şeyi düz bir stdout günlüğüne yazar: atanan shard'lar, gelen güncellemeler, doğrulama hataları, birleştirme turları. Tüm geçmişi tek bir tıkla görüntüleyebilirsin.",
     'home.stat.epoch': 'Epok',
     'home.stat.gpus': 'Aktif GPU sayısı',
     'home.stat.tokens': 'İşlenen token',
@@ -4741,11 +4940,225 @@ const TRANSLATIONS = {
 
     'footer.copy': 'CrowdGPT - GPL3.0 Lisansı - server.crowdgpt.net gururla <a href="https://xevex.dev" target="_blank" rel="noopener noreferrer">xevex</a> tarafından barındırılıyor',
     'footer.docs': 'Docs',
-    'footer.contact': 'İletişim'
+    'footer.contact': 'İletişim',
+    'loss.heldout': 'Doğrulama kaybı',
+    'loss.training': 'Eğitim kaybı',
+    'loss.sub.heldout': 'Doğrulama kümesi · tur {round}',
+    'loss.sub.heldout.ci': 'Doğrulama kümesi · %95 GA {low}–{high} · tur {round}',
+    'loss.sub.training': 'Son birleştirilmiş güncelleme · doğrulama yok',
+    'loss.sub.unevaluated': 'Son birleştirilmiş güncelleme · doğrulama değerlendirmesi bekliyor',
+    'loss.none': 'kayıp verisi yok'
+  },
+  zh: {
+    'nav.home': '首页',
+    'nav.install': '安装',
+    'nav.about': '关于',
+    'nav.status': '状态',
+    'nav.leaderboard': '排行榜',
+    'nav.submit': '提交',
+    'nav.contact': '联系',
+    'brand.source': '源码',
+    'brand.source_full': 'GitHub 源码',
+    'home.hero.title': '属于<span class="em">每个人</span>的 AI。',
+    'home.hero.sub': 'CrowdGPT 的目标是创造世界上第一个 0 成本、无需数据中心、100% 开放的 AI。在你的电脑上运行客户端，AI 就会变得更强。',
+    'home.hero.install': '立即安装',
+    'home.hero.hf': 'Huggingface',
+    'home.hero.discord': 'Discord',
+    'ann.roadmap': '查看路线图',
+    'status.roadmap.title': '路线图',
+    'status.roadmap.sub': '我们已经发布的、正在做的，以及接下来要做的事。',
+    'status.roadmap.state.shipped': '已发布',
+    'status.roadmap.state.active': '进行中',
+    'status.roadmap.state.planned': '计划中',
+    'status.roadmap.v1': '一个完全由社区在消费级 GPU 上预训练的 1B 模型，已在 Hugging Face 公开发布。',
+    'status.roadmap.v15': '下一代基础模型。相同的流程，从头重建，并采用更严格的聚合与交叉校验。',
+    'status.roadmap.mobile': '一个不需要反向传播的 LLM。',
+    'home.feature.transparent.logs': '查看服务器日志',
+    'status.logs.cta.title': '看看幕后正在发生什么',
+    'status.logs.cta.body': '协调器把它做的每一件事都写进一份纯 stdout 日志：分片分配、收到更新、校验失败、聚合轮次。点一下按钮就能查看完整历史。',
+    'home.stat.epoch': '轮次',
+    'home.stat.gpus': '当前活跃的 GPU',
+    'home.stat.tokens': '已处理 Token',
+    'home.stat.loss': '当前损失',
+    'home.paradigm.title': '训练 AI 的新范式。',
+    'home.paradigm.body': '一家公司训练前沿模型，要在数据中心里用上几千块 A100。绝大多数人并没有这样的硬件。但数百万人的游戏 PC 里，RTX 显卡正闲置着。CrowdGPT 使用的就是这部分算力，而训练出来的模型属于每一个参与构建它的人。',
+    'home.paradigm.report': '阅读技术报告',
+    'home.feature.privacy.title': '隐私优先。',
+    'home.feature.privacy.body': '你的 GPU 训练的是从 HuggingFace 上公开的 CrowdGPT 数据集流式读取的 10MB 数据块；这个数据集任何人都可以查看或贡献。绝不会访问或传输你的个人文件、浏览历史或任何本地数据。',
+    'home.feature.eco.title': '更环保。',
+    'home.feature.eco.body': '在本来就已经开机的消费级 GPU 上训练。CrowdGPT 不需要新建数据中心，也不需要额外制造硬件，这是传统 AI 无法比拟的巨大优势。',
+    'home.feature.transparent.title': '透明。',
+    'home.feature.transparent.body': '客户端是一个人类可读的 Python 文件，任何人都可以审计和修改。模型权重可自由下载，完全免费并公开在 HuggingFace 上。',
+    'home.trust.title': '关于信任',
+    'home.trust.p1': '客户端是一个人类可读的开源 Python 文件。它从网上下载公开的训练数据，在本地训练，只上传模型更新。它无法访问你的文件，也无法危害你的机器。',
+    'home.trust.p2': '服务器同样受到保护。每一份更新在交由同伴交叉验证之前，都会先校验大小、NaN 值和范数边界，屡次违规者会被移出项目。',
+    'home.trust.link_line': '运行之前，先<a href="https://github.com/Vxtzq/CrowdGPT" target="_blank" rel="noopener noreferrer">读一读源码</a>。',
+    'home.cta.title': '帮助项目成长。',
+    'home.cta.body': '每一份贡献，哪怕再小，都会让模型变得更好。运行一个客户端、给仓库点个 star，或者提一个 issue。',
+    'home.cta.install': '安装指南',
+    'home.cta.star': '在 GitHub 上 Star',
+    'install.crumb': '首页 / 安装',
+    'install.h1': '安装客户端',
+    'install.sub': '一条命令装好一切。即使你没有安装 python 或 git。',
+    'install.req.title': '应用需求',
+    'install.req.li1': '约 6 GB 可用磁盘空间。仅 PyTorch 就占约 2.5 GB。',
+    'install.req.li2': '强烈建议使用独立显卡。NVIDIA（CUDA）、AMD（ROCm / DirectML）、Apple Silicon（MPS）和 Intel Arc（XPU）均受支持。',
+    'install.req.li3': '稳定的网络连接，用于流式获取模型权重和数据块。',
+    'install.req.li4': '纯 CPU 模式可以运行，但非常慢。',
+    'install.req.foot': '安装器会处理其他所有事情：显卡检测、正确的 PyTorch 安装包、缺失的 Python 和 Git，以及一个隔离的虚拟环境。',
+    'install.hero.title': '一行命令安装',
+    'install.hero.badge': '推荐',
+    'install.hero.body': '把这条命令复制到终端。它会下载安装器、自动识别你的硬件，并启动客户端。',
+    'install.manual': '更想手动安装？<a href="https://github.com/Vxtzq/CrowdGPT#manual-installation" target="_blank" rel="noopener noreferrer">查看 GitHub →</a>',
+    'install.how.title': '安装器如何工作',
+    'install.step1.title': '检测硬件。',
+    'install.step1.body': '为你的显卡安装正确的依赖。',
+    'install.step2.title': '安装依赖。',
+    'install.step2.body': '若缺少 Python 和 Git 会先安装，然后从正确的软件源安装 PyTorch 以及项目依赖；一切都装在隔离的虚拟环境中，不会影响系统自带的 Python。',
+    'install.step3.title': '启动。',
+    'install.step3.body': '从 HuggingFace 下载模型权重，流式读取一个数据块，然后开始训练。你随时可以停止。',
+    'contrib.power.tooltip': '管理员',
+    'about.crumb': '首页 / 关于',
+    'about.h1': '关于 - 工作原理',
+    'about.sub': 'CrowdGPT 如何协调成千上万块独立的 GPU，在没有庞大基础设施的情况下训练出单一、连贯的语言模型。',
+    'about.s1.title': '1. 任务分配',
+    'about.s1.body': '设备连接后，服务器会分配给它一个特定的数据分片（来自公开 CrowdGPT 数据集的 10MB 文本块）以及当前的全局模型权重。客户端从 HuggingFace 下载权重，并通过 HTTP Range 请求在本地流式读取该数据块。数据集完全开放，任何人都可以贡献。',
+    'about.s2.title': '2. 本地训练',
+    'about.s2.body': '应用在本地设备上进行 AI 训练，并计算基础模型与训练后模型之间的路径（“delta”）。绝不会访问你电脑上的任何内容。',
+    'about.s3.title': '3. 安全提交',
+    'about.s3.body': '应用会压缩这次更新，然后回传给服务器进行校验：',
+    'about.s3.li1': '检查 delta 中是否存在 NaN 或 Inf 值。',
+    'about.s3.li2': '验证 delta 的大小与模型架构完全匹配。',
+    'about.s3.li3': '确保 delta 的范数处于统计上可接受的范围内，以防止投毒。',
+    'about.s4.title': '4. 聚合',
+    'about.s4.body': '有效的更新会被定期平均并应用到全局 AI 模型上。模型权重会自动推送到 HuggingFace，供公开审计、使用和测试。',
+    'about.stat.parameters': '参数量',
+    'about.stat.parameters.sub': '稠密 Transformer',
+    'about.stat.vocab': '词表',
+    'about.stat.vocab.sub': 'Qwen3 Tokenizer',
+    'about.stat.layers': '层数',
+    'about.stat.layers.sub': '分组查询注意力',
+    'about.stat.precision': '精度',
+    'about.stat.precision.sub': '原生 GPU 支持',
+    'about.diagram.caption': 'CrowdGPT 如何协调成千上万块独立的 GPU 来训练一个语言模型。',
+    'about.diagram.fallback': '示意图不可用',
+    'status.crumb': '首页 / 状态',
+    'status.h1': '网络状态',
+    'status.sub': 'CrowdGPT 联邦训练网络的实时指标。',
+    'status.stat.contributions': '贡献数',
+    'status.stat.contributions.sub': '已提交的模型更新',
+    'status.stat.tokens': '已处理 Token',
+    'status.stat.tokens.sub': '所有客户端合计',
+    'status.stat.clients': '活跃客户端',
+    'status.stat.clients.sub': '正在训练',
+    'status.stat.loss': '留出集损失',
+    'status.stat.loss.sub': '等待评估',
+    'loss.heldout': '留出集损失',
+    'loss.training': '训练损失',
+    'loss.sub.heldout': '留出集 · 第 {round} 轮',
+    'loss.sub.heldout.ci': '留出集 · 95% 置信区间 {low}–{high} · 第 {round} 轮',
+    'loss.sub.training': '最新聚合更新 · 非留出集',
+    'loss.sub.unevaluated': '最新聚合更新 · 留出集评估待定',
+    'loss.none': '暂无损失数据',
+    'status.explainer.title': '这些数字的含义',
+    'status.explainer.li1': '<strong>贡献数：</strong>所有贡献者提交的模型更新总数。',
+    'status.explainer.li2': '<strong>已处理 Token：</strong>集群中每块 GPU 训练过的 Token 累计数。',
+    'status.explainer.li3': '<strong>活跃客户端：</strong>最近 10 分钟内与协调器通信过的 GPU。',
+    'status.explainer.li4': '<strong>留出集损失：</strong>在从不参与训练的 Token 上计算的交叉熵，由评估器打分，并连同置信区间一起公布。若暂无评估，该卡片会显示为<em>训练损失</em>，且不同轮次之间不可比较。',
+    'status.explainer.foot': '这些统计每 15 秒从 HuggingFace CDN 自动刷新一次。聚合更新完成后，全局模型权重每 4 小时推送到 HuggingFace 一次。',
+    'status.goal.title': 'Token 目标',
+    'status.pools.title': '按硬件划分的训练池',
+    'status.pools.sub': '查看哪些设备类型正在训练，哪些在等待更多池成员。',
+    'status.pools.client.one': '个客户端',
+    'status.pools.client.many': '个客户端',
+    'status.pools.forming': '组建中',
+    'status.pools.training': '训练中',
+    'status.pools.idle': '空闲',
+    'status.pools.completing': '收尾中',
+    'status.pools.none': '暂无活跃训练池',
+    'status.pools.summary': '{pools} 个训练池 / {clients} 个客户端',
+    'status.chart.title': '训练损失历史',
+    'status.chart.waiting': '等待数据…',
+    'status.logs.btn': '查看服务器日志',
+    'status.logs.title': '服务器日志',
+    'status.logs.close': '关闭',
+    'status.logs.loading': '加载中…',
+    'status.logs.empty': '暂无日志。',
+    'status.logs.error': '无法获取日志',
+    'contrib.crumb': '首页 / 排行榜',
+    'contrib.h1': '贡献者排行榜',
+    'contrib.sub': '推动 CrowdGPT 训练运行的顶尖贡献者。排名依据已处理的 Token 总数。',
+    'contrib.th.rank': '排名',
+    'contrib.th.user': '用户名',
+    'contrib.th.tokens': 'Token',
+    'contrib.th.steps': '步数',
+    'contrib.th.trust': '信任分',
+    'contrib.th.subs': '提交数',
+    'contrib.full.search': '按用户名搜索…',
+    'contrib.full.empty': '没有匹配的用户。',
+    'contrib.full.no_data': '暂无贡献者。',
+    'contrib.full.count_one': '1 位用户',
+    'contrib.full.count_many': '{n} 位用户',
+    'contrib.full.pagination.prev': '上一页',
+    'contrib.full.pagination.next': '下一页',
+    'submit.crumb': '首页 / 提交',
+    'submit.h1': '提交训练数据',
+    'submit.beta': '测试版',
+    'submit.sub': '帮助扩充 CrowdGPT 数据集。把文本或文件提交到训练队列。所有提交在加入公开数据集之前都会由维护者审核。',
+    'submit.how.title': '我可以提交什么？',
+    'submit.how.li1': '纯文本、文档或任何文本语料（.txt、.md、.json、.jsonl、.csv）。',
+    'submit.how.li2': '公有领域、宽松许可的内容，或你自己的原创作品。',
+    'submit.how.li3': '不得包含个人信息、你不拥有版权的材料，或恶意内容。',
+    'submit.how.foot': '数据集完全开放，并在 HuggingFace 上镜像。在你提交的内容通过维护者审核之前，不会被用于训练。',
+    'submit.form.title': '提交到训练队列',
+    'submit.username.label': '你的用户名',
+    'submit.username.optional': '（可选）',
+    'submit.username.placeholder': '留空即为匿名',
+    'submit.text.label': '文本内容',
+    'submit.text.placeholder': '粘贴要提交到训练队列的文本…',
+    'submit.file.label': '或上传文件',
+    'submit.file.hint': '点击或拖拽文件到此处',
+    'submit.file.types': '.txt、.md、.json、.jsonl、.csv - 最大 50 MB',
+    'submit.btn': '提交到队列',
+    'submit.btn.busy': '提交中…',
+    'submit.success': '谢谢！你的提交已加入队列。',
+    'submit.success.local': '提交已保存到本地，服务器可用时会自动同步。',
+    'submit.error': '出了点问题，请稍后再试。',
+    'submit.error.empty': '请添加一些文本或至少一个文件。',
+    'submit.error.files': '部分文件被跳过（类型不符或过大）。',
+    'submit.queue': '{n} 条待提交内容已保存在本地',
+    'contact.crumb': '首页 / 联系',
+    'contact.h1': '联系我们',
+    'contact.sub': '有疑问、想报告 bug，或者想自己跑一个协调器？随时联系。',
+    'contact.card1.title': 'GitHub Issues',
+    'contact.card1.body': '报告 bug、请求功能，或讨论联邦逻辑技术细节的最佳场所。',
+    'contact.card2.title': '电子邮件',
+    'contact.card2.body': '商务咨询、合作机会，或敏感的安全漏洞披露。',
+    'contact.card3.title': '托管',
+    'contact.card3.body': '主协调器 API 由 Xevex 自豪地托管与维护。',
+    'contact.card4.title': '模型权重',
+    'contact.card4.body': '所有训练好的模型检查点和配置文件都公开在 HuggingFace 上。',
+    'contact.faq1.q': '运行客户端时我的数据安全吗？',
+    'contact.faq1.a': '安全。客户端流式读取 HuggingFace 上公开的 CrowdGPT 数据集的 10MB 数据块，这个数据集任何人都可以查看或贡献。你的个人文件、浏览历史和其他任何本地数据都不会被访问或传输。只有数学意义上的权重 delta 会离开你的机器。',
+    'contact.faq2.q': '我需要多少磁盘空间？',
+    'contact.faq2.a': '约 4 GB 可用空间。模型权重在 bf16 下约占 1.3 GB，每个数据块只有 10 MB 并按需流式读取，用于计算 delta 的本地检查点另占约 1.3 GB。客户端会自动清理旧的检查点，所以磁盘占用会长期保持稳定。',
+    'contact.faq3.q': '支持 AMD 或 Apple Silicon 吗？',
+    'contact.faq3.a': '支持。推荐使用 NVIDIA GPU（CUDA）以获得最佳性能。AMD GPU 在 Linux 上通过 ROCm 受支持（安装器会自动选择正确的 ROCm 安装包），Windows 上的 AMD 用户可以使用 DirectML，或在 WSL2 中运行 Linux 安装器。Apple Silicon 的 M1、M2 和 M3 Mac 通过 MPS 后端工作，该后端已包含在标准的 macOS PyTorch 安装包中。纯 CPU 模式受支持，但非常慢。',
+    'contact.faq4.q': '我需要先安装 Python 或 Git 吗？',
+    'contact.faq4.a': '不需要。安装器会检测 Python 和 Git 是否存在，若缺失则自动安装（Linux 上使用系统包管理器，macOS 上使用 Homebrew 或官方安装器，Windows 上使用 winget 或官方安装器）。所有内容都安装在隔离的虚拟环境中，不会影响系统的其他部分。',
+    'contact.faq5.q': '为什么以前我装到的是 CPU 版的 PyTorch？',
+    'contact.faq5.a': '<code>torch</code> 在 PyPI 上的默认安装包在所有平台上都是纯 CPU 版本。之前的安装说明使用 <code>pip install -r requirements.txt</code>，即使机器上有 NVIDIA 或 AMD 显卡也会拉到那个 CPU 包。新的安装器会根据检测到的硬件显式选择正确的源地址（cu124、cu118、rocm6.1、xpu 或 cpu），因此这种情况不会再发生。',
+    'contact.faq6.q': '我可以在 CPU 上运行吗？',
+    'contact.faq6.a': '技术上可以，安装器也有 CPU 回退方案，但会非常慢。客户端针对支持 CUDA 的 NVIDIA GPU 做了优化。如果没有检测到 GPU，它会回退到 CPU，但要贡献有意义的算力会耗时得多。',
+    'contact.faq7.q': '如何防止恶意更新？',
+    'contact.faq7.a': '协调器执行严格的校验。每一份提交的 delta 都会检查 NaN/Inf 值、大小是否精确匹配以及范数边界。偏离预期统计分布过远的更新会被拒绝，屡次违规者会按子网被临时封禁。',
+    'footer.copy': 'CrowdGPT - GPL3.0 许可证 - server.crowdgpt.net 由 <a href="https://xevex.dev" target="_blank" rel="noopener noreferrer">xevex</a> 自豪地托管',
+    'footer.docs': '文档',
+    'footer.contact': '联系'
   }
 };
 
-const LANG_FLAGS = { en: '🇬🇧', fr: '🇫🇷', de: '🇩🇪', es: '🇪🇸', tr: '🇹🇷' };
+const LANG_FLAGS = { en: 'fl-en', fr: 'fl-fr', de: 'fl-de', es: 'fl-es', tr: 'fl-tr', zh: 'fl-zh' };
 
 let currentLang = 'en';
 
@@ -4788,8 +5201,12 @@ function applyTranslations() {
 
   document.documentElement.lang = currentLang;
 
-  const flagEl = document.getElementById('lang-flag');
-  if (flagEl) flagEl.textContent = LANG_FLAGS[currentLang] || '🇬🇧';
+  const flagEl = document.getElementById('lang-flag-use');
+  if (flagEl) {
+    const ref = '#' + (LANG_FLAGS[currentLang] || 'fl-en');
+    flagEl.setAttribute('href', ref);
+    flagEl.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', ref);
+  }
 
   document.querySelectorAll('.lang-item').forEach(item => {
     const isActive = item.dataset.lang === currentLang;
@@ -6204,6 +6621,153 @@ setInterval(fetchLossHistory, 30000);
 fetch('https://upload.crowdgpt.net', { method: 'GET', mode: 'no-cors', cache: 'no-store' })
   .catch(() => { /* opaque / network error – ignored on purpose */ });
 </script>
-  
+
+<style>
+/* --- additive: announcement banner, discord button, roadmap --- */
+:root{
+  --ann-text:#fbbf24;
+  --ann-bg:rgba(251,191,36,.10);
+  --ann-line:rgba(251,191,36,.30);
+  --ann-btn-line:rgba(251,191,36,.45);
+  --ann-btn-hover:rgba(251,191,36,.16);
+}
+@media (prefers-color-scheme: light){
+  :root{
+    --ann-text:#8a5200;
+    --ann-bg:rgba(217,154,0,.14);
+    --ann-line:rgba(180,120,0,.32);
+    --ann-btn-line:rgba(138,82,0,.40);
+    --ann-btn-hover:rgba(217,154,0,.24);
+  }
+}
+
+.cgpt-ann{background:var(--ann-bg);border-bottom:1px solid var(--ann-line);color:var(--ann-text);font:500 13px/1.45 var(--sans);}
+.cgpt-ann-inner{max-width:1440px;margin:0 auto;padding:9px var(--header-px);display:flex;align-items:center;gap:12px;}
+.cgpt-ann-icon{flex:none;font-size:14px;}
+.cgpt-ann-text{flex:1;min-width:0;white-space:pre-wrap;}
+.cgpt-ann-text a{color:var(--ann-text);text-decoration:underline;}
+.cgpt-ann-btn{flex:none;display:inline-block;border:1px solid var(--ann-btn-line);background:transparent;color:var(--ann-text);font:600 11px/1 var(--mono);text-transform:uppercase;letter-spacing:.05em;padding:7px 10px;border-radius:var(--radius-sm);cursor:pointer;white-space:nowrap;text-decoration:none;}
+.cgpt-ann-btn:hover{background:var(--ann-btn-hover);text-decoration:none;}
+.cgpt-ann-close{flex:none;border:0;background:transparent;color:var(--ann-text);font-size:19px;line-height:1;padding:0 6px;cursor:pointer;opacity:.7;}
+.cgpt-ann-close:hover{opacity:1;}
+@media(max-width:700px){.cgpt-ann-inner{flex-wrap:wrap;gap:8px;}.cgpt-ann-text{flex-basis:100%;}}
+
+.btn-discord{background:#5865f2;color:#fff;border:1px solid #5865f2;}
+.btn-discord:hover{background:#4752c4;border-color:#4752c4;color:#fff;text-decoration:none;}
+.btn-discord svg{width:20px;height:20px;}
+@media(max-width:560px){
+  .btn-discord span{display:none;}
+  .btn-discord{padding:14px 18px;}
+}
+
+.roadmap-section{margin-bottom:46px;}
+.roadmap-head{margin-bottom:26px;}
+.roadmap-head h2{font-size:clamp(18px,2vw,24px);margin-bottom:10px;color:var(--text);}
+.roadmap-head p{font-size:clamp(13px,1.1vw,15px);line-height:1.6;color:var(--text-muted);margin:0;max-width:60ch;}
+.roadmap-list{display:flex;flex-direction:column;background:var(--bg-soft);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;}
+.roadmap-item{position:relative;display:grid;grid-template-columns:clamp(44px,4vw,64px) minmax(0,1fr);gap:clamp(18px,2.4vw,30px);padding:clamp(24px,2.6vw,32px) clamp(22px,2.4vw,30px) clamp(24px,2.6vw,32px) clamp(26px,2.6vw,34px);border-bottom:1px solid var(--border);transition:background .15s ease;}
+.roadmap-item:last-child{border-bottom:0;}
+.roadmap-item:hover{background:var(--bg-softer);}
+.roadmap-item::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:transparent;}
+.rm-shipped::before{background:var(--accent);}
+.rm-active::before{background:var(--warn);}
+.rm-planned::before{background:var(--border-strong);}
+.roadmap-step{font-family:var(--mono);font-size:12px;letter-spacing:.08em;color:var(--text-muted);padding-top:4px;}
+.roadmap-body{min-width:0;}
+.roadmap-top{display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:10px;}
+.roadmap-body h3{font-size:clamp(17px,1.6vw,19px);font-weight:600;color:var(--text);letter-spacing:-.01em;}
+.roadmap-body p{font-size:clamp(14px,1.1vw,15px);line-height:1.7;color:var(--text-dim);margin:0;max-width:70ch;}
+.roadmap-state{font:600 10px/1 var(--mono);text-transform:uppercase;letter-spacing:.07em;padding:6px 8px;border-radius:var(--radius-sm);white-space:nowrap;}
+.rm-shipped .roadmap-state{color:var(--accent);background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3);}
+.rm-active .roadmap-state{color:var(--warn);background:rgba(251,191,36,.11);border:1px solid rgba(251,191,36,.3);}
+.rm-planned .roadmap-state{color:var(--text-muted);background:var(--bg-softer);border:1px solid var(--border-strong);}
+@media(max-width:640px){
+  .roadmap-item{grid-template-columns:1fr;gap:10px;padding:22px 20px 23px 22px;}
+  .roadmap-step{padding-top:0;}
+}
+
+.feature-link{display:inline-flex;align-items:center;gap:7px;margin-top:12px;font-family:var(--mono);font-size:13px;color:var(--accent);text-decoration:none;border-bottom:1px solid transparent;transition:border-color .15s ease;}
+.feature-link::after{content:"→";transition:transform .15s ease;}
+.feature-link:hover{border-bottom-color:var(--accent);text-decoration:none;}
+.feature-link:hover::after{transform:translateX(3px);}
+
+.logs-cta{display:flex;align-items:center;justify-content:space-between;gap:clamp(20px,3vw,36px);flex-wrap:wrap;background:var(--bg-soft);border:1px solid var(--border);border-radius:var(--radius);padding:clamp(22px,2.4vw,30px) clamp(20px,2.2vw,28px);margin-bottom:38px;}
+.logs-cta-text{min-width:0;max-width:66ch;}
+.logs-cta-text h3{font-size:clamp(17px,1.6vw,20px);font-weight:600;color:var(--text);margin-bottom:9px;}
+.logs-cta-text p{font-size:clamp(13px,1.05vw,14px);line-height:1.65;color:var(--text-dim);margin:0;}
+.btn-logs{background:transparent;color:var(--accent);border:1px solid rgba(34,197,94,.45);white-space:nowrap;}
+.btn-logs:hover{background:rgba(34,197,94,.12);border-color:var(--accent);color:var(--accent);text-decoration:none;}
+@media(max-width:640px){
+  .logs-cta{flex-direction:column;align-items:stretch;}
+  .logs-cta .btn{justify-content:center;}
+}
+</style>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ---------- announcement banner (fetched from GitHub) ---------- */
+  var ANN_URL = 'https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/announcement.txt';
+  var KEY = 'cgpt_announcement_dismissed';
+
+  var banner = document.getElementById('cgpt-ann');
+  var textEl = document.getElementById('cgpt-ann-text');
+  var closeEl = document.getElementById('cgpt-ann-close');
+
+  function linkify(el, text) {
+    var re = /(https?:\/\/[^\s]+)/g, last = 0, m;
+    while ((m = re.exec(text)) !== null) {
+      if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
+      var a = document.createElement('a');
+      a.href = m[0];
+      a.textContent = m[0];
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      el.appendChild(a);
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
+  }
+
+  function showAnnouncement(raw) {
+    var body = (raw || '').trim();
+    if (!body || !banner || !textEl) return;
+    var sig = body.slice(0, 160);
+    try { if (localStorage.getItem(KEY) === sig) return; } catch (e) {}
+    textEl.textContent = '';
+    linkify(textEl, body);
+    banner.hidden = false;
+  }
+
+  if (closeEl) {
+    closeEl.addEventListener('click', function () {
+      banner.hidden = true;
+      try {
+        localStorage.setItem(KEY, (textEl.textContent || '').trim().slice(0, 160));
+      } catch (e) {}
+    });
+  }
+
+  if (banner) {
+    fetch(ANN_URL, { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.text() : ''; })
+      .then(showAnnouncement)
+      .catch(function () { /* no announcement: banner stays hidden */ });
+  }
+
+  /* ---------- "view server logs" links outside the status view ---------- */
+  Array.prototype.forEach.call(
+    document.querySelectorAll('[data-logs]'),
+    function (el) {
+      el.addEventListener('click', function (e) {
+        e.preventDefault();
+        if (typeof openLogs === 'function') openLogs();
+      });
+    }
+  );
+})();
+</script>
+
 </body>
 </html>
