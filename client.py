@@ -1315,7 +1315,14 @@ def recommend_batch_size(sl=MAX_SEQ_LEN, force_mode=None):
     if train_backend == "ROCM":
         try:
             frac = float(os.environ.get("CROWDGPT_ROCM_VRAM_FRACTION", "0.85"))
-            if 0.5 <= frac <= 1.0: budget_gb *= frac
+            # On unified memory the budget is *already* a share of physical RAM
+            # (UMA_VRAM_SHARE_DEFAULT, minus the safety margin), so applying the
+            # VRAM fraction again discounts the same headroom twice. Measured on
+            # a 32 GB Strix Halo (gfx1150): 21.86 GB -> 18.58 GB, which rejected
+            # batch 32 by 0.19 GB even though it peaked at 13.17 GB. Keep the
+            # fraction for discrete cards, where mem_get_info is the only signal.
+            if 0.5 <= frac <= 1.0 and not memory_config.get("unified"):
+                budget_gb *= frac
         except (TypeError, ValueError): pass
         raw_cap = os.environ.get("CROWDGPT_ROCM_BATCH", "").strip()
         if raw_cap:
