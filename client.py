@@ -595,7 +595,7 @@ except Exception: pass
 DEFAULT_SERVER = "https://server.crowdgpt.net"
 DATASET_REPO_ID = "Vxtzq/CrowdGPT"
 TOKENIZER_REPO = "Qwen/Qwen3-0.6B"
-HF_MODEL_REPO_ID = "Vxtzq/Crowd-v1"
+HF_MODEL_REPO_ID = "Vxtzq/Crowd-v1.5"
 USE_HF_WEIGHTS = True
 UPLOAD_CHUNK_BYTES = 64 * 1024 * 1024
 MAX_DIRECT_UPLOAD_BYTES = 80 * 1024 * 1024
@@ -671,7 +671,7 @@ def _load_tokenizer_worker():
     global TOKENIZER
     try:
         from transformers import AutoTokenizer
-        candidates = [TOKENIZER_REPO, "Qwen/Qwen2.5-1.5B", "Qwen/Qwen2.5-0.5B", "Vxtzq/Crowd-v1"]
+        candidates = [TOKENIZER_REPO, "Qwen/Qwen2.5-1.5B", "Qwen/Qwen2.5-0.5B", "Vxtzq/Crowd-v1.5"]
         for repo in candidates:
             try:
                 tok = AutoTokenizer.from_pretrained(repo, trust_remote_code=True)
