@@ -33,7 +33,7 @@
   <strong>The best 0$ AI.</strong>
 </p>
 
-# Crowd-v1 training run finished
+# ⚠️⚠️ Crowd-v1 training run finished ⚠️⚠️
 Thanks for contributing.
 
 A weight decay too high made the model utilise only ~4/24 layers. This will be fixed in next iterations (starting soon)
@@ -59,6 +59,7 @@ Crowd-v1 has been trained on **42B** total tokens.
 
 # CrowdGPT v3.5 changelog
 - Crowd-v1.5 is coming...
+- Website revamp for more transparency
   
 ## What is CrowdGPT?
 
