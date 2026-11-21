@@ -30,6 +30,7 @@ Only ``torch`` is required; the module is importable without a GPU.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import time
@@ -162,6 +163,72 @@ def sample_perturbation(
         else:
             pert.full[name] = torch.randn(value.shape, generator=gen, device=value.device)
     return pert
+
+
+def member_seed(base_seed: int, step: int, member: int) -> int:
+    """Seed for one population member, derived from (base_seed, step, member).
+
+    Deriving instead of drawing is what makes a scalar-only EGGROLL upload
+    auditable: the coordinator knows ``seed``, ``step`` and the member index,
+    so it can rebuild the exact perturbation the client scored without the
+    client shipping any factors.
+    """
+    digest = hashlib.blake2b(
+        f"{int(base_seed)}:{int(step)}:{int(member)}".encode("ascii"), digest_size=8
+    ).digest()
+    return int.from_bytes(digest, "little") >> 1
+
+
+def member_seeds(base_seed: int, step: int, population: int) -> list[int]:
+    """Per-member seeds for one step, in population order."""
+    return [member_seed(base_seed, step, i) for i in range(population)]
+
+
+def sample_member(params, rank: int, device, seed: int) -> Perturbation:
+    """One member's perturbation from its own generator, independent of order."""
+    gen = torch.Generator(device=torch.device(device)).manual_seed(int(seed))
+    return sample_perturbation(params, rank, gen)
+
+
+def _perturbations_equal(a: Perturbation, b: Perturbation) -> bool:
+    if a.low.keys() != b.low.keys() or a.full.keys() != b.full.keys():
+        return False
+    for name, (left, right) in a.low.items():
+        other = b.low[name]
+        if not (torch.equal(left, other[0]) and torch.equal(right, other[1])):
+            return False
+    for name, value in a.full.items():
+        if not torch.equal(value, b.full[name]):
+            return False
+    return True
+
+
+def check_seed_regen(params, cfg, options, device, step: int = 0) -> dict:
+    """Prove the population is reproducible from ``(seed, step, member)``.
+
+    Rebuilds every member twice — once in population order and once in reverse
+    — and compares them. With per-member generators the two agree, so neither
+    draw order nor population size is part of the contract a coordinator has
+    to reproduce.
+    """
+    del cfg  # the perturbation itself only depends on the parameter shapes
+    seeds = member_seeds(options.seed, step, options.population)
+    forward = [sample_member(params, options.rank, device, s) for s in seeds]
+    backward = [sample_member(params, options.rank, device, s) for s in reversed(seeds)][::-1]
+    reproducible = all(_perturbations_equal(a, b) for a, b in zip(forward, backward))
+    distinct = len(set(seeds)) == len(seeds)
+    changes_with_step = member_seed(options.seed, step + 1, 0) != seeds[0]
+    changes_with_member = len(seeds) < 2 or seeds[0] != seeds[1]
+    return {
+        "step": int(step),
+        "population": int(options.population),
+        "seeds": seeds,
+        "reproducible": bool(reproducible),
+        "distinct": bool(distinct),
+        "changesWithStep": bool(changes_with_step),
+        "changesWithMember": bool(changes_with_member),
+        "passes": bool(reproducible and distinct and changes_with_step and changes_with_member),
+    }
 
 
 def materialize_delta(pert: Perturbation, name: str, value: torch.Tensor, sigma: float, rank: int) -> torch.Tensor:
@@ -325,11 +392,28 @@ def eggroll_step(
     params: dict[str, torch.Tensor],
     cfg: ModelConfig,
     options: EggrollOptions,
-    gen: torch.Generator,
-    tokens: torch.Tensor,
+    gen: torch.Generator | None = None,
+    tokens: torch.Tensor | None = None,
+    *,
+    seeds: list[int] | None = None,
 ) -> tuple[list[float], dict[str, torch.Tensor]]:
-    """One ES/EGGROLL step; returns member losses and the updated parameters."""
-    members = [sample_perturbation(params, options.rank, gen) for _ in range(options.population)]
+    """One ES/EGGROLL step; returns member losses and the updated parameters.
+
+    ``gen`` continues a single RNG stream, which is what the original benchmark
+    did. ``seeds`` gives every member its own generator instead, so member ``i``
+    is reproducible from ``(seed, step, i)`` alone and a coordinator can rebuild
+    the population without the client shipping any factors.
+    """
+    if tokens is None:
+        raise TypeError("eggroll_step() needs tokens")
+    if seeds is not None:
+        if len(seeds) != options.population:
+            raise ValueError(f"expected {options.population} seeds, got {len(seeds)}")
+        members = [sample_member(params, options.rank, tokens.device, seed) for seed in seeds]
+    else:
+        if gen is None:
+            raise TypeError("eggroll_step() needs gen or seeds")
+        members = [sample_perturbation(params, options.rank, gen) for _ in range(options.population)]
     with torch.inference_mode():
         losses = [
             float(next_token_loss(forward(params, cfg, tokens, p, options.sigma, options.rank), tokens).item())
@@ -404,15 +488,26 @@ def run_benchmark(
     model: ModelConfig | None = None,
     options: EggrollOptions | None = None,
     device: str = "cpu",
+    *,
+    per_member_seeds: bool = False,
+    verify_regen: bool = False,
 ) -> dict:
     """Train the small LM with EGGROLL for ``options.steps`` and report metrics."""
     model = model or ModelConfig()
     options = options or EggrollOptions()
+    # Verifying the seed scheme implies using it: the check exists to prove the
+    # population the run actually trained with can be rebuilt from seeds alone.
+    per_member_seeds = per_member_seeds or verify_regen
     if device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("--device cuda requested but CUDA is not available")
     dev = torch.device(device)
 
     params = init_params(model, options.seed, dev)
+    regen = None
+    if verify_regen:
+        regen = check_seed_regen(params, model, options, dev, 0)
+        if not regen["passes"]:
+            raise RuntimeError("coordinator-side seed regeneration check failed")
     init_gen = torch.Generator(device=dev).manual_seed(options.seed)
     data_gen = torch.Generator(device=dev).manual_seed(options.seed + 1)
     eval_tokens = make_batch(model, torch.Generator(device=dev).manual_seed(options.seed + 2), dev)
@@ -424,9 +519,10 @@ def run_benchmark(
     started = time.perf_counter()
 
     step_losses: list[float] = []
-    for _ in range(options.steps):
+    for step in range(options.steps):
         tokens = make_batch(model, data_gen, dev)
-        losses, params = eggroll_step(params, model, options, init_gen, tokens)
+        seeds = member_seeds(options.seed, step, options.population) if per_member_seeds else None
+        losses, params = eggroll_step(params, model, options, init_gen, tokens, seeds=seeds)
         step_losses.append(sum(losses) / len(losses))
 
     if dev.type == "cuda":
@@ -473,6 +569,11 @@ def run_benchmark(
             "payload figures are arithmetic, not production measurements"
         ),
     }
+    result["seeds"] = {
+        "perMember": bool(per_member_seeds),
+        "regeneration": regen,
+        "scheme": "blake2b(base_seed:step:member)[0:8] >> 1",
+    }
     if dev.type == "cuda":
         torch.cuda.synchronize()
     return result
@@ -493,6 +594,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--vocab", type=int, default=64)
     p.add_argument("--batch", type=int, default=4)
     p.add_argument("--seed", type=int, default=1)
+    p.add_argument("--per-member-seeds", action="store_true",
+                   help="draw each population member from its own derived seed")
+    p.add_argument("--verify-regen", action="store_true",
+                   help="prove the population is reproducible from (seed, step, member) alone")
     return p.parse_args(argv)
 
 
@@ -514,7 +619,14 @@ def main(argv: list[str] | None = None) -> int:
         steps=args.steps,
         seed=args.seed,
     )
-    print(json.dumps(run_benchmark(model, options, args.device), indent=2, sort_keys=True))
+    result = run_benchmark(
+        model,
+        options,
+        args.device,
+        per_member_seeds=args.per_member_seeds or args.verify_regen,
+        verify_regen=args.verify_regen,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
 

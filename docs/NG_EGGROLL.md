@@ -154,6 +154,108 @@ monotonic step to step.
 
 Tiny CPU configurations cover a finite-metrics run, loss improvement,
 same-seed determinism, fused-vs-materialised forward equivalence, payload
-projection, and CLI flag parsing. The tests skip cleanly when torch is absent or
-stubbed, so `python -m unittest discover -s tests` still passes in the
-stdlib-only CI.
+projection, per-member seed derivation, draw-order independence, and CLI flag
+parsing. The tests skip cleanly when torch is absent or stubbed, so
+`python -m unittest discover -s tests` still passes in the stdlib-only CI.
+
+## Coordinator-side seed regeneration
+
+The scalar-upload claim only pays off if the coordinator can rebuild what each
+client actually evaluated. A scalar alone says "member 7 scored 3.91"; it does
+not say which perturbation member 7 was.
+
+The original driver drew every member from one `torch.Generator` stream, so
+member 7 was reproducible only by replaying members 0-6 first, in order, with
+the same population size. That is a fragile contract: any change to the ordering
+or the population size breaks it silently.
+
+`--per-member-seeds` (and `--verify-regen`, which implies it) derive each member
+independently:
+
+```
+seed(step, member) = int.from_bytes(blake2b(f"{base}:{step}:{member}", 8), "little") >> 1
+```
+
+`sample_member()` then builds that member's `Perturbation` from its own
+generator, so a coordinator that knows `(base_seed, step, member_index)` can
+reconstruct the exact factors without receiving them.
+
+`--verify-regen` proves this on the run it is about to measure:
+
+```
+python3 tools/bench_eggroll_model.py --device cuda --verify-regen
+```
+
+`check_seed_regen()` rebuilds every member twice - once in population order and
+once in reverse - and requires that
+
+- each member rebuilds identically regardless of draw order (`reproducible`),
+- the seeds are all distinct (`distinct`),
+- the seed changes with the step and with the member index.
+
+The run aborts if any of that fails. The result JSON records the outcome:
+
+```json
+"seeds": {
+  "perMember": true,
+  "scheme": "blake2b(base_seed:step:member)[0:8] >> 1",
+  "regeneration": {
+    "reproducible": true,
+    "distinct": true,
+    "changesWithStep": true,
+    "changesWithMember": true,
+    "passes": true
+  }
+}
+```
+
+What this does **not** do yet: it does not shrink any upload by itself. This
+benchmark ships nothing, and a production loop would still need a coordinator
+that accepts `(member, fitness)` pairs plus the shared seed and applies the
+update itself. This change makes that possible and checkable; it does not
+implement the coordinator side. The single-generator stream also remains the
+default, so the earlier measured runs stay reproducible.
+
+## Measured at 11M parameters
+
+Run on a Radeon 890M (gfx1150, 30.48 GB shared RAM, ROCm 7.2, torch
+2.14.1+rocm7.2) with per-member seeds and the regeneration check enabled:
+
+```
+python3 tools/bench_eggroll_model.py --device cuda \
+  --dim 320 --layers 8 --heads 8 --vocab 4096 --seq 128 \
+  --batch 2 --population 32 --rank 8 --sigma 0.02 --lr 0.05 --steps 20 \
+  --verify-regen
+```
+
+| measure | value |
+|---|---|
+| parameters | 11,192,960 |
+| steps x population x batch x seq | 163,840 tokens |
+| wall clock | 10.72 s |
+| throughput | 15,283 tok/s |
+| peak GPU memory | 173.75 MB |
+| scalar payload (32 members) | 384 B (58,297x under dense bf16) |
+| low-rank factors, if shipped | 53,559,296 B (0.42x dense) |
+
+The regeneration block reported `reproducible`, `distinct`, `changesWithStep`,
+`changesWithMember` and `passes` all true at step 0 with population 32, which is
+the whole point of the flag: the population this run trained with can be
+rebuilt from `(seed, step, member)` alone.
+
+Two honest readings:
+
+- **The loss went up** (8.364213 -> 8.676544 over 20 steps). That is a property
+  of the benchmark, not a convergence result: `make_batch()` draws uniform
+  random token ids, so there is no learnable signal in the data and the ES
+  update is fitting noise. The tiny CPU test that asserts loss improvement
+  passes at its own fixed seed, which is luck rather than evidence -- treat any
+  loss number from this tool as a smoke signal only.
+- **Shipping the factors would defeat the purpose.** 53.6 MB of fp32 factors is
+  2.4x the 22.4 MB dense bf16 upload for the same model, so seed regeneration is
+  not an optimisation here; it is what makes a scalar-only upload honest.
+
+The 658M rung is not attempted. 20 steps at 11.2 M parameters already take
+10.7 s on 8 compute units; the production model would not finish a useful run
+on this hardware, and extrapolating from 11 M would be a guess dressed as a
+measurement.
