@@ -4694,6 +4694,130 @@ html{scroll-padding-top:calc(var(--header-h) + 24px);}
   });
 })();
 </script>
+<script>
+(function () {
+  'use strict';
 
+  const RUN_KEY = 'crowdgpt-loss-run';
+
+  function num(v) { const n = Number(v); return isFinite(n) ? n : null; }
+
+  function tsOf(p) {
+    if (p.ts != null) return Number(p.ts) * 1000;
+    if (p.t) { const d = Date.parse(p.t); if (!isNaN(d)) return d; }
+    return null;
+  }
+
+  // Detect a new training run from the payload itself.
+  function runSignature(d) {
+    const pools  = Array.isArray(d?.pools)  ? d.pools  : [];
+    const rounds = Array.isArray(d?.rounds) ? d.rounds : [];
+    if (d.runId) return String(d.runId);
+    if (d.startedAt) return 'start:' + d.startedAt;
+    const first = pools[0] || rounds[0];
+    if (first) return 'first:' + (tsOf(first) ?? first.step ?? first.round ?? '?');
+    return 'empty';
+  }
+
+  window.loadLossHistory = function () {
+    try {
+      const raw = localStorage.getItem(LOSS_HISTORY_KEY);
+      lossHistory = raw ? (JSON.parse(raw) || []) : [];
+    } catch (e) { lossHistory = []; }
+  };
+
+  window.recordLoss = function () { /* no synthetic points anymore */ };
+
+  window.fetchLossHistory = async function () {
+    try {
+      const r = await fetch(HF_LOSS_HISTORY_URL, { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const d = await r.json();
+
+      const sig = runSignature(d);
+      let prev = null;
+      try { prev = localStorage.getItem(RUN_KEY); } catch (e) {}
+      if (prev !== sig) {
+        lossHistory = [];
+        try {
+          localStorage.removeItem(LOSS_HISTORY_KEY);
+          localStorage.setItem(RUN_KEY, sig);
+        } catch (e) {}
+      }
+
+      const rounds = Array.isArray(d?.rounds) ? d.rounds : [];
+      const pools  = Array.isArray(d?.pools)  ? d.pools  : [];
+      const covered = new Set(pools.map(p => p.round).filter(x => x != null));
+
+      const map = (p, source) => ({
+        loss:   num(p.loss),
+        step:   p.step ?? null,
+        round:  p.round ?? null,
+        tokens: num(p.tokens) > 0 ? num(p.tokens) : 1,
+        ts:     tsOf(p) ?? Date.now(),
+        source
+      });
+
+      const poolPts  = pools.map(p => map(p, 'pool'))
+                            .filter(p => p.loss != null && p.loss > 0);
+      const roundPts = rounds.filter(r => r.round == null || !covered.has(r.round))
+                             .map(r => map(r, 'round'))
+                             .filter(p => p.loss != null && p.loss > 0);
+
+      // Authoritative — including "empty".
+      lossHistory = [...roundPts, ...poolPts].sort((a, b) => a.ts - b.ts);
+      saveLossHistory();
+      requestAnimationFrame(drawLossGraph);
+    } catch (e) {
+      // Network failure: keep whatever we have, don't wipe on a transient error.
+    }
+  };
+
+  window.fetchStats = async function () {
+    let d = null;
+    try {
+      const r = await fetch(HF_STATUS_URL, { cache: 'no-store' });
+      if (!r.ok) throw new Error('HF status fetch failed');
+      d = await r.json();
+    } catch (e) {
+      try {
+        const r2 = await fetch(`${API_BASE}/api/stats`, { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+        if (r2.ok) d = await r2.json();
+      } catch (e2) {}
+    }
+
+    if (!d) {
+      failedAttempts++;
+      if (failedAttempts >= 3) {
+        apiReachable = false;
+        if (statsInterval) clearInterval(statsInterval);
+      }
+      return;
+    }
+
+    failedAttempts = 0;
+    apiReachable = true;
+
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    set('home-stat-epoch',  (d.globalStep || 0).toLocaleString());
+    set('home-stat-gpus',   (d.activeGpus || 0).toLocaleString());
+    set('home-stat-tokens', fmtNum(d.totalTokens || 0));
+    set('status-contributions', (d.totalContributions || 0).toLocaleString());
+    set('status-tokens',    fmtNum(d.totalTokens || 0));
+    set('status-clients',   (d.activeGpus || 0).toLocaleString());
+
+    renderLossStat(d);
+    updateGoalProgress(d.totalTokens || 0);
+    renderPoolBreakdown(d);
+
+    // Chart comes ONLY from loss_history.json now.
+    requestAnimationFrame(drawLossGraph);
+  };
+
+  loadLossHistory();
+  fetchLossHistory();
+  fetchStats();
+})();
+</script>
 </body>
 </html>
