@@ -87,13 +87,21 @@ class UmaBudgetTests(unittest.TestCase):
         self.assertAlmostEqual(clamped, 30.48 * 0.4 - client.SAFETY_MARGIN_GB, places=2)
 
     def test_integrated_flag_is_optional(self):
-        """Older torch builds lack is_integrated; fall back to the pool/RAM comparison."""
+        """Older torch builds lack is_integrated; a gfx115x arch still counts as unified memory."""
         client.train_backend = "ROCM"
-        client.torch.cuda = _cuda(32.0, 31.84, integrated=False)
+        client.torch.cuda = _cuda(32.0, 31.84, integrated=False, arch="gfx1150")
         with mock.patch.dict(sys.modules, {"psutil": _fake_psutil(30.48)}):
             ceiling = client._uma_ram_ceiling_gb(0, int(32.0 * GiB))
         self.assertIsNotNone(ceiling)
         self.assertAlmostEqual(ceiling, 30.48 * client.UMA_VRAM_SHARE_DEFAULT, places=2)
+
+    def test_gfx115_apu_without_the_integrated_flag_is_still_capped(self):
+        """gfx1150/gfx1151 are APUs even when torch omits is_integrated."""
+        budget, unified = self._budget(32.0, 31.84, 30.48, integrated=False, arch="gfx1151")
+        self.assertTrue(unified)
+        self.assertAlmostEqual(
+            budget, 30.48 * client.UMA_VRAM_SHARE_DEFAULT - client.SAFETY_MARGIN_GB, places=2
+        )
 
     def test_no_psutil_means_no_ceiling(self):
         with mock.patch.dict(sys.modules, {"psutil": None}):
