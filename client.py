@@ -100,7 +100,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 import requests
 from torch.utils.checkpoint import checkpoint
-from crowd_relora import LoRALinear as _LoRALinear
+try:
+    # Optional helper module (ReLoRA paradigm). The auto-updater only ships client.py and
+    # client.html, so a missing crowd_relora.py must never stop the stock client from starting.
+    from crowd_relora import LoRALinear as _LoRALinear
+except Exception:
+    class _LoRALinear(nn.Module):  # never instantiated: isinstance() is simply always False
+        pass
 import http.client
 from requests.exceptions import ChunkedEncodingError
 import gzip
