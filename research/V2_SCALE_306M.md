@@ -1,4 +1,11 @@
 # Scale check: backprop vs MOSAIC at 306 M
+> **Preset label correction (2026-11-19).** Everything below that says "39.9 M"
+> originally said "65 M". The preset is `--dim 512 --layers 12 --heads 8` with a
+> tied readout, which is **39.9 M parameters** (vocab 4096, 12 blocks, d=512,
+> 8 heads, T=512). Every comparison and conclusion stands — only the label was
+> wrong — but two configurations in this project were being called by one name,
+> which is exactly the kind of thing that turns into a false claim later.
+
 
 The tiny-model table in `V2_PARADIGMS.md` says MOSAIC (2 slices, H=5) beats
 backprop at 40 rounds. That is a wiring result, not a scaling result, so this is
@@ -134,12 +141,12 @@ The 1.5-nat deficit above was not the method. Two defects in
    wte.weight`, MOSAIC spent the run training a representation to decode through
    a **randomly initialised, frozen readout**. This is the big one.
 
-Probe on a finished 65 M MOSAIC run: a fresh linear probe on its own trunk
+Probe on a finished 39.9 M MOSAIC run: a fresh linear probe on its own trunk
 reached **6.39** while the model itself reported **7.18** — 0.79 nats of
 information the readout was failing to use. That predicted almost exactly what
 fixing the ownership recovered.
 
-### Measured, 65 M / 2 M unique tokens / 488 rounds (backprop = 5.6340)
+### Measured, 39.9 M / 2 M unique tokens / 488 rounds (backprop = 5.6340)
 
 | arm | trunk→slice 0 | trunk→last slice |
 |---|---|---|
@@ -167,7 +174,7 @@ a step per role per round.
 
 ## The local-step optimum, and what the fixes are worth
 
-All arms below: 65 M (`--dim 512 --layers 12 --heads 8`, 653 M params at the
+All arms below: 39.9 M (`--dim 512 --layers 12 --heads 8`, 653 M params at the
 306 M preset's depth/width ratio), 2 M unique tokens, 488 rounds for K=2,
 8 fixed `val.bin` windows, `--inner-state`.
 
@@ -247,7 +254,7 @@ bugs, worth ~1.2 nats in total (7.2456 → 6.0289).
 
 ## Two research-backed candidates refuted, and the rate is not tradeable
 
-Both were tried at the established optimum (65 M, 2 M unique tokens, 488 rounds,
+Both were tried at the established optimum (39.9 M, 2 M unique tokens, 488 rounds,
 K=2 H=5 both-roles, inner 1e-3, outer 0.15, momentum 0.9). Baseline repeat on the
 patched code: **5.8347**.
 
@@ -290,7 +297,7 @@ the head chases a trunk that the aggregate keeps moving.
 local loss (AdamW over head parameters only, `h0`/`h` under `no_grad`), and
 returns the local loss; the harness calls it every N rounds before `aggregate`.
 
-65 M, 2 M unique tokens, 488 rounds, H=5, inner 1e-3, outer 0.15:
+39.9 M, 2 M unique tokens, 488 rounds, H=5, inner 1e-3, outer 0.15:
 
 | recalibration | final |
 |---|---|
@@ -320,7 +327,7 @@ scale (the 306 M arm).
 Two candidates motivated by the residual-stream reading of the gap (~0.31 nats of
 trunk quality), both measured at the established optimum (`H=5`, inner 1e-3,
 outer 0.15, momentum 0.9, trunk owner first, share on, persistent inner state,
-65 M, 2 M unique tokens, 488 rounds):
+39.9 M, 2 M unique tokens, 488 rounds):
 
 | arm | final |
 |---|---|
@@ -348,7 +355,7 @@ DGL's ablations make aux-net capacity matter on hard objectives, so the obvious
 candidate was a hidden layer: `SoloHead(..., mlp=True)` adds
 `phi2( gelu( phi( ln(h) ) ) )`, off by default and bit-identical when off.
 
-At the tuned optimum (65 M, 2 M unique tokens, 488 rounds, H=5 both-roles,
+At the tuned optimum (39.9 M, 2 M unique tokens, 488 rounds, H=5 both-roles,
 inner 1e-3, outer 0.15, momentum 0.9):
 
 | arm | curve | final |
@@ -375,7 +382,7 @@ loss back through the cut, which is the greedy-learning gap the method accepts.
 
 The H=5 optimum was measured before the outer rate was understood, so H had to be
 re-measured at the tuned rate (`inner 1e-3`, `outer 0.15`, `momentum 0.9`,
-both-roles, 65 M, 2 M tokens, 488 rounds):
+both-roles, 39.9 M, 2 M tokens, 488 rounds):
 
 | H | per-round local movement `H*inner*outer` | final |
 |---|---|---|
@@ -451,7 +458,7 @@ Consequences, fixed in advance:
 3. **Every claim names its budget.** "Better" without a budget is not a claim;
    at equal total tokens a split method that spends `slices` batches per round is
    expected to trail, and it does.
-4. **Scale is part of the claim.** All anchoring numbers below 306 M are 65 M
+4. **Scale is part of the claim.** All anchoring numbers below 306 M are 39.9 M
    results; the 1 B deployment target is not measured and will not be claimed.
 
 ### How the round-matched control is built at 306 M
@@ -491,12 +498,12 @@ update per round**, which is exactly what a round costs.
 
 488 rounds: backprop **5.7631**, anchored MOSAIC **5.5941** (anchor every 1) and
 **5.7269** (anchor every 2). So the hybrid wins by **0.17 nats** at the configured
-frequency, against 0.25 at 65 M. The effect is slightly *smaller* with scale, not
-larger: the 65 M number was not a small-model artifact, but it does not magnify
+frequency, against 0.25 at 39.9 M. The effect is slightly *smaller* with scale, not
+larger: the 39.9 M number was not a small-model artifact, but it does not magnify
 either, and that is the honest direction of travel.
 
 976 rounds is the exception and it is stated plainly: **5.6381 vs 5.3523, 0.29
-behind**. That arm is not the configuration that won at 65 M — the 16 GB card
+behind**. That arm is not the configuration that won at 39.9 M — the 16 GB card
 forced its anchor step down to a 512-token batch, so over 976 rounds it gets 250 k
 anchor tokens where anchor-every-1 gets 1 M. Whether the win survives 976 rounds
 at full anchor volume is the open question, and it is the one arm the local GPU
@@ -510,7 +517,7 @@ cannot hold (the anchor optimiser's own state is 2× params in fp32).
 | 3.0 M | 5.5286 | 5.5941 | +0.065 |
 | 4.0 / 4.25 M | 5.3523 | 5.6381 | +0.29 |
 
-**Level at 2 M, behind beyond it.** At 65 M the same comparison was a clear loss
+**Level at 2 M, behind beyond it.** At 39.9 M the same comparison was a clear loss
 at every scale (5.5854 vs 5.4341 at 3 M), so the token gap narrows but does not
 close. This is exactly why the metric had to be declared before the runs: the
 honest sentence is *matches backprop at equal rounds, behind at equal tokens*, and
@@ -541,7 +548,7 @@ parameters, on `batch(10_000_000 + r)` so the anchor data is disjoint from every
 slice's round data. Nothing about the wire changes: the anchor happens on the
 aggregator's own copy of the weights between rounds.
 
-### Frequency curve, 65 M, 488 rounds (2 M round tokens)
+### Frequency curve, 39.9 M, 488 rounds (2 M round tokens)
 
 | anchor | 5.8121-family baseline | anchor lr 3e-4 | tokens spent anchoring | total tokens |
 |---|---|---|---|---|
