@@ -201,7 +201,7 @@ class TimingRecorder:
         self.phase("total", time.monotonic() - self.started, ok=ok, **fields)
 
 
-CLIENT_VERSION = "3.6"
+CLIENT_VERSION = "3.7"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
@@ -2704,9 +2704,16 @@ def _fwl(m, x, y, sl, ua, ad, ls=1.0, preview=False, loss_chunk=LOSS_CHUNK):
         except Exception: cards = []
     return lo * ls, cards
 
+_OOM_MARKERS = ("out of memory", "cublas_status_alloc_failed", "cudnn_status_alloc_failed",
+                "cublas_status_not_initialized", "cusolver_status_alloc_failed")
+
 def _is_oom(e):
+    """Allocation failures count as OOM, including cuBLAS/cuDNN handle creation: when the GPU is full they fail
+    with CUBLAS_STATUS_ALLOC_FAILED instead of 'out of memory' and used to skip the VRAM ladder entirely."""
     if isinstance(e, torch.cuda.OutOfMemoryError): return True
-    if isinstance(e, RuntimeError): return "out of memory" in str(e).lower()
+    if isinstance(e, RuntimeError):
+        m = str(e).lower()
+        return any(k in m for k in _OOM_MARKERS)
     return False
 
 def _clear_accel_cache(device):
@@ -3539,11 +3546,11 @@ class UserActivityMonitor:
         self.stop_event = stop_event
         self.emit = emit
         self.interval_s = _activity_env_float("CROWDGPT_ACTIVITY_PAUSE_INTERVAL", 6.0, 2.0)
-        self.cpu_busy_pct = _activity_env_float("CROWDGPT_ACTIVITY_PAUSE_CPU", 95.0, 50.0)
-        self.ram_floor_gb = _activity_env_float("CROWDGPT_ACTIVITY_PAUSE_RAM", 0.75, 0.25)
-        self.vram_other_gb = _activity_env_float("CROWDGPT_ACTIVITY_PAUSE_VRAM", 4.0, 0.25)
-        # consecutive busy samples before pausing (default 10 x 6 s = ~60 s), so a short CPU spike does not stop training
-        self.samples_needed = int(_activity_env_float("CROWDGPT_ACTIVITY_PAUSE_SAMPLES", 10, 1))
+        self.cpu_busy_pct = _activity_env_float("CROWDGPT_ACTIVITY_PAUSE_CPU", 98.0, 50.0)
+        self.ram_floor_gb = _activity_env_float("CROWDGPT_ACTIVITY_PAUSE_RAM", 0.5, 0.25)
+        self.vram_other_gb = _activity_env_float("CROWDGPT_ACTIVITY_PAUSE_VRAM", 8.0, 0.25)
+        # consecutive busy samples before pausing (default 20 x 6 s = ~2 min), so a short CPU spike does not stop training
+        self.samples_needed = int(_activity_env_float("CROWDGPT_ACTIVITY_PAUSE_SAMPLES", 20, 1))
         self._vram_base = None
         self._stop = threading.Event()
         self._proc = None
@@ -3955,6 +3962,47 @@ def run_single_round_wrapper(srv, at, se, emit):
             if exc_type is None or issubclass(exc_type, KeyboardInterrupt) or (issubclass(exc_type, Exception) and not issubclass(exc_type, (AuthRejected, CoordinatorRejected))):
                 raise CoordinatorRejected(rejected + (f" (the round had also failed: {exc_text})" if exc_text else ""), status=403)
 
+def _gpu_preflight(vram_gb, se, emit):
+    """Run before taking a task. Re-measures free VRAM; while the GPU is occupied by another process, wait instead of
+    taking a task, downloading ~2 GB of weights and failing (a full GPU cannot even create a cuBLAS handle).
+    Also refreshes the auto placement budget, which was measured once at Start and stayed tiny after the other
+    process exited. CROWDGPT_MIN_FREE_VRAM_GB sets the floor (default 1.0, 0 disables). Returns False only if stopped."""
+    if train_backend not in ("CUDA", "ROCM"): return True
+    try:
+        if not torch.cuda.is_available(): return True
+        need = float(os.environ.get("CROWDGPT_MIN_FREE_VRAM_GB", "1.0") or 1.0)
+    except Exception: return True
+    if need <= 0: return True
+    waited = False; last_log = 0.0
+    while not se.is_set():
+        try:
+            idx = train_device.index if train_device is not None and train_device.index is not None else 0
+            _clear_accel_cache(train_device)
+            free, total = torch.cuda.mem_get_info(idx)
+        except Exception: return True
+        free_gb = free / 1024**3
+        if free_gb >= need:
+            if waited: emit('log', f"✅ GPU memory is free again ({free_gb:.1f} GB) — resuming.")
+            if "auto_gb" in memory_config:
+                before = memory_config.get("ram_gb")
+                try:
+                    auto_detect_vram_budget(); memory_config["auto_gb"] = memory_config["ram_gb"]; apply_vram_override(vram_gb)
+                    if before != memory_config.get("ram_gb"):
+                        emit('log', f"Placement budget updated: {before} → {memory_config['ram_gb']:.2f} GB")
+                except Exception: pass
+            return True
+        waited = True
+        if time.monotonic() - last_log > 120 or last_log == 0.0:
+            last_log = time.monotonic()
+            emit('log', f"⏸️ Only {free_gb:.1f} GB of GPU memory is free ({(total - free) / 1024**3:.1f} of {total / 1024**3:.1f} GB in use "
+                        f"by other programs — a game, another AI app, or an old CrowdGPT window still running). "
+                        f"Waiting for it to free up; check `nvidia-smi`. Set CROWDGPT_MIN_FREE_VRAM_GB=0 to try anyway.")
+            emit('status', 'waiting')
+        for _ in range(15):
+            if se.is_set(): break
+            time.sleep(1)
+    return False
+
 def _do_backend_setup(selected_backend, vram_gb, emit):
     global train_device, train_backend
     train_device, train_backend = detect_training_backend(selected_backend)
@@ -4162,8 +4210,9 @@ class Api:
         try: _do_backend_setup(self.selected_backend, self.vram_gb, self.emit)
         except Exception as e:
             self.emit('log', f"Error: {e}"); self.emit('status', 'idle'); return
-        round_count = 0
+        round_count = 0; fails = 0
         while not self.stop_event.is_set():
+            if not _gpu_preflight(self.vram_gb, self.stop_event, self.emit): break
             round_count += 1; apply_vram_override(self.vram_gb)
             self.emit('log', f"{'='*40}\nStarting Round Cycle #{round_count}\n{'='*40}")
             try: run_single_round_wrapper(self.server_url, self.auth_token, self.stop_event, self.emit)
@@ -4186,9 +4235,14 @@ class Api:
                 import traceback; tb = traceback.format_exc()
                 for ln in tb.splitlines()[-14:]: self.emit('log', ln)
                 self.emit('log', f"Round failed: {e}")
+                fails += 1
+            else: fails = 0
             if self.stop_event.is_set(): break
-            self._check_updates_between_rounds(); self.emit('status', 'waiting'); self.emit('log', "✅ Round complete. Auto-relaunching next round in 10s...")
-            for _ in range(10):
+            wait_s = 10 if not fails else min(10 * 2 ** (fails - 1), 300)     # back off on repeated failures: each retry re-downloads the weights
+            self._check_updates_between_rounds(); self.emit('status', 'waiting')
+            self.emit('log', f"✅ Round complete. Auto-relaunching next round in {wait_s}s..." if not fails
+                      else f"⚠️ Round failed ({fails} in a row). Retrying in {wait_s}s...")
+            for _ in range(wait_s):
                 if self.stop_event.is_set(): break
                 time.sleep(1)
         self.emit('status', 'idle'); self.emit('log', "👋 Training stopped by user.")
@@ -4991,6 +5045,7 @@ def _run_headless(args, emit, dashboard=None, control=None):
             control.wait_while_paused()
             if control.quit_event.is_set(): break
             continue
+        if not _gpu_preflight(args.vram_gb, stop_event, emit): break
         round_count += 1; apply_vram_override(args.vram_gb)
         log.info(f"Round {round_count}" + (f"/{max_rounds}" if max_rounds else ""))
         try: run_single_round_wrapper(args.server, auth_token, stop_event, emit)
