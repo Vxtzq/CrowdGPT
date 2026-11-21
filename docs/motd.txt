@@ -1,5 +1,5 @@
-CrowdGPT v3.5 changelog:
-- Implemented auto-pause
-- VRAM optimization
-- Released benchmarks :D
+CrowdGPT Client v3.6 changelog:
+- Crowd-v1.5 is here!!!
+- Faster training
+- Less VRAM required
 Check GitHub for more infos
