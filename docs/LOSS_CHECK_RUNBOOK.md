@@ -42,6 +42,7 @@ export CROWDGPT_HIVEMIND_EVALUATOR_KEYS=<64 hex chars>
 export CROWDGPT_HIVEMIND_SERVER_SECRET=<32+ bytes>
 export CROWDGPT_EVAL_MANIFEST=eval/ng-eval-v1/manifest.json
 export CROWDGPT_EVAL_COUNT=64
+export CROWDGPT_GATE_SIGNING_KEY=<64 hex chars = 32-byte Ed25519 seed>
 python tools/hivemind_eval_service.py --print-config   # gate block must not say "missing"
 python tools/hivemind_eval_service.py --serve --host 0.0.0.0 --port 8099
 ```
@@ -52,8 +53,14 @@ Coordinator:
 export CROWDGPT_LOSS_CHECK_URL=http://evaluator.internal:8099/fl/loss_check/gate
 export CROWDGPT_LOSS_CHECK_TOKEN=<bearer token, optional but recommended>
 export CROWDGPT_LOSS_CHECK_MODE=log
-export CROWDGPT_LOSS_FAIL_OPEN=1
+export CROWDGPT_LOSS_FAIL_OPEN=0
+export CROWDGPT_LOSS_RECEIPT_REQUIRED=1
+export CROWDGPT_LOSS_EVALUATOR_KEYS=primary:<the seed's 64-hex public key>
 ```
+
+`CROWDGPT_GATE_SIGNING_KEY` on the evaluator and `CROWDGPT_LOSS_EVALUATOR_KEYS`
+on the coordinator are two halves of one keypair: `--print-config` prints the
+public half as `receiptSigner`, and that is the value the coordinator trusts.
 
 Smoke test before any mode flip — a `503` here means the manifest or the
 scorer is missing, and flipping to `enforce` with `FAIL_OPEN=0` would then
@@ -62,10 +69,45 @@ block every round:
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' \
   -X POST "$CROWDGPT_LOSS_CHECK_URL" -H 'Content-Type: application/json' \
-  -d '{"step":1,"round":1,"previousAcceptedLoss":null,"candidate":{"modelUrl":"https://example.invalid/model"}}'
+  -d '{"step":1,"round":1,"requestId":"00","candidate":{"modelUrl":"https://example.invalid/model"}}'
 # 400 = the route is alive and validates (a fake URL is rejected before scoring)
 # 503 = the evaluator has no manifest; fix that first
 ```
+
+## Signed receipts
+
+A receipt binds the loss the evaluator measured to the question the coordinator
+asked, so the coordinator no longer has to trust a bare number. On a `200` the
+evaluator adds three fields to the gate body:
+
+```json
+{
+  "loss": 5.125,
+  "step": 41,
+  "round": 12,
+  "receipt": {
+    "step": 41, "round": 12, "requestId": "00112233...",
+    "modelSha256": "...", "engramSha256": "...",
+    "loss": 5.125, "issuedAt": 1763...
+  },
+  "pubkey": "<64 hex>",
+  "signature": "<hex>"
+}
+```
+
+The signature is Ed25519 over the canonical receipt — `json.dumps(receipt,
+sort_keys=True, separators=(",", ":"), ensure_ascii=False)` encoded as UTF-8 —
+and the receipt echoes the request's `requestId` and candidate digests verbatim.
+The coordinator rejects the round when the signature does not verify, when
+`step`/`round`/`requestId`/either digest disagree with what it sent, when the
+loss is not a finite number, when `issuedAt` is older than
+`CROWDGPT_LOSS_RECEIPT_MAX_AGE_S` (default 3600), or when the same receipt was
+already used. A bad receipt is a rejection in **every** mode: `LOSS_FAIL_OPEN`
+only covers an evaluator that cannot be reached at all.
+
+Without `CROWDGPT_GATE_SIGNING_KEY` the evaluator answers exactly as it did
+before — unsigned. That only pairs with `CROWDGPT_LOSS_RECEIPT_REQUIRED=0`, and
+that combination is for a staged rollout, not a steady state.
 
 ## Week one: `log`
 
