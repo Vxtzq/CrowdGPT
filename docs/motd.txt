@@ -2,4 +2,4 @@ CrowdGPT Client v3.8 changelog:
 - Crowd-v1.5 is here
 - Faster training
 - Less VRAM required
-Check GitHub for more infos
+Check GitHub or Discord for more infos
