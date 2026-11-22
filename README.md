@@ -33,8 +33,16 @@
   <strong>The best 0$ AI.</strong>
 </p>
 
-# Crowd-v1.5 training run started 🥳
+# CrowdGPT v3.5 changelog
+## Crowd-v1.5 training run started 🥳
 Train as much as you want.
+- Five training paradigms, multi-token prediction, and two
+  ways to send less over the wire. Everything below is **opt-in** - with no flags
+  and no environment variables the client behaves exactly as it did in v1, so a
+  v1.5 coordinator still serves v1 volunteers.
+  
+## Crowd-Mobile is in development
+
 
 # Crowd-v1 Benchmarks
 <p align="center">
@@ -51,14 +59,6 @@ Train as much as you want.
 </p>
 
 **Disclaimer: This does not mean Crowd-v1 is an intelligent model. It just means it is good at general english** (these benchmarks are generally not hard)
-
-# CrowdGPT v3.5 changelog
-- Crowd-v1.5 is here: five training paradigms, multi-token prediction, and two
-  ways to send less over the wire. Everything below is **opt-in** — with no flags
-  and no environment variables the client behaves exactly as it did in v1, so a
-  v1.5 coordinator still serves v1 volunteers.
-
-## v1.5 operating notes
 
 ### Choosing a training rule
 
