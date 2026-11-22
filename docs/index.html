@@ -608,6 +608,13 @@ td.mono { font-family: var(--mono); text-align: right; font-size: clamp(14px,1.1
 .lb-search { width: 100%; height: 36px; padding: 0 12px 0 32px; font-family: var(--sans); font-size: 14px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); transition: border-color .15s; }
 .lb-search::placeholder { color: var(--text-muted); }
 .lb-search:focus { outline: none; border-color: var(--accent); }
+.lb-modes { display: inline-flex; padding: 3px; gap: 2px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--radius-sm); flex: 0 0 auto; }
+.lb-mode-btn { height: 30px; padding: 0 14px; border: 0; background: transparent; color: var(--text-dim); font-family: var(--mono); font-size: 13px; cursor: pointer; border-radius: calc(var(--radius-sm) - 2px); transition: all .15s; white-space: nowrap; }
+.lb-mode-btn:hover:not(.active) { color: var(--text); background: var(--bg-softer); }
+.lb-mode-btn.active { background: var(--accent); color: #fff; font-weight: 600; }
+.lb-mode-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.lb-note { font-family: var(--mono); font-size: 12px; color: var(--text-muted); margin: -4px 0 14px; letter-spacing: .01em; min-height: 1em; }
+.lb-note:empty { display: none; }
 .lb-count { font-family: var(--mono); font-size: 12px; color: var(--text-muted); white-space: nowrap; margin-left: auto; letter-spacing: .01em; }
 .lb-count:empty { display: none; }
 .lb-pagination { display: flex; justify-content: center; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
@@ -620,6 +627,7 @@ td.mono { font-family: var(--mono); text-align: right; font-size: clamp(14px,1.1
 @media (max-width: 720px) {
   .lb-toolbar { gap: 10px; }
   .lb-search-wrap { flex: 1 1 100%; }
+  .lb-modes { width: 100%; } .lb-mode-btn { flex: 1 1 0; }
   .lb-count { margin-left: 0; }
   .lb-page-btn { min-width: 44px; height: 44px; font-size: 14px; }
 }
@@ -1350,6 +1358,11 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; padding-bottom: c
     </div>
 
     <div class="lb-toolbar" id="lb-toolbar">
+      <div class="lb-modes" id="lb-modes" role="tablist" aria-label="Leaderboard period">
+        <button type="button" class="lb-mode-btn" data-mode="all" role="tab" data-i18n="contrib.mode.all">All time</button>
+        <button type="button" class="lb-mode-btn" data-mode="week" role="tab" data-i18n="contrib.mode.week">Weekly</button>
+        <button type="button" class="lb-mode-btn" data-mode="day" role="tab" data-i18n="contrib.mode.day">Daily</button>
+      </div>
       <div class="lb-search-wrap">
         <input
           type="search"
@@ -1363,6 +1376,8 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; padding-bottom: c
       </div>
       <div class="lb-count" id="lb-count"></div>
     </div>
+
+    <div class="lb-note" id="lb-note"></div>
 
     <div class="table-wrap">
       <table class="lb-table">
@@ -1715,6 +1730,9 @@ const TRANSLATIONS = {
     'contrib.full.search': 'Search by username…',
     'contrib.full.empty': 'No users match your search.',
     'contrib.full.no_data': 'No contributors yet.',
+    'contrib.mode.all': "All time", 'contrib.mode.week': "Weekly", 'contrib.mode.day': "Daily",
+    'contrib.mode.note.week': "Tokens processed in the last 7 days (UTC).", 'contrib.mode.note.day': "Tokens processed today (UTC), resets at 00:00 UTC.",
+    'contrib.mode.empty': "No tokens processed in this period yet.", 'contrib.mode.unavailable': "This leaderboard isn't available yet.",
     'contrib.full.count_one': '1 user',
     'contrib.full.count_many': '{n} users',
     'contrib.full.pagination.prev': 'Previous page',
@@ -1915,6 +1933,9 @@ const TRANSLATIONS = {
     'contrib.full.search': "Rechercher par nom d'utilisateur…",
     'contrib.full.empty': 'Aucun utilisateur ne correspond à votre recherche.',
     'contrib.full.no_data': 'Aucun contributeur pour le moment.',
+    'contrib.mode.all': "Total", 'contrib.mode.week': "Hebdo", 'contrib.mode.day': "Jour",
+    'contrib.mode.note.week': "Tokens traités ces 7 derniers jours (UTC).", 'contrib.mode.note.day': "Tokens traités aujourd'hui (UTC), remise à zéro à 00:00 UTC.",
+    'contrib.mode.empty': "Aucun token traité sur cette période.", 'contrib.mode.unavailable': "Ce classement n'est pas encore disponible.",
     'contrib.full.count_one': '1 utilisateur',
     'contrib.full.count_many': '{n} utilisateurs',
     'contrib.full.pagination.prev': 'Page précédente',
@@ -2136,6 +2157,9 @@ const TRANSLATIONS = {
     'contrib.full.search': 'Nach Benutzername suchen…',
     'contrib.full.empty': 'Keine Benutzer entsprechen Ihrer Suche.',
     'contrib.full.no_data': 'Noch keine Beitragenden.',
+    'contrib.mode.all': "Gesamt", 'contrib.mode.week': "Woche", 'contrib.mode.day': "Heute",
+    'contrib.mode.note.week': "Verarbeitete Tokens der letzten 7 Tage (UTC).", 'contrib.mode.note.day': "Heute verarbeitete Tokens (UTC), Reset um 00:00 UTC.",
+    'contrib.mode.empty': "In diesem Zeitraum wurden noch keine Tokens verarbeitet.", 'contrib.mode.unavailable': "Diese Rangliste ist noch nicht verfügbar.",
     'contrib.full.count_one': '1 Benutzer',
     'contrib.full.count_many': '{n} Benutzer',
     'contrib.full.pagination.prev': 'Vorherige Seite',
@@ -2350,6 +2374,9 @@ const TRANSLATIONS = {
     'contrib.full.search': 'Buscar por usuario…',
     'contrib.full.empty': 'Ningún usuario coincide con tu búsqueda.',
     'contrib.full.no_data': 'Aún no hay contribuyentes.',
+    'contrib.mode.all': "Total", 'contrib.mode.week': "Semanal", 'contrib.mode.day': "Diario",
+    'contrib.mode.note.week': "Tokens procesados en los últimos 7 días (UTC).", 'contrib.mode.note.day': "Tokens procesados hoy (UTC), se reinicia a las 00:00 UTC.",
+    'contrib.mode.empty': "Aún no se han procesado tokens en este periodo.", 'contrib.mode.unavailable': "Esta clasificación aún no está disponible.",
     'contrib.full.count_one': '1 usuario',
     'contrib.full.count_many': '{n} usuarios',
     'contrib.full.pagination.prev': 'Página anterior',
@@ -2564,6 +2591,9 @@ const TRANSLATIONS = {
     'contrib.full.search': 'Kullanıcı adıyla ara…',
     'contrib.full.empty': 'Aramanızla eşleşen kullanıcı yok.',
     'contrib.full.no_data': 'Henüz katkıda bulunan yok.',
+    'contrib.mode.all': "Tümü", 'contrib.mode.week': "Haftalık", 'contrib.mode.day': "Günlük",
+    'contrib.mode.note.week': "Son 7 günde işlenen token (UTC).", 'contrib.mode.note.day': "Bugün işlenen token (UTC), 00:00 UTC'de sıfırlanır.",
+    'contrib.mode.empty': "Bu dönemde henüz token işlenmedi.", 'contrib.mode.unavailable': "Bu sıralama henüz kullanılamıyor.",
     'contrib.full.count_one': '1 kullanıcı',
     'contrib.full.count_many': '{n} kullanıcı',
     'contrib.full.pagination.prev': 'Önceki sayfa',
@@ -2782,6 +2812,9 @@ const TRANSLATIONS = {
     'contrib.full.search': '按用户名搜索…',
     'contrib.full.empty': '没有匹配的用户。',
     'contrib.full.no_data': '暂无贡献者。',
+    'contrib.mode.all': "总榜", 'contrib.mode.week': "周榜", 'contrib.mode.day': "日榜",
+    'contrib.mode.note.week': "过去 7 天处理的 Token（UTC）。", 'contrib.mode.note.day': "今日处理的 Token（UTC），每天 00:00 UTC 重置。",
+    'contrib.mode.empty': "此期间尚无已处理的 Token。", 'contrib.mode.unavailable': "此排行榜暂不可用。",
     'contrib.full.count_one': '1 位用户',
     'contrib.full.count_many': '{n} 位用户',
     'contrib.full.pagination.prev': '上一页',
@@ -2900,7 +2933,7 @@ function applyTranslations() {
   });
 
   updateQueueBadgeText();
-  renderLeaderboardTable();
+  renderLeaderboardTable(); lbSyncModeUI();
 }
 
 function setLanguage(lang) {
@@ -2979,6 +3012,13 @@ const LB_PAGE_SIZE = 10;
 let allLeaderboardUsers = [];
 let lbSearchQuery = '';
 let lbPage = 1;
+
+// Period modes: 'all' (HF mirror of the all-time board), 'week' (last 7 UTC days), 'day' (today, UTC).
+const LB_PERIOD_DAYS = { week: 7, day: 1 };
+let lbMode = 'all';
+try { const m = localStorage.getItem('crowdgpt-lb-mode'); if (m === 'week' || m === 'day') lbMode = m; } catch (e) {}
+const lbCache = { all: null, week: null, day: null };   // last good list per mode: switching shows it instantly
+let lbUnavailable = false;
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -3071,7 +3111,7 @@ function renderLeaderboardTable() {
   allLeaderboardUsers.forEach((u, i) => rankMap.set(u, i + 1));
 
   if (slice.length === 0) {
-    const msg = q ? t('contrib.full.empty') : t('contrib.full.no_data');
+    const msg = q ? t('contrib.full.empty') : (lbUnavailable ? t('contrib.mode.unavailable') : (lbMode !== 'all' ? t('contrib.mode.empty') : t('contrib.full.no_data')));
     tbody.innerHTML = `<tr><td colspan="6" class="empty-state">${escapeHtml(msg)}</td></tr>`;
   } else {
     tbody.innerHTML = slice.map(u => renderLeaderboardRow(u, rankMap.get(u) || 0)).join('');
@@ -3097,6 +3137,16 @@ function renderLeaderboardTable() {
   }
 }
 
+function lbSyncModeUI() {
+  document.querySelectorAll('#lb-modes .lb-mode-btn').forEach(b => {
+    const on = b.dataset.mode === lbMode;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  const note = document.getElementById('lb-note');
+  if (note) note.textContent = lbMode === 'all' ? '' : t('contrib.mode.note.' + lbMode);
+}
+
 (function initLeaderboardControls() {
   const searchEl = document.getElementById('lb-search');
   if (searchEl) {
@@ -3106,11 +3156,47 @@ function renderLeaderboardTable() {
       renderLeaderboardTable();
     });
   }
+  document.querySelectorAll('#lb-modes .lb-mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const mode = btn.dataset.mode;
+      if (mode === lbMode) return;
+      lbMode = mode; lbPage = 1; lbUnavailable = false;
+      try { localStorage.setItem('crowdgpt-lb-mode', mode); } catch (e) {}
+      allLeaderboardUsers = lbCache[mode] || [];      // instant if we already have it
+      lbSyncModeUI(); renderLeaderboardTable();
+      fetchLeaderboard();
+    });
+  });
+  lbSyncModeUI();
 })();
+
+// Period rows come from /api/leaderboard/daily with the same fields the table renders
+// (trust score and the power shield included); tokens/steps/submissions are for the period.
+async function fetchPeriodLeaderboard(mode) {
+  const days = LB_PERIOD_DAYS[mode];
+  let rows = null;
+  try {
+    const r = await fetch(`${API_BASE}/api/leaderboard/daily?days=${days}&limit=1000`, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+    if (r.ok) { const j = await r.json(); rows = Array.isArray(j.leaderboard) ? j.leaderboard : []; }
+  } catch (e) {}
+  if (mode !== lbMode) return;                         // user switched tabs while this was in flight
+  if (rows === null) {
+    if (!lbCache[mode]) { lbUnavailable = true; allLeaderboardUsers = []; renderLeaderboardTable(); }
+    return;                                            // keep showing the last good data
+  }
+  lbUnavailable = false;
+  lbCache[mode] = rows.map(r => ({
+    username: r.username, totalTokens: r.tokens, totalSteps: r.steps, contributions: r.submissions,
+    trustScore: r.trustScore, power: !!r.power,
+  }));
+  allLeaderboardUsers = lbCache[mode];
+  renderLeaderboardTable();
+}
 
 async function fetchLeaderboard() {
   const tbody = document.getElementById('lb-body');
   if (!tbody) return;
+  if (lbMode !== 'all') return fetchPeriodLeaderboard(lbMode);
 
   let users = null;
   try {
@@ -3124,13 +3210,15 @@ async function fetchLeaderboard() {
       if (r2.ok) users = await r2.json();
     } catch (e2) {}
   }
+  if (lbMode !== 'all') return;                        // switched away while loading
 
   if (!users) {
     tbody.innerHTML = `<tr><td colspan="6" class="empty-state">Leaderboard temporarily unavailable.</td></tr>`;
     return;
   }
 
-  allLeaderboardUsers = Array.isArray(users) ? users : [];
+  lbCache.all = Array.isArray(users) ? users : [];
+  allLeaderboardUsers = lbCache.all;
   renderLeaderboardTable();
 }
 
