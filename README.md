@@ -33,7 +33,7 @@
   <strong>The best 0$ AI.</strong>
 </p>
 
-# CrowdGPT v3.5 changelog
+# ℹ️ CrowdGPT v3.5 changelog ℹ️
 ## Crowd-v1.5 training run started 🥳
 Train as much as you want.
 - Five training paradigms, multi-token prediction, and two
@@ -42,7 +42,7 @@ Train as much as you want.
   v1.5 coordinator still serves v1 volunteers.
   
 ## Crowd-Mobile is in development
-
+- More details soon
 
 # Crowd-v1 Benchmarks
 <p align="center">
