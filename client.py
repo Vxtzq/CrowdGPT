@@ -85,6 +85,12 @@ try:
 except Exception:
     msvcrt = None
 
+# Linux/WebKitGTK: a white, empty window usually means the web view lost its GPU context (NVIDIA drivers, or VRAM taken
+# by training). The dashboard is simple, so render it in software and keep the GPU for training.
+# CROWDGPT_WEBKIT_GPU=1 keeps WebKit's GPU rendering.
+if sys.platform.startswith("linux") and os.environ.get("CROWDGPT_WEBKIT_GPU", "0") != "1":
+    os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
+    os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
 try:
     import webview
     _WEBVIEW_OK = True
