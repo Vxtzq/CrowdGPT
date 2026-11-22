@@ -3185,10 +3185,21 @@ async function fetchPeriodLeaderboard(mode) {
     return;                                            // keep showing the last good data
   }
   lbUnavailable = false;
-  lbCache[mode] = rows.map(r => ({
-    username: r.username, totalTokens: r.tokens, totalSteps: r.steps, contributions: r.submissions,
-    trustScore: r.trustScore, power: !!r.power,
-  }));
+  // Trust score + power shield: use what the server sent; if it didn't (older server build), take them from the
+  // all-time board by uuid so a user's trust score never shows as 0 just because we're on a period tab.
+  if (rows.some(r => r.trustScore == null) && !lbCache.all) {
+    try { const r0 = await fetch(HF_LEADERBOARD_URL, { cache: 'no-store' }); if (r0.ok) lbCache.all = await r0.json(); } catch (e) {}
+    if (mode !== lbMode) return;
+  }
+  const allBy = new Map((lbCache.all || []).map(u => [u.uuid || ('n:' + u.username), u]));
+  lbCache[mode] = rows.map(r => {
+    const a = allBy.get(r.uuid) || allBy.get('n:' + r.username) || {};
+    return {
+      username: r.username, totalTokens: r.tokens, totalSteps: r.steps, contributions: r.submissions,
+      trustScore: r.trustScore != null ? r.trustScore : (a.trustScore != null ? a.trustScore : 0),
+      power: r.power != null ? !!r.power : !!a.power,
+    };
+  });
   allLeaderboardUsers = lbCache[mode];
   renderLeaderboardTable();
 }
