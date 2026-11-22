@@ -5079,11 +5079,50 @@ def _run_headless(args, emit, dashboard=None, control=None):
     _join_upload(stop_event, timeout=(15.0 if stop_event.is_set() else None))
     return 0
 
+_STALL_FH = None
+
+def _start_stall_watchdog(limit_s: float = 8.0):
+    """If the whole Python process stops for `limit_s` seconds (what makes the Windows window say "Not responding":
+    something holds the GIL, e.g. CUDA initialisation or a driver call), write every thread's stack to
+    checkpoints/stall_trace.log. faulthandler's timer runs in C and needs no GIL, so it fires even then.
+    A heartbeat thread re-arms it every second; CROWDGPT_STALL_TRACE=0 disables it."""
+    global _STALL_FH
+    if os.environ.get("CROWDGPT_STALL_TRACE", "1") == "0": return
+    try:
+        import faulthandler
+        CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+        _STALL_FH = open(CHECKPOINT_DIR / "stall_trace.log", "a", buffering=1)
+        def _beat():
+            while True:
+                try: faulthandler.dump_traceback_later(limit_s, repeat=False, file=_STALL_FH)
+                except Exception: return
+                time.sleep(1.0)
+        threading.Thread(target=_beat, daemon=True, name="stall-watchdog").start()
+    except Exception as e: log.warning(f"[ui] stall watchdog unavailable: {e}")
+
+def _prewarm_gpu(api):
+    """Initialise CUDA/ROCm *before* the window exists. torch's one-time GPU initialisation holds the Python GIL for
+    5-20 s on a cold Windows start; the window's message loop is Python too, so if that happens while the window is
+    open Windows shows "Not responding". Doing it first moves the wait to before the window appears.
+    CROWDGPT_PREWARM_GPU=0 disables it."""
+    if os.environ.get("CROWDGPT_PREWARM_GPU", "1") == "0": return
+    try:
+        if not torch.cuda.is_available(): return
+        dev, be = detect_training_backend(api.selected_backend)
+        if be not in ("CUDA", "ROCM"): return
+        t0 = time.time(); log.info("[gpu] initialising the GPU — the window opens right after...")
+        with torch.cuda.device(dev):
+            a = torch.zeros(16, 16, device=dev); float((a @ a).sum().item()); del a       # context + cuBLAS handle
+            torch.cuda.empty_cache()
+        log.info(f"[gpu] ready in {time.time() - t0:.1f}s")
+    except Exception as e: log.warning(f"[gpu] pre-warm skipped: {e}")
+
 def run_gui(args):
     if not _WEBVIEW_OK:
         log.error(f"GUI unavailable: {_WEBVIEW_ERR}"); return 4
 
     api = Api(); start_tokenizer_loader()
+    _prewarm_gpu(api); _start_stall_watchdog()
     kwargs = {"js_api": api, "width": 1000, "height": 720, "min_size": (320, 240)}
 
     html_path = Path(__file__).resolve().parent / "client.html"
