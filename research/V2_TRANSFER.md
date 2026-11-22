@@ -96,6 +96,50 @@ sends the residual on the second call rather than the same entries again, and th
 (9) server-side, including that a reader using `model_size * 2` really would disagree
 with the tail offset (so the test can fail).
 
+## Is the delta low-rank? A measurement (arXiv:2410.17881)
+
+AdaRankGrad claims layer-gradient rank decays toward one as training proceeds and
+transports low-rank gradient factors instead of dense updates. That is a
+*transport* claim we can test directly: if a round's delta is near rank one, a
+low-rank codec beats top-k sparsity outright (no index bytes, and the error is
+spread over every coordinate instead of zeroing 98% of them).
+
+`experiments/v2/rank_probe.py` builds the 39.9 M preset (`D=512 L=12 H=8`), runs
+30 MOSAIC rounds at the tuned configuration, and compares the last round's merged
+delta against a backprop delta of five AdamW steps. Energy captured by the leading
+`r` singular values, weighted by Frobenius mass over the 49 matrices:
+
+| delta | rank 1 | rank 4 | rank 8 | rank 16 |
+|---|---|---|---|---|
+| MOSAIC round | 0.346 | 0.707 | 0.837 | 0.920 |
+| backprop, 5 steps | 0.387 | 0.709 | 0.805 | 0.861 |
+
+**The rank-1 asymptote does not hold here** — a third of the energy is in the top
+singular value, not 90%+ — so AdaRankGrad's premise is about gradients accumulated
+over far more steps than one round, not about our uploads.
+
+But the *transport* choice it implies still wins, and the margin is large. At
+**equal bytes** (the sparse-2% budget, 4.8 MB for this model's matrices):
+
+| codec | bytes | relative Frobenius error |
+|---|---|---|
+| sparse, top 2% of entries | 4.8 MB | **0.936** |
+| low-rank, `r ≈ 23` | 4.8 MB | **0.225** |
+
+Sparse top-k is close to useless on these deltas for a structural reason: AdamW's
+per-coordinate normalisation makes a round's delta **dense** (every coordinate
+moves by roughly `lr`, so top-2% retains only ~12% of the squared norm). That is
+also why the error-feedback numbers above needed a `rho` sweep to look respectable
+at all. Low-rank is 4x better at the same bytes on this evidence.
+
+Two honest caveats, both worth stating before anything is built on it:
+- this is a 39.9 M model at 30 rounds; rank structure at 1 B and at 1 000 rounds is
+  unmeasured, and AdaRankGrad's own claim is that rank *falls* with training, which
+  our 30-round snapshot cannot see either way;
+- error per round is not the metric that matters — error *after error feedback
+  across rounds* is, and a low-rank codec's residual is itself low-rank, so the
+  combination has to be measured rather than assumed.
+
 ## What was not done
 
 - No end-to-end training comparison of sparse vs dense uploads. The payload and
