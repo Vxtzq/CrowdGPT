@@ -1,5 +1,4 @@
 CrowdGPT Client v3.9 changelog:
 - Crowd-v1.5 is here
-- AMD GPU fixes
-- Less VRAM required
+- Better VRAM management for AMD GPUs
 Check GitHub or Discord for more infos
