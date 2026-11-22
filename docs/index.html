@@ -832,7 +832,6 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; padding-bottom: c
 
 <div id="cgpt-ann" class="cgpt-ann" hidden>
   <div class="cgpt-ann-inner">
-    <span class="cgpt-ann-icon" aria-hidden="true">📣</span>
     <span class="cgpt-ann-text" id="cgpt-ann-text"></span>
     <a class="cgpt-ann-btn" href="#status" data-view="status" data-scroll="roadmap" data-i18n="ann.roadmap">View roadmap</a>
     <button type="button" class="cgpt-ann-close" id="cgpt-ann-close" aria-label="Dismiss announcement">×</button>
@@ -4421,19 +4420,12 @@ html{scroll-padding-top:calc(var(--header-h) + 24px);}
   padding:10px max(var(--header-px), env(safe-area-inset-right,0px)) 10px
           max(var(--header-px), env(safe-area-inset-left,0px));
   display:grid;
-  grid-template-columns:auto minmax(0,1fr) auto auto;
+  grid-template-columns:minmax(0,1fr) auto auto;
   align-items:center;
   column-gap:12px;
 }
-.cgpt-ann-icon{
-  grid-column:1;
-  width:20px;height:20px;
-  display:inline-flex;align-items:center;justify-content:center;
-  font-size:14px;line-height:1;
-  transform:translateY(-.5px);
-}
 .cgpt-ann-text{
-  grid-column:2;
+  grid-column:1;
   min-width:0;
   font-weight:500;
   white-space:normal;
@@ -4479,15 +4471,14 @@ html{scroll-padding-top:calc(var(--header-h) + 24px);}
 
 @media (max-width:700px){
   .cgpt-ann-inner{
-    grid-template-columns:auto minmax(0,1fr) auto;
+    grid-template-columns:minmax(0,1fr) auto;
     grid-template-areas:
-      "icon text close"
-      ". action action";
+      "text close"
+      "action action";
     align-items:start;
     column-gap:10px;row-gap:10px;
     padding-top:12px;padding-bottom:12px;
   }
-  .cgpt-ann-icon{grid-area:icon;width:20px;height:22px;transform:none;}
   .cgpt-ann-text{grid-area:text;}
   .cgpt-ann-close{grid-area:close;width:34px;height:34px;margin-top:-5px;margin-right:-6px;}
   .cgpt-ann-btn{grid-area:action;justify-self:end;min-height:36px;padding-inline:14px;}
@@ -4497,7 +4488,6 @@ html{scroll-padding-top:calc(var(--header-h) + 24px);}
     grid-template-columns:minmax(0,1fr) auto;
     grid-template-areas:"text close" "action action";
   }
-  .cgpt-ann-icon{display:none;}
   .cgpt-ann-btn{width:100%;}
 }
 
