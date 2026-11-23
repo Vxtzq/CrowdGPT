@@ -61,7 +61,7 @@ and picks the base image:
 
 | Detected GPU | Base image | PyTorch |
 |---|---|---|
-| A target the ROCm 10.2 image ships: RDNA1–RDNA4 (`gfx1010`–`gfx1036`, `gfx1100`–`gfx1103`, `gfx1150`–`gfx1153`, `gfx1200`, `gfx1201`), `gfx1250`, and `gfx908` / `gfx90a` / `gfx942` / `gfx950` | `rocm/pytorch:rocm10.2.0_ubuntu24.04_py3.12_pytorch_release_2.15.0` | 2.15, Python 3.12 |
+| A target the ROCm 10.2 image ships: RDNA1 to RDNA4 (`gfx1010` to `gfx1036`, `gfx1100` to `gfx1103`, `gfx1150` to `gfx1153`, `gfx1200`, `gfx1201`), `gfx1250`, and `gfx908` / `gfx90a` / `gfx942` / `gfx950` | `rocm/pytorch:rocm10.2.0_ubuntu24.04_py3.12_pytorch_release_2.15.0` | 2.15, Python 3.12 |
 | Anything else, e.g. Vega (`gfx900`) or Radeon VII / MI50 (`gfx906`) | `rocm/pytorch:rocm6.4.4_ubuntu22.04_py3.10_pytorch_release_2.6.0` | 2.6, Python 3.10 |
 | No GPU detected | ROCm 10.2 | |
 
@@ -256,7 +256,7 @@ Set these in `.env` or in your shell:
 - **NVIDIA host without `nvidia-container-toolkit`:**
   `./docker/run.sh` automatically falls back to `docker-compose.cuda-noruntime.yml` when `nvidia-container-toolkit` is not detected. You can also force it explicitly with `CROWDGPT_CUDA_NORUNTIME=1 ./docker/run.sh cuda up -d`.
 - **AMD ROCm reports `ROCm reports no usable GPU` on consumer Radeon cards:**
-  Check the GPU line `./docker/run.sh rocm build` prints. RDNA1–RDNA4 cards are supported natively by the ROCm 10.2 image and normally need no override. For a card outside that list, set `HSA_OVERRIDE_GFX_VERSION` in `.env` to the nearest supported target (for example `10.3.0` for RDNA2 or `11.0.0` for RDNA3), then rebuild and recreate the container.
+  Check the GPU line `./docker/run.sh rocm build` prints. RDNA1 to RDNA4 cards are supported natively by the ROCm 10.2 image and normally need no override. For a card outside that list, set `HSA_OVERRIDE_GFX_VERSION` in `.env` to the nearest supported target (for example `10.3.0` for RDNA2 or `11.0.0` for RDNA3), then rebuild and recreate the container.
 - **AMD ROCm crashes with `Memory critical error ... Reason: Memory in use` (exit 139):**
   The container is not in the host IPC namespace. Start it with `./docker/run.sh rocm up -d`, or pass `--ipc=host` yourself when using `podman-compose` directly (see [Host IPC namespace](#host-ipc-namespace)).
 - **ROCm startup log shows `bnb8=False`:**
