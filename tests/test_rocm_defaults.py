@@ -8,6 +8,7 @@ Radeon 890M (gfx1150, 24 cores, 30.48 GB shared RAM, ROCm 7.2, torch 2.14.1+rocm
 """
 from __future__ import annotations
 
+import os
 import sys
 import types
 import unittest
@@ -99,6 +100,44 @@ class UmaBudgetTests(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"psutil": None}):
             client.torch.cuda = _cuda(32.0, 31.84, integrated=True)
             self.assertIsNone(client._uma_ram_ceiling_gb(0, int(32.0 * GiB)))
+
+
+class UnifiedBudgetTests(unittest.TestCase):
+    """`CROWDGPT_ROCM_VRAM_FRACTION` must not re-discount a budget the UMA ceiling set.
+
+    On an APU `memory_config["ram_gb"]` is already `total_ram * UMA_VRAM_SHARE`
+    (0.75), so multiplying by the ROCm fraction as well gives 0.64 of RAM. These
+    pin both directions: no double discount on unified memory, and the fraction
+    still applies to a discrete card.
+    """
+
+    def _bs(self, *, unified, frac, ram_gb):
+        saved_backend, saved_mem = client.train_backend, dict(client.memory_config)
+        try:
+            client.train_backend = "ROCM"
+            client.memory_config.clear()
+            client.memory_config.update({"ram_gb": ram_gb, "unified": unified})
+            env = {"CROWDGPT_ROCM_VRAM_FRACTION": frac, "CROWDGPT_ROCM_BATCH": ""}
+            with mock.patch.dict(os.environ, env, clear=False):
+                return client.recommend_batch_size(force_mode="adamw8bit")
+        finally:
+            client.train_backend = saved_backend
+            client.memory_config.clear()
+            client.memory_config.update(saved_mem)
+
+    def test_unified_budget_is_not_discounted_twice(self):
+        # Size the budget so the largest batch fits exactly once: at 0.85 of that
+        # budget it would no longer fit, which is precisely what the old code did.
+        biggest = max(client.ALLOWED_BATCH_SIZES)
+        need = client.estimate_vram_bytes(biggest, client.MAX_SEQ_LEN, True) / GiB
+        ram_gb = round(need * 1.02, 2)
+        self.assertEqual(self._bs(unified=True, frac="0.85", ram_gb=ram_gb), biggest)
+        self.assertLess(self._bs(unified=False, frac="0.85", ram_gb=ram_gb), biggest)
+
+    def test_discrete_card_still_honours_the_fraction(self):
+        bs = self._bs(unified=False, frac="0.5", ram_gb=20.0)
+        fits = client.estimate_vram_bytes(bs, client.MAX_SEQ_LEN, True)
+        self.assertLessEqual(fits, int(10.0 * GiB))
 
 
 class RocmSdpaDefaultTests(unittest.TestCase):

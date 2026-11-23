@@ -608,6 +608,13 @@ td.mono { font-family: var(--mono); text-align: right; font-size: clamp(14px,1.1
 .lb-search { width: 100%; height: 36px; padding: 0 12px 0 32px; font-family: var(--sans); font-size: 14px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); transition: border-color .15s; }
 .lb-search::placeholder { color: var(--text-muted); }
 .lb-search:focus { outline: none; border-color: var(--accent); }
+.lb-modes { display: inline-flex; padding: 3px; gap: 2px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--radius-sm); flex: 0 0 auto; }
+.lb-mode-btn { height: 30px; padding: 0 14px; border: 0; background: transparent; color: var(--text-dim); font-family: var(--mono); font-size: 13px; cursor: pointer; border-radius: calc(var(--radius-sm) - 2px); transition: all .15s; white-space: nowrap; }
+.lb-mode-btn:hover:not(.active) { color: var(--text); background: var(--bg-softer); }
+.lb-mode-btn.active { background: var(--accent); color: #fff; font-weight: 600; }
+.lb-mode-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.lb-note { font-family: var(--mono); font-size: 12px; color: var(--text-muted); margin: -4px 0 14px; letter-spacing: .01em; min-height: 1em; }
+.lb-note:empty { display: none; }
 .lb-count { font-family: var(--mono); font-size: 12px; color: var(--text-muted); white-space: nowrap; margin-left: auto; letter-spacing: .01em; }
 .lb-count:empty { display: none; }
 .lb-pagination { display: flex; justify-content: center; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
@@ -620,6 +627,7 @@ td.mono { font-family: var(--mono); text-align: right; font-size: clamp(14px,1.1
 @media (max-width: 720px) {
   .lb-toolbar { gap: 10px; }
   .lb-search-wrap { flex: 1 1 100%; }
+  .lb-modes { width: 100%; } .lb-mode-btn { flex: 1 1 0; }
   .lb-count { margin-left: 0; }
   .lb-page-btn { min-width: 44px; height: 44px; font-size: 14px; }
 }
@@ -824,7 +832,6 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; padding-bottom: c
 
 <div id="cgpt-ann" class="cgpt-ann" hidden>
   <div class="cgpt-ann-inner">
-    <span class="cgpt-ann-icon" aria-hidden="true">📣</span>
     <span class="cgpt-ann-text" id="cgpt-ann-text"></span>
     <a class="cgpt-ann-btn" href="#status" data-view="status" data-scroll="roadmap" data-i18n="ann.roadmap">View roadmap</a>
     <button type="button" class="cgpt-ann-close" id="cgpt-ann-close" aria-label="Dismiss announcement">×</button>
@@ -1007,8 +1014,7 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; padding-bottom: c
               </div>
               <div>
                 <h3 data-i18n="home.feature.transparent.title">Transparent.</h3>
-                <p data-i18n="home.feature.transparent.body">The client is a single, human-readable Python file that anyone can audit and modify. Model weights are downloadable, 100% free and open on HuggingFace.</p>
-                <a href="#" class="feature-link" data-logs data-i18n="home.feature.transparent.logs">View server logs</a>
+                <p><span data-i18n="home.feature.transparent.body">The client is a single, human-readable Python file that anyone can audit and modify. Model weights are downloadable, 100% free and open on HuggingFace.</span> <a href="#" class="feature-link" data-logs data-i18n="home.feature.transparent.logs">View server logs</a></p>
               </div>
             </div>
           </div>
@@ -1147,8 +1153,12 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; padding-bottom: c
   <div class="container page-pad">
     <div class="page-head">
       <div class="crumb" data-i18n="about.crumb">home / about</div>
-      <h1 data-i18n="about.h1">About - How it works</h1>
-      <p data-i18n="about.sub">How CrowdGPT coordinates a bunch of independent GPUs to train a single, cohesive language model without insane infrastructure.</p>
+      <h1 data-i18n="about.h1">How it works</h1>
+      <p data-i18n="about.sub">Four steps turn a small slice of online, curated text into one shared model.</p>
+      <a class="paradigm-report" href="https://github.com/Vxtzq/CrowdGPT/blob/main/docs/technical_paper.md" target="_blank" rel="noopener noreferrer">
+        <span data-i18n="about.report">Read the technical report</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </a>
     </div>
 
     <figure class="about-diagram">
@@ -1163,22 +1173,23 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; padding-bottom: c
     </figure>
 
     <div class="content">
-      <h2 data-i18n="about.s1.title">1. Task Assignment</h2>
-      <p data-i18n="about.s1.body">When a device connects, the server assigns it a specific data shard (a 10MB chunk of tokenized text from the public CrowdGPT dataset) and the current global model weights. The client downloads the weights from HuggingFace and streams the data chunk locally via HTTP Range requests. The dataset is fully open and anyone can contribute to it.</p>
+      <h2 data-i18n="about.s1.title">1. Assignment</h2>
+      <p data-i18n="about.s1.body">When your device connects, the server gives it one 10MB slice of the public CrowdGPT dataset and the latest model weights. The dataset is open and curated; weights come from HuggingFace and the slice streams in over HTTP Range requests.</p>
 
-      <h2 data-i18n="about.s2.title">2. Local Training</h2>
-      <p data-i18n="about.s2.body">The app performs AI training on the local device. It calculates the path (the "delta") between the base model and the newly trained model. Nothing is ever accessed on your computer.</p>
+      <h2 data-i18n="about.s2.title">2. Local training</h2>
+      <p data-i18n="about.s2.body">Your GPU trains on that curated data, then keeps only the difference: the "delta", between the original weights and the new ones. Nothing personal on your computer is read.</p>
 
-      <h2 data-i18n="about.s3.title">3. Secure Submission</h2>
-      <p data-i18n="about.s3.body">The app then compresses the update, and sends it back to server for validation:</p>
+      <h2 data-i18n="about.s3.title">3. Validation</h2>
+      <p data-i18n="about.s3.body">The client compresses the delta and sends it back. The server validates it and rejects it if:</p>
       <div class="cap-list">
-        <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text" data-i18n="about.s3.li1">Checks for NaN or Inf values in the delta.</span></div>
-        <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text" data-i18n="about.s3.li2">Verifies the delta size matches the model architecture exactly.</span></div>
-        <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text" data-i18n="about.s3.li3">Ensures the delta norm is within statistically acceptable bounds to prevent poisoning.</span></div>
+        <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text" data-i18n="about.s3.li1">it contains NaN or Inf values.</span></div>
+        <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text" data-i18n="about.s3.li2">its size does not match the model architecture.</span></div>
+        <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text" data-i18n="about.s3.li3">its norm falls outside statistically acceptable bounds, which blocks poisoning.</span></div>
+        <div class="cap-item"><span class="cap-marker">✓</span><span class="cap-text" data-i18n="about.s3.li4">it drifts too far from other users' baseline.</span></div>
       </div>
 
       <h2 data-i18n="about.s4.title">4. Aggregation</h2>
-      <p data-i18n="about.s4.body">Valid updates are averaged and applied to the global AI model periodically. Model weights are automatically pushed to HuggingFace for public auditing and usage/testing.</p>
+      <p data-i18n="about.s4.body">Valid deltas are averaged into the global model on a fixed schedule; every new version is published to HuggingFace so anyone can test or audit it.</p>
     </div>
 
     <div class="stats-grid" style="margin-top: 58px;">
@@ -1350,6 +1361,11 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; padding-bottom: c
     </div>
 
     <div class="lb-toolbar" id="lb-toolbar">
+      <div class="lb-modes" id="lb-modes" role="tablist" aria-label="Leaderboard period">
+        <button type="button" class="lb-mode-btn" data-mode="all" role="tab" data-i18n="contrib.mode.all">All time</button>
+        <button type="button" class="lb-mode-btn" data-mode="week" role="tab" data-i18n="contrib.mode.week">Weekly</button>
+        <button type="button" class="lb-mode-btn" data-mode="day" role="tab" data-i18n="contrib.mode.day">Daily</button>
+      </div>
       <div class="lb-search-wrap">
         <input
           type="search"
@@ -1363,6 +1379,8 @@ footer { border-top: 1px solid var(--border); padding: 38px 0; padding-bottom: c
       </div>
       <div class="lb-count" id="lb-count"></div>
     </div>
+
+    <div class="lb-note" id="lb-note"></div>
 
     <div class="table-wrap">
       <table class="lb-table">
@@ -1634,19 +1652,21 @@ const TRANSLATIONS = {
     'install.step3.body': 'Downloads the model weights from HuggingFace, streams a dataset chunk, and starts training. You can stop at any time.',
     'contrib.power.tooltip': 'Admin',
     'about.crumb': 'home / about',
-    'about.h1': 'About - How it works',
-    'about.sub': 'How CrowdGPT coordinates thousands of independent GPUs to train a single, cohesive language model without insane infrastructure.',
-    'about.s1.title': '1. Task Assignment',
-    'about.s1.body': 'When a device connects, the server assigns it a specific data shard (a 10MB chunk of tokenized text from the public CrowdGPT dataset) and the current global model weights. The client downloads the weights from HuggingFace and streams the data chunk locally via HTTP Range requests. The dataset is fully open and anyone can contribute to it.',
-    'about.s2.title': '2. Local Training',
-    'about.s2.body': 'The app performs AI training on the local device. It calculates the path (the "delta") between the base model and the newly trained model. Nothing is ever accessed on your computer.',
-    'about.s3.title': '3. Secure Submission',
-    'about.s3.body': 'The app then compresses the update, and sends it back to server for validation:',
-    'about.s3.li1': 'Checks for NaN or Inf values in the delta.',
-    'about.s3.li2': 'Verifies the delta size matches the model architecture exactly.',
-    'about.s3.li3': 'Ensures the delta norm is within statistically acceptable bounds to prevent poisoning.',
+    'about.h1': 'How it works',
+    'about.sub': 'Four steps turn a small slice of online, curated text into one shared model.',
+    'about.report': 'Read the technical report',
+    'about.s1.title': '1. Assignment',
+    'about.s1.body': 'When your device connects, the server gives it one 10MB slice of the public CrowdGPT dataset and the latest model weights. The dataset is open and curated; weights come from HuggingFace and the slice streams in over HTTP Range requests.',
+    'about.s2.title': '2. Local training',
+    'about.s2.body': 'Your GPU trains on that curated data, then keeps only the difference: the "delta", between the original weights and the new ones. Nothing personal on your computer is read.',
+    'about.s3.title': '3. Validation',
+    'about.s3.body': 'The client compresses the delta and sends it back. The server validates it and rejects it if:',
+    'about.s3.li1': 'it contains NaN or Inf values.',
+    'about.s3.li2': 'its size does not match the model architecture.',
+    'about.s3.li3': 'its norm falls outside statistically acceptable bounds, which blocks poisoning.',
+    'about.s3.li4': "it drifts too far from other users' baseline.",
     'about.s4.title': '4. Aggregation',
-    'about.s4.body': 'Valid updates are averaged and applied to the global AI model periodically. Model weights are automatically pushed to HuggingFace for public auditing and usage/testing.',
+    'about.s4.body': 'Valid deltas are averaged into the global model on a fixed schedule; every new version is published to HuggingFace so anyone can test or audit it.',
     'about.stat.parameters': 'Parameters',
     'about.stat.parameters.sub': 'Dense Transformer',
     'about.stat.vocab': 'Vocabulary',
@@ -1715,6 +1735,9 @@ const TRANSLATIONS = {
     'contrib.full.search': 'Search by username…',
     'contrib.full.empty': 'No users match your search.',
     'contrib.full.no_data': 'No contributors yet.',
+    'contrib.mode.all': "All time", 'contrib.mode.week': "Weekly", 'contrib.mode.day': "Daily",
+    'contrib.mode.note.week': "Tokens processed in the last 7 days (UTC).", 'contrib.mode.note.day': "Tokens processed today (UTC), resets at 00:00 UTC.",
+    'contrib.mode.empty': "No tokens processed in this period yet.", 'contrib.mode.unavailable': "This leaderboard isn't available yet.",
     'contrib.full.count_one': '1 user',
     'contrib.full.count_many': '{n} users',
     'contrib.full.pagination.prev': 'Previous page',
@@ -1850,19 +1873,21 @@ const TRANSLATIONS = {
     'install.step3.body': "Télécharge les poids du modèle depuis HuggingFace, diffuse un bloc de données et commence l'entraînement. Vous pouvez arrêter à tout moment.",
     'contrib.power.tooltip': 'Admin',
     'about.crumb': 'accueil / à propos',
-    'about.h1': 'À propos - Comment ça marche',
-    'about.sub': "Comment CrowdGPT coordonne des milliers de GPU indépendants pour entraîner un seul modèle de langage cohérent sans infrastructure démesurée.",
-    'about.s1.title': '1. Attribution des tâches',
-    'about.s1.body': "Quand un appareil se connecte, le serveur lui attribue un fragment de données spécifique (un bloc de 10 Mo de texte tokenisé du jeu de données public CrowdGPT) et les poids actuels du modèle global. Le client télécharge les poids depuis HuggingFace et diffuse le bloc de données localement via des requêtes HTTP Range. Le jeu de données est entièrement ouvert et chacun peut y contribuer.",
+    'about.h1': 'Comment ça marche',
+    'about.sub': "Quatre étapes transforment un petit extrait de texte en ligne et sélectionné en un modèle partagé.",
+    'about.report': 'Lire le rapport technique',
+    'about.s1.title': '1. Attribution',
+    'about.s1.body': "À la connexion, le serveur confie à votre appareil un fragment de 10 Mo du jeu de données public CrowdGPT et les derniers poids du modèle. Le jeu de données est ouvert et sélectionné ; les poids viennent de HuggingFace et le fragment est diffusé via des requêtes HTTP Range.",
     'about.s2.title': '2. Entraînement local',
-    'about.s2.body': "L'application effectue l'entraînement IA sur l'appareil local. Elle calcule le chemin (le « delta ») entre le modèle de base et le modèle nouvellement entraîné. Rien n'est jamais consulté sur votre ordinateur.",
-    'about.s3.title': '3. Soumission sécurisée',
-    'about.s3.body': "L'application compresse ensuite la mise à jour et la renvoie au serveur pour validation :",
-    'about.s3.li1': 'Vérifie les valeurs NaN ou Inf dans le delta.',
-    'about.s3.li2': "Vérifie que la taille du delta correspond exactement à l'architecture du modèle.",
-    'about.s3.li3': "S'assure que la norme du delta est dans des bornes statistiquement acceptables pour empêcher l'empoisonnement.",
+    'about.s2.body': "Votre GPU s'entraîne sur ces données sélectionnées, puis ne conserve que la différence : le « delta », entre les poids d'origine et les nouveaux. Rien de personnel sur votre ordinateur n'est lu.",
+    'about.s3.title': '3. Validation',
+    'about.s3.body': "Le client compresse le delta et le renvoie. Le serveur le valide et le rejette si :",
+    'about.s3.li1': 'il contient des valeurs NaN ou Inf.',
+    'about.s3.li2': "sa taille ne correspond pas à l'architecture du modèle.",
+    'about.s3.li3': "sa norme sort des bornes statistiquement acceptables, ce qui bloque l'empoisonnement.",
+    'about.s3.li4': "il s'éloigne trop de la référence des autres utilisateurs.",
     'about.s4.title': '4. Agrégation',
-    'about.s4.body': "Les mises à jour valides sont moyennées et appliquées périodiquement au modèle IA global. Les poids du modèle sont automatiquement envoyés vers HuggingFace pour audit public et utilisation/test.",
+    'about.s4.body': "Les deltas valides sont moyennés dans le modèle global selon un calendrier fixe ; chaque nouvelle version est publiée sur HuggingFace pour être testée ou auditée par tous.",
     'about.stat.parameters': 'Paramètres',
     'about.stat.parameters.sub': 'Transformer dense',
     'about.stat.vocab': 'Vocabulaire',
@@ -1915,6 +1940,9 @@ const TRANSLATIONS = {
     'contrib.full.search': "Rechercher par nom d'utilisateur…",
     'contrib.full.empty': 'Aucun utilisateur ne correspond à votre recherche.',
     'contrib.full.no_data': 'Aucun contributeur pour le moment.',
+    'contrib.mode.all': "Total", 'contrib.mode.week': "Hebdo", 'contrib.mode.day': "Jour",
+    'contrib.mode.note.week': "Tokens traités ces 7 derniers jours (UTC).", 'contrib.mode.note.day': "Tokens traités aujourd'hui (UTC), remise à zéro à 00:00 UTC.",
+    'contrib.mode.empty': "Aucun token traité sur cette période.", 'contrib.mode.unavailable': "Ce classement n'est pas encore disponible.",
     'contrib.full.count_one': '1 utilisateur',
     'contrib.full.count_many': '{n} utilisateurs',
     'contrib.full.pagination.prev': 'Page précédente',
@@ -2064,19 +2092,21 @@ const TRANSLATIONS = {
     'install.step3.body': 'Lädt die Modellgewichte von HuggingFace, streamt einen Datenblock und startet das Training. Sie können jederzeit stoppen.',
     'contrib.power.tooltip': 'Admin',
     'about.crumb': 'start / über',
-    'about.h1': 'Über - Wie es funktioniert',
-    'about.sub': 'Wie CrowdGPT Tausende unabhängige GPUs koordiniert, um ein einziges, zusammenhängendes Sprachmodell ohne verrückte Infrastruktur zu trainieren.',
-    'about.s1.title': '1. Aufgabenverteilung',
-    'about.s1.body': 'Wenn sich ein Gerät verbindet, weist der Server ihm einen bestimmten Daten-Shard zu (ein 10 MB großer Block tokenisierten Texts aus dem öffentlichen CrowdGPT-Datensatz) und die aktuellen globalen Modellgewichte. Der Client lädt die Gewichte von HuggingFace herunter und streamt den Datenblock lokal über HTTP-Range-Anfragen. Der Datensatz ist vollständig offen und jeder kann dazu beitragen.',
+    'about.h1': 'So funktioniert es',
+    'about.sub': 'Vier Schritte machen aus einem kleinen Ausschnitt kuratierten Texts aus dem Netz ein gemeinsames Modell.',
+    'about.report': 'Technischen Bericht lesen',
+    'about.s1.title': '1. Zuweisung',
+    'about.s1.body': 'Beim Verbinden übergibt der Server deinem Gerät einen 10-MB-Ausschnitt des öffentlichen CrowdGPT-Datensatzes und die aktuellen Modellgewichte. Der Datensatz ist offen und kuratiert; die Gewichte kommen von HuggingFace, der Ausschnitt wird über HTTP-Range-Anfragen gestreamt.',
     'about.s2.title': '2. Lokales Training',
-    'about.s2.body': 'Die App führt das KI-Training auf dem lokalen Gerät durch. Sie berechnet den Pfad (das "Delta") zwischen dem Basismodell und dem neu trainierten Modell. Es wird niemals auf Ihren Computer zugegriffen.',
-    'about.s3.title': '3. Sichere Übermittlung',
-    'about.s3.body': 'Die App komprimiert dann das Update und sendet es zur Validierung an den Server zurück:',
-    'about.s3.li1': 'Prüft auf NaN- oder Inf-Werte im Delta.',
-    'about.s3.li2': 'Überprüft, ob die Delta-Größe genau mit der Modellarchitektur übereinstimmt.',
-    'about.s3.li3': 'Stellt sicher, dass die Delta-Norm innerhalb statistisch akzeptabler Grenzen liegt, um Vergiftung zu verhindern.',
+    'about.s2.body': 'Deine GPU trainiert auf diesen kuratierten Daten und behält nur die Differenz: das "Delta", zwischen den alten und den neuen Gewichten. Persönliche Daten auf deinem Rechner werden nicht gelesen.',
+    'about.s3.title': '3. Validierung',
+    'about.s3.body': 'Der Client komprimiert das Delta und schickt es zurück. Der Server validiert es und lehnt es ab, wenn:',
+    'about.s3.li1': 'es NaN- oder Inf-Werte enthält.',
+    'about.s3.li2': 'seine Größe nicht zur Modellarchitektur passt.',
+    'about.s3.li3': 'seine Norm außerhalb statistisch akzeptabler Grenzen liegt; das verhindert Vergiftung.',
+    'about.s3.li4': 'es zu stark von der Basislinie anderer Nutzer abweicht.',
     'about.s4.title': '4. Aggregation',
-    'about.s4.body': 'Gültige Updates werden gemittelt und periodisch auf das globale KI-Modell angewendet. Modellgewichte werden automatisch für öffentliche Audits und Nutzung/Tests auf HuggingFace hochgeladen.',
+    'about.s4.body': 'Gültige Deltas werden nach festem Zeitplan in das globale Modell gemittelt; jede neue Version wird auf HuggingFace veröffentlicht, damit jeder sie testen oder prüfen kann.',
     'about.stat.parameters': 'Parameter',
     'about.stat.parameters.sub': 'Dichter Transformer',
     'about.stat.vocab': 'Vokabular',
@@ -2136,6 +2166,9 @@ const TRANSLATIONS = {
     'contrib.full.search': 'Nach Benutzername suchen…',
     'contrib.full.empty': 'Keine Benutzer entsprechen Ihrer Suche.',
     'contrib.full.no_data': 'Noch keine Beitragenden.',
+    'contrib.mode.all': "Gesamt", 'contrib.mode.week': "Woche", 'contrib.mode.day': "Heute",
+    'contrib.mode.note.week': "Verarbeitete Tokens der letzten 7 Tage (UTC).", 'contrib.mode.note.day': "Heute verarbeitete Tokens (UTC), Reset um 00:00 UTC.",
+    'contrib.mode.empty': "In diesem Zeitraum wurden noch keine Tokens verarbeitet.", 'contrib.mode.unavailable': "Diese Rangliste ist noch nicht verfügbar.",
     'contrib.full.count_one': '1 Benutzer',
     'contrib.full.count_many': '{n} Benutzer',
     'contrib.full.pagination.prev': 'Vorherige Seite',
@@ -2278,19 +2311,21 @@ const TRANSLATIONS = {
     'install.step3.body': 'Descarga los pesos del modelo desde HuggingFace, transmite un bloque de datos y empieza el entrenamiento. Puedes detenerlo en cualquier momento.',
     'contrib.power.tooltip': 'Admin',
     'about.crumb': 'inicio / acerca de',
-    'about.h1': 'Acerca de - Cómo funciona',
-    'about.sub': 'Cómo CrowdGPT coordina miles de GPUs independientes para entrenar un único modelo de lenguaje cohesionado sin infraestructura desmesurada.',
-    'about.s1.title': '1. Asignación de tareas',
-    'about.s1.body': 'Cuando un dispositivo se conecta, el servidor le asigna un fragmento de datos específico (un bloque de 10 MB de texto tokenizado del conjunto público CrowdGPT) y los pesos globales actuales del modelo. El cliente descarga los pesos desde HuggingFace y transmite el bloque localmente mediante peticiones HTTP Range. El conjunto de datos es totalmente abierto y cualquiera puede contribuir.',
+    'about.h1': 'Cómo funciona',
+    'about.sub': 'Cuatro pasos convierten un pequeño fragmento de texto seleccionado de internet en un modelo compartido.',
+    'about.report': 'Leer el informe técnico',
+    'about.s1.title': '1. Asignación',
+    'about.s1.body': 'Al conectarte, el servidor entrega a tu dispositivo un fragmento de 10 MB del conjunto público CrowdGPT y los últimos pesos del modelo. El conjunto es abierto y curado; los pesos llegan de HuggingFace y el fragmento se transmite con peticiones HTTP Range.',
     'about.s2.title': '2. Entrenamiento local',
-    'about.s2.body': 'La app realiza el entrenamiento de IA en el dispositivo local. Calcula el camino (el "delta") entre el modelo base y el modelo recién entrenado. Nunca se accede a tu ordenador.',
-    'about.s3.title': '3. Envío seguro',
-    'about.s3.body': 'La app comprime la actualización y la envía de vuelta al servidor para su validación:',
-    'about.s3.li1': 'Comprueba valores NaN o Inf en el delta.',
-    'about.s3.li2': 'Verifica que el tamaño del delta coincide exactamente con la arquitectura del modelo.',
-    'about.s3.li3': 'Asegura que la norma del delta está dentro de límites estadísticamente aceptables para prevenir envenenamiento.',
+    'about.s2.body': 'Tu GPU entrena con esos datos curados y solo conserva la diferencia: el "delta", entre los pesos originales y los nuevos. No se lee nada personal de tu ordenador.',
+    'about.s3.title': '3. Validación',
+    'about.s3.body': 'El cliente comprime el delta y lo devuelve. El servidor lo valida y lo rechaza si:',
+    'about.s3.li1': 'contiene valores NaN o Inf.',
+    'about.s3.li2': 'su tamaño no coincide con la arquitectura del modelo.',
+    'about.s3.li3': 'su norma queda fuera de límites estadísticamente aceptables; eso bloquea el envenenamiento.',
+    'about.s3.li4': 'se aleja demasiado de la referencia de los demás usuarios.',
     'about.s4.title': '4. Agregación',
-    'about.s4.body': 'Las actualizaciones válidas se promedian y se aplican periódicamente al modelo global de IA. Los pesos se suben automáticamente a HuggingFace para auditoría pública y uso/pruebas.',
+    'about.s4.body': 'Los deltas válidos se promedian en el modelo global según un calendario fijo; cada nueva versión se publica en HuggingFace para que cualquiera pueda probarla o auditarla.',
     'about.stat.parameters': 'Parámetros',
     'about.stat.parameters.sub': 'Transformer denso',
     'about.stat.vocab': 'Vocabulario',
@@ -2350,6 +2385,9 @@ const TRANSLATIONS = {
     'contrib.full.search': 'Buscar por usuario…',
     'contrib.full.empty': 'Ningún usuario coincide con tu búsqueda.',
     'contrib.full.no_data': 'Aún no hay contribuyentes.',
+    'contrib.mode.all': "Total", 'contrib.mode.week': "Semanal", 'contrib.mode.day': "Diario",
+    'contrib.mode.note.week': "Tokens procesados en los últimos 7 días (UTC).", 'contrib.mode.note.day': "Tokens procesados hoy (UTC), se reinicia a las 00:00 UTC.",
+    'contrib.mode.empty': "Aún no se han procesado tokens en este periodo.", 'contrib.mode.unavailable': "Esta clasificación aún no está disponible.",
     'contrib.full.count_one': '1 usuario',
     'contrib.full.count_many': '{n} usuarios',
     'contrib.full.pagination.prev': 'Página anterior',
@@ -2492,19 +2530,21 @@ const TRANSLATIONS = {
     'install.step3.body': "Model ağırlıklarını HuggingFace'den indirir, bir veri parçası akıtır ve eğitime başlar. İstediğiniz zaman durdurabilirsiniz.",
     'contrib.power.tooltip': 'Admin',
     'about.crumb': 'ana sayfa / hakkında',
-    'about.h1': 'Hakkında - Nasıl çalışır',
-    'about.sub': "CrowdGPT'nin binlerce bağımsız GPU'yu tek bir tutarlı dil modeli eğitmek için nasıl koordine ettiği.",
-    'about.s1.title': '1. Görev Ataması',
-    'about.s1.body': "Bir cihaz bağlandığında, sunucu ona belirli bir veri parçası (herkese açık CrowdGPT veri setinden 10 MB'lık tokenleştirilmiş metin parçası) ve mevcut küresel model ağırlıklarını atar. İstemci ağırlıkları HuggingFace'den indirir ve veri parçasını HTTP Range istekleriyle yerel olarak akıtır. Veri seti tamamen açıktır ve herkes katkıda bulunabilir.",
-    'about.s2.title': '2. Yerel Eğitim',
-    'about.s2.body': 'Uygulama, yapay zeka eğitimini yerel cihazda gerçekleştirir. Temel model ile yeni eğitilen model arasındaki yolu ("delta") hesaplar. Bilgisayarınızdaki hiçbir şeye asla erişilmez.',
-    'about.s3.title': '3. Güvenli Gönderim',
-    'about.s3.body': 'Uygulama güncellemeyi sıkıştırır ve doğrulama için sunucuya geri gönderir:',
-    'about.s3.li1': 'Deltadaki NaN veya Inf değerlerini kontrol eder.',
-    'about.s3.li2': 'Delta boyutunun model mimarisiyle tam olarak eşleştiğini doğrular.',
-    'about.s3.li3': 'Zehirlenmeyi önlemek için delta normunun istatistiksel olarak kabul edilebilir sınırlar içinde olduğundan emin olur.',
+    'about.h1': 'Nasıl çalışır',
+    'about.sub': 'Dört adım, internetten gelen seçilmiş küçük bir metin parçasını herkesin paylaştığı bir modele dönüştürür.',
+    'about.report': 'Teknik raporu oku',
+    'about.s1.title': '1. Atama',
+    'about.s1.body': "Bağlandığınızda sunucu cihazınıza herkese açık CrowdGPT veri setinden 10 MB'lık bir parça ve en güncel model ağırlıklarını verir. Veri seti açık ve seçilmiştir; ağırlıklar HuggingFace'den gelir ve parça HTTP Range istekleriyle akıtılır.",
+    'about.s2.title': '2. Yerel eğitim',
+    'about.s2.body': 'GPU\'nuz bu seçilmiş verilerle eğitilir ve yalnızca farkı korur: eski ağırlıklarla yeni ağırlıklar arasındaki "delta"yı. Bilgisayarınızdaki kişisel hiçbir şey okunmaz.',
+    'about.s3.title': '3. Doğrulama',
+    'about.s3.body': 'İstemci deltayı sıkıştırıp geri gönderir. Sunucu doğrular ve şu durumlarda reddeder:',
+    'about.s3.li1': 'NaN veya Inf değeri içeriyorsa.',
+    'about.s3.li2': 'boyutu model mimarisiyle eşleşmiyorsa.',
+    'about.s3.li3': 'normu istatistiksel olarak kabul edilebilir sınırların dışındaysa; bu zehirlenmeyi engeller.',
+    'about.s3.li4': 'diğer kullanıcıların referansından çok uzaklaşırsa.',
     'about.s4.title': '4. Birleştirme',
-    'about.s4.body': "Geçerli güncellemeler ortalanır ve periyodik olarak küresel yapay zeka modeline uygulanır. Model ağırlıkları, herkese açık denetim ve kullanım/test için otomatik olarak HuggingFace'e gönderilir.",
+    'about.s4.body': "Geçerli deltalar belirli bir takvimle küresel modele ortalanır; her yeni sürüm herkesin test edebilmesi veya denetleyebilmesi için HuggingFace'e yayınlanır.",
     'about.stat.parameters': 'Parametreler',
     'about.stat.parameters.sub': 'Yoğun Transformer',
     'about.stat.vocab': 'Kelime dağarcığı',
@@ -2564,6 +2604,9 @@ const TRANSLATIONS = {
     'contrib.full.search': 'Kullanıcı adıyla ara…',
     'contrib.full.empty': 'Aramanızla eşleşen kullanıcı yok.',
     'contrib.full.no_data': 'Henüz katkıda bulunan yok.',
+    'contrib.mode.all': "Tümü", 'contrib.mode.week': "Haftalık", 'contrib.mode.day': "Günlük",
+    'contrib.mode.note.week': "Son 7 günde işlenen token (UTC).", 'contrib.mode.note.day': "Bugün işlenen token (UTC), 00:00 UTC'de sıfırlanır.",
+    'contrib.mode.empty': "Bu dönemde henüz token işlenmedi.", 'contrib.mode.unavailable': "Bu sıralama henüz kullanılamıyor.",
     'contrib.full.count_one': '1 kullanıcı',
     'contrib.full.count_many': '{n} kullanıcı',
     'contrib.full.pagination.prev': 'Önceki sayfa',
@@ -2704,19 +2747,21 @@ const TRANSLATIONS = {
     'install.step3.body': '从 HuggingFace 下载模型权重，流式读取一个数据块，然后开始训练。你随时可以停止。',
     'contrib.power.tooltip': '管理员',
     'about.crumb': '首页 / 关于',
-    'about.h1': '关于 - 工作原理',
-    'about.sub': 'CrowdGPT 如何协调成千上万块独立的 GPU，在没有庞大基础设施的情况下训练出单一、连贯的语言模型。',
-    'about.s1.title': '1. 任务分配',
-    'about.s1.body': '设备连接后，服务器会分配给它一个特定的数据分片（来自公开 CrowdGPT 数据集的 10MB 文本块）以及当前的全局模型权重。客户端从 HuggingFace 下载权重，并通过 HTTP Range 请求在本地流式读取该数据块。数据集完全开放，任何人都可以贡献。',
+    'about.h1': '工作原理',
+    'about.sub': '四个步骤，把一小片来自网络的精选文本变成一个共享的模型。',
+    'about.report': '阅读技术报告',
+    'about.s1.title': '1. 分配任务',
+    'about.s1.body': '设备连接后，服务器会给它一段 10MB 的公开 CrowdGPT 数据分片和最新的模型权重。数据集公开且经过精选；权重从 HuggingFace 下载，分片通过 HTTP Range 请求流式读取。',
     'about.s2.title': '2. 本地训练',
-    'about.s2.body': '应用在本地设备上进行 AI 训练，并计算基础模型与训练后模型之间的路径（“delta”）。绝不会访问你电脑上的任何内容。',
-    'about.s3.title': '3. 安全提交',
-    'about.s3.body': '应用会压缩这次更新，然后回传给服务器进行校验：',
-    'about.s3.li1': '检查 delta 中是否存在 NaN 或 Inf 值。',
-    'about.s3.li2': '验证 delta 的大小与模型架构完全匹配。',
-    'about.s3.li3': '确保 delta 的范数处于统计上可接受的范围内，以防止投毒。',
+    'about.s2.body': '你的 GPU 在这些精选数据上训练，只保留差值：原始权重与新权重之间的“delta”。电脑上的个人内容不会被读取。',
+    'about.s3.title': '3. 校验',
+    'about.s3.body': '客户端压缩 delta 后回传。服务器会校验，并在以下情况拒绝：',
+    'about.s3.li1': '包含 NaN 或 Inf 值。',
+    'about.s3.li2': '大小与模型架构不匹配。',
+    'about.s3.li3': '范数超出统计上可接受的范围；这能阻止投毒。',
+    'about.s3.li4': '与其他用户的基准偏离过大。',
     'about.s4.title': '4. 聚合',
-    'about.s4.body': '有效的更新会被定期平均并应用到全局 AI 模型上。模型权重会自动推送到 HuggingFace，供公开审计、使用和测试。',
+    'about.s4.body': '有效的 delta 会按固定计划平均进全局模型；每个新版本都会发布到 HuggingFace，任何人都可以测试或审计。',
     'about.stat.parameters': '参数量',
     'about.stat.parameters.sub': '稠密 Transformer',
     'about.stat.vocab': '词表',
@@ -2782,6 +2827,9 @@ const TRANSLATIONS = {
     'contrib.full.search': '按用户名搜索…',
     'contrib.full.empty': '没有匹配的用户。',
     'contrib.full.no_data': '暂无贡献者。',
+    'contrib.mode.all': "总榜", 'contrib.mode.week': "周榜", 'contrib.mode.day': "日榜",
+    'contrib.mode.note.week': "过去 7 天处理的 Token（UTC）。", 'contrib.mode.note.day': "今日处理的 Token（UTC），每天 00:00 UTC 重置。",
+    'contrib.mode.empty': "此期间尚无已处理的 Token。", 'contrib.mode.unavailable': "此排行榜暂不可用。",
     'contrib.full.count_one': '1 位用户',
     'contrib.full.count_many': '{n} 位用户',
     'contrib.full.pagination.prev': '上一页',
@@ -2900,7 +2948,7 @@ function applyTranslations() {
   });
 
   updateQueueBadgeText();
-  renderLeaderboardTable();
+  renderLeaderboardTable(); lbSyncModeUI();
 }
 
 function setLanguage(lang) {
@@ -2979,6 +3027,13 @@ const LB_PAGE_SIZE = 10;
 let allLeaderboardUsers = [];
 let lbSearchQuery = '';
 let lbPage = 1;
+
+// Period modes: 'all' (HF mirror of the all-time board), 'week' (last 7 UTC days), 'day' (today, UTC).
+const LB_PERIOD_DAYS = { week: 7, day: 1 };
+let lbMode = 'all';
+try { const m = localStorage.getItem('crowdgpt-lb-mode'); if (m === 'week' || m === 'day') lbMode = m; } catch (e) {}
+const lbCache = { all: null, week: null, day: null };   // last good list per mode: switching shows it instantly
+let lbUnavailable = false;
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -3071,7 +3126,7 @@ function renderLeaderboardTable() {
   allLeaderboardUsers.forEach((u, i) => rankMap.set(u, i + 1));
 
   if (slice.length === 0) {
-    const msg = q ? t('contrib.full.empty') : t('contrib.full.no_data');
+    const msg = q ? t('contrib.full.empty') : (lbUnavailable ? t('contrib.mode.unavailable') : (lbMode !== 'all' ? t('contrib.mode.empty') : t('contrib.full.no_data')));
     tbody.innerHTML = `<tr><td colspan="6" class="empty-state">${escapeHtml(msg)}</td></tr>`;
   } else {
     tbody.innerHTML = slice.map(u => renderLeaderboardRow(u, rankMap.get(u) || 0)).join('');
@@ -3097,6 +3152,16 @@ function renderLeaderboardTable() {
   }
 }
 
+function lbSyncModeUI() {
+  document.querySelectorAll('#lb-modes .lb-mode-btn').forEach(b => {
+    const on = b.dataset.mode === lbMode;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  const note = document.getElementById('lb-note');
+  if (note) note.textContent = lbMode === 'all' ? '' : t('contrib.mode.note.' + lbMode);
+}
+
 (function initLeaderboardControls() {
   const searchEl = document.getElementById('lb-search');
   if (searchEl) {
@@ -3106,11 +3171,58 @@ function renderLeaderboardTable() {
       renderLeaderboardTable();
     });
   }
+  document.querySelectorAll('#lb-modes .lb-mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const mode = btn.dataset.mode;
+      if (mode === lbMode) return;
+      lbMode = mode; lbPage = 1; lbUnavailable = false;
+      try { localStorage.setItem('crowdgpt-lb-mode', mode); } catch (e) {}
+      allLeaderboardUsers = lbCache[mode] || [];      // instant if we already have it
+      lbSyncModeUI(); renderLeaderboardTable();
+      fetchLeaderboard();
+    });
+  });
+  lbSyncModeUI();
 })();
+
+// Period rows come from /api/leaderboard/daily with the same fields the table renders
+// (trust score and the power shield included); tokens/steps/submissions are for the period.
+async function fetchPeriodLeaderboard(mode) {
+  const days = LB_PERIOD_DAYS[mode];
+  let rows = null;
+  try {
+    const r = await fetch(`${API_BASE}/api/leaderboard/daily?days=${days}&limit=1000`, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+    if (r.ok) { const j = await r.json(); rows = Array.isArray(j.leaderboard) ? j.leaderboard : []; }
+  } catch (e) {}
+  if (mode !== lbMode) return;                         // user switched tabs while this was in flight
+  if (rows === null) {
+    if (!lbCache[mode]) { lbUnavailable = true; allLeaderboardUsers = []; renderLeaderboardTable(); }
+    return;                                            // keep showing the last good data
+  }
+  lbUnavailable = false;
+  // Trust score + power shield: use what the server sent; if it didn't (older server build), take them from the
+  // all-time board by uuid so a user's trust score never shows as 0 just because we're on a period tab.
+  if (rows.some(r => r.trustScore == null) && !lbCache.all) {
+    try { const r0 = await fetch(HF_LEADERBOARD_URL, { cache: 'no-store' }); if (r0.ok) lbCache.all = await r0.json(); } catch (e) {}
+    if (mode !== lbMode) return;
+  }
+  const allBy = new Map((lbCache.all || []).map(u => [u.uuid || ('n:' + u.username), u]));
+  lbCache[mode] = rows.map(r => {
+    const a = allBy.get(r.uuid) || allBy.get('n:' + r.username) || {};
+    return {
+      username: r.username, totalTokens: r.tokens, totalSteps: r.steps, contributions: r.submissions,
+      trustScore: r.trustScore != null ? r.trustScore : (a.trustScore != null ? a.trustScore : 0),
+      power: r.power != null ? !!r.power : !!a.power,
+    };
+  });
+  allLeaderboardUsers = lbCache[mode];
+  renderLeaderboardTable();
+}
 
 async function fetchLeaderboard() {
   const tbody = document.getElementById('lb-body');
   if (!tbody) return;
+  if (lbMode !== 'all') return fetchPeriodLeaderboard(lbMode);
 
   let users = null;
   try {
@@ -3124,13 +3236,15 @@ async function fetchLeaderboard() {
       if (r2.ok) users = await r2.json();
     } catch (e2) {}
   }
+  if (lbMode !== 'all') return;                        // switched away while loading
 
   if (!users) {
     tbody.innerHTML = `<tr><td colspan="6" class="empty-state">Leaderboard temporarily unavailable.</td></tr>`;
     return;
   }
 
-  allLeaderboardUsers = Array.isArray(users) ? users : [];
+  lbCache.all = Array.isArray(users) ? users : [];
+  allLeaderboardUsers = lbCache.all;
   renderLeaderboardTable();
 }
 
@@ -4322,19 +4436,12 @@ html{scroll-padding-top:calc(var(--header-h) + 24px);}
   padding:10px max(var(--header-px), env(safe-area-inset-right,0px)) 10px
           max(var(--header-px), env(safe-area-inset-left,0px));
   display:grid;
-  grid-template-columns:auto minmax(0,1fr) auto auto;
+  grid-template-columns:minmax(0,1fr) auto auto;
   align-items:center;
   column-gap:12px;
 }
-.cgpt-ann-icon{
-  grid-column:1;
-  width:20px;height:20px;
-  display:inline-flex;align-items:center;justify-content:center;
-  font-size:14px;line-height:1;
-  transform:translateY(-.5px);
-}
 .cgpt-ann-text{
-  grid-column:2;
+  grid-column:1;
   min-width:0;
   font-weight:500;
   white-space:normal;
@@ -4380,15 +4487,14 @@ html{scroll-padding-top:calc(var(--header-h) + 24px);}
 
 @media (max-width:700px){
   .cgpt-ann-inner{
-    grid-template-columns:auto minmax(0,1fr) auto;
+    grid-template-columns:minmax(0,1fr) auto;
     grid-template-areas:
-      "icon text close"
-      ". action action";
+      "text close"
+      "action action";
     align-items:start;
     column-gap:10px;row-gap:10px;
     padding-top:12px;padding-bottom:12px;
   }
-  .cgpt-ann-icon{grid-area:icon;width:20px;height:22px;transform:none;}
   .cgpt-ann-text{grid-area:text;}
   .cgpt-ann-close{grid-area:close;width:34px;height:34px;margin-top:-5px;margin-right:-6px;}
   .cgpt-ann-btn{grid-area:action;justify-self:end;min-height:36px;padding-inline:14px;}
@@ -4398,7 +4504,6 @@ html{scroll-padding-top:calc(var(--header-h) + 24px);}
     grid-template-columns:minmax(0,1fr) auto;
     grid-template-areas:"text close" "action action";
   }
-  .cgpt-ann-icon{display:none;}
   .cgpt-ann-btn{width:100%;}
 }
 
@@ -4452,10 +4557,8 @@ html{scroll-padding-top:calc(var(--header-h) + 24px);}
 }
 
 /* ---------- inline feature link ---------- */
-.feature-link{display:inline-flex;align-items:center;gap:7px;margin-top:12px;font-family:var(--mono);font-size:13px;color:var(--accent);text-decoration:none;border-bottom:1px solid transparent;transition:border-color .15s ease;}
-.feature-link::after{content:"→";transition:transform .15s ease;}
-.feature-link:hover{border-bottom-color:var(--accent);text-decoration:none;}
-.feature-link:hover::after{transform:translateX(3px);}
+.feature-link{display:inline;margin-top:0;font-family:inherit;font-size:inherit;color:var(--accent);text-decoration:underline;text-underline-offset:2px;text-decoration-thickness:1px;}
+.feature-link:hover{color:var(--accent-dim);text-decoration-thickness:2px;}
 
 /* ---------- logs CTA ---------- */
 .logs-cta{display:flex;align-items:center;justify-content:space-between;gap:clamp(20px,3vw,36px);flex-wrap:wrap;background:var(--bg-soft);border:1px solid var(--border);border-radius:var(--radius);padding:clamp(22px,2.4vw,30px) clamp(20px,2.2vw,28px);margin-bottom:38px;scroll-margin-top:calc(var(--header-h) + 24px);}
