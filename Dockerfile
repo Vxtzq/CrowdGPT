@@ -7,6 +7,7 @@ ARG BACKEND=cuda
 ARG TORCH_INDEX=""
 ARG TORCH_SPEC="torch"
 ARG INSTALL_BITSANDBYTES=auto
+ARG BNB_ROCM_ARCH=""
 
 ENV PYTHONUNBUFFERED=1 \
     TOKENIZERS_PARALLELISM=false \
@@ -42,6 +43,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       --torch-index "${TORCH_INDEX}" \
       --torch-spec "${TORCH_SPEC}" \
       --bitsandbytes "${INSTALL_BITSANDBYTES}" \
+      --bnb-rocm-arch "${BNB_ROCM_ARCH}" \
  && rm -f /tmp/requirements.txt /tmp/requirements.docker.txt
 
 # Copy application code into /app (read-only at runtime; persistent state lives in /data).

@@ -11,7 +11,12 @@ relying on the optional paths.
   existing OOM ladder remains the safety net.
 - `bitsandbytes` is self-tested with a tiny `AdamW8bit` step on the ROCm device.
   If the step does not change the parameter, the client reports `adamw32` and
-  does not advertise 8-bit AdamW to the coordinator.
+  does not advertise 8-bit AdamW to the coordinator. The self-test only catches
+  Python errors: a GPU fault inside the step kills the process, so a broken
+  bitsandbytes build shows up as a crash at startup rather than a fallback.
+  `CROWDGPT_DISABLE_BNB=1` skips it.
+- The Docker image builds bitsandbytes from source for the detected GPU, since the
+  PyPI package has no ROCm 10.x build (see [DOCKER.md](../DOCKER.md#3-amd-rocm)).
 - Startup logs one profile line: `gfx`, whether the target appears in
   `torch.cuda.get_arch_list()`, bf16 support, and the bnb self-test result.
 - On an APU the VRAM pool is system RAM, so `mem_get_info` reports the whole
@@ -31,6 +36,33 @@ relying on the optional paths.
 | `CROWDGPT_ENGRAM_GPU` | unset | Set to `1` to keep the engram table on the GPU when spare VRAM exceeds 2 GiB. Validated on gfx1150 (see below); still opt-in. |
 | `CROWDGPT_UMA_VRAM_SHARE` | `0.75` | On an APU, cap the budget at this share of physical RAM; clamped to 0.4-1.0. Ignored on discrete cards. |
 | `CROWDGPT_ROCM_SDPA` | per-arch | `0` forces the manual chunked attention kernel, `1` forces SDPA. Unset uses chunked attention on `gfx115*` (no enabled AOTriton backend) and SDPA elsewhere. |
+
+## Measured on gfx1201 (RX 9070 XT), Docker
+
+Hardware: Radeon RX 9070 XT (RDNA4, 16 GB), Fedora 44 host, rootless Podman with
+`podman-compose` 1.6.0. Image `rocm/pytorch:rocm10.2.0_ubuntu24.04_py3.12_pytorch_release_2.15.0`
+(torch 2.15.0+rocm10.2.0, HIP 7.17), bitsandbytes 0.50.2 built from source with
+`BNB_ROCM_ARCH=gfx1201`, `CROWDGPT_VRAM_GB=8`.
+
+| Check | Result |
+|---|---|
+| `_rocm_profile()` | `gfx1201`, `arch_supported=True`, `bf16=True`, `bnb8=True` |
+| `AdamW8bit` vs `torch.optim.AdamW`, 1M params, 50 steps | finite; mean difference 2% of the mean parameter update |
+| Training round | 500 micro-steps, bs2, accum 32, bf16, `optim=adamw8bit`; loss 7.44 to 5.33 |
+| Throughput | about 3,570 tok/s once warm (about 1,100 tok/s on the first step) |
+| Delta upload | 989.7 MB in 16 chunks, accepted by the coordinator |
+
+Findings:
+
+- **Host IPC is required.** Without `--ipc=host` every GPU allocation, in plain torch as well as
+  bitsandbytes, aborts with `Memory critical error by agent node-0 ... Reason: Memory in use`.
+  The memlock limit made no difference (rootless Podman cannot raise it anyway).
+  `podman-compose` 1.6.0 ignores the `ipc:` key, so `docker/run.sh` passes the flag itself.
+- **The 8 GB cap cost a batch size.** With `CROWDGPT_VRAM_GB=8` the planner estimated bs1 and
+  pre-degraded the head placement to meet the cohort's bs2. On a 16 GB card, a higher cap
+  avoids that.
+- **The ROCm 10.2 image ships ROCm as Python wheels** (`rocm-sdk`), not under `/opt/rocm`.
+  `docker/install-deps.sh` points the bitsandbytes build at `rocm-sdk path --root`.
 
 ## Measured on gfx1150 (Strix Halo / Radeon 890M)
 
@@ -61,9 +93,14 @@ publishes one index per ROCm minor (6.1, 6.2, 6.3, 7.0, 7.1, 7.2), so a 7.2 mach
 `rocm7.2` and anything newer clamps to the newest published index. `gfx906` (MI50) still
 uses `rocm6.0` via `install_old.sh`; `requirements_rocm.txt` targets the current 7.2 tree.
 
+This applies to native installs. Docker builds instead use the PyTorch shipped in the base
+image, which `docker/run.sh` picks from the detected GPU: ROCm 10.2 for supported targets,
+ROCm 6.4 otherwise (see [DOCKER.md](../DOCKER.md#image-selection)).
+
 ## Review requirements
 
-The following were validated on gfx1150 and remain opt-in:
+The following were validated on gfx1150 and remain opt-in (gfx1201 in Docker also
+validated the bnb self-test with bitsandbytes present, `bnb8=True`, and a full training round):
 
 - the bnb self-test on the actual `gfx` target (absent here, so the fallback was exercised);
 - GPU engram placement with `SparseAdam`;
@@ -71,7 +108,8 @@ The following were validated on gfx1150 and remain opt-in:
 - `torch.cuda.get_arch_list()` matching the installed wheel;
 - the memory fraction on APUs that share system RAM.
 
-Still unvalidated on hardware: cards other than gfx1150, Windows ROCm, and multi-GPU
+Still unvalidated on hardware: cards other than gfx1150 and gfx1201 (an RX 7700 XT,
+gfx1101, was reported working on the previous ROCm 6.4 Docker image), Windows ROCm, and multi-GPU
 placement. If the target is not in the wheel's arch list, the startup log says
 `arch_supported=False`; install a matching ROCm PyTorch wheel or set an
 appropriate `HSA_OVERRIDE_GFX_VERSION` rather than forcing the run.
