@@ -3004,7 +3004,7 @@ def _attach_paradigm(model, emit=None):
             solo_modules=int(os.environ.get("CROWDGPT_SOLO_MODULES", "2") or 2),
             relora_rank=int(os.environ.get("CROWDGPT_RELORA_RANK", "8") or 8),
             mosaic_slices=int(os.environ.get("CROWDGPT_MOSAIC_SLICES", "2") or 2),
-            mosaic_local_steps=int(os.environ.get("CROWDGPT_MOSAIC_LOCAL_STEPS", "30") or 30),
+            mosaic_local_steps=int(os.environ.get("CROWDGPT_MOSAIC_LOCAL_STEPS") or cp.ParadigmConfig.mosaic_local_steps),
             dust_population=int(os.environ.get("CROWDGPT_DUST_POPULATION", "16") or 16),
             dust_sigma=float(os.environ.get("CROWDGPT_DUST_SIGMA", "0.01") or 0.01),
         )
@@ -3034,11 +3034,6 @@ def _paradigm_step_safe(model, x, y, sl, ua, ad, ls, ladder, emit):
                     loss = par.step(model, x, y, loss_scale=ls, loss_chunk=chunk)
             else:
                 loss = par.step(model, x, y, loss_scale=ls, loss_chunk=chunk)
-            # DUST/MOSAIC ignore loss_scale because they build grads themselves, so
-            # gradient accumulation has to be applied here or `ls` is silently lost.
-            if par.name in ("dust", "mosaic") and ls != 1.0:
-                for prm in model.parameters():
-                    if prm.grad is not None: prm.grad.mul_(ls)
             return torch.tensor(float(loss)), []
         except RuntimeError as e:
             if not _is_oom(e): raise
