@@ -2108,6 +2108,7 @@ class StreamingShardDataset:
     def _url(self): return f"https://huggingface.co/datasets/{self.repo_id}/resolve/main/chunks/" + self._fmt.format(self.ci)
 
     def _discover(self, idx):
+        last = "no response"
         for fmt in ("chunk_{:04d}.bin", "chunk_{:d}.bin"):
             url = f"https://huggingface.co/datasets/{self.repo_id}/resolve/main/chunks/" + fmt.format(idx)
             for _ in range(2):
@@ -2116,8 +2117,14 @@ class StreamingShardDataset:
                     if r.status_code == 200:
                         sz = int(r.headers.get('content-length', 0))
                         if sz > 0: self._fmt = fmt; return sz
-                except Exception: time.sleep(1)
-        raise RuntimeError(f"No chunk {idx}")
+                        last = f"{url}: empty content-length"
+                    else:
+                        last = f"{url}: HTTP {r.status_code}"
+                except requests.RequestException as e:
+                    last = f"{url}: {e}"
+                    time.sleep(1)
+                log.warning("Data chunk lookup failed: %s", last)
+        raise RuntimeError(f"No chunk {idx} ({last})")
 
     def _slice(self, off):
         end = min(off + self.sub_size, self.chunk_size) - 1
@@ -2427,59 +2434,66 @@ def _weight_cache_path(revision, filename):
     rev = str(revision or "main").strip().replace("/", "_").replace("\\", "_")
     d = CHECKPOINT_DIR / "hf_weights" / rev; d.mkdir(parents=True, exist_ok=True); return d / filename
 
+# The background prefetch and the next round can download the same blob; they must not
+# append to one .part file together, and cleanup must not delete a partial that is in use.
+_DOWNLOAD_LOCKS = {}
+_DOWNLOAD_LOCKS_GUARD = threading.Lock()
+
 def _download_file_with_progress(url, dest, emit, stop_evt, expected_size=None, label="file"):
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    expected = int(expected_size) if expected_size is not None else None
-    if dest.exists():
-        sz = dest.stat().st_size
-        if expected is not None and sz == expected: return dest
-        if expected is None and sz > 10_000_000: return dest
-        try: dest.unlink()
-        except Exception: pass
-    tmp = dest.with_suffix(dest.suffix + ".part")
-    last_err = None
-    for attempt in range(3):
-        if stop_evt.is_set(): raise KeyboardInterrupt("Stop requested")
-        try: done = tmp.stat().st_size if tmp.exists() else 0
-        except OSError: done = 0
-        if expected is not None and done > expected:
-            # Stale/oversized fragment; a Range request would be unsatisfiable.
-            try: tmp.unlink()
+    with _DOWNLOAD_LOCKS_GUARD: lock = _DOWNLOAD_LOCKS.setdefault(Path(dest), threading.Lock())
+    with lock:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        expected = int(expected_size) if expected_size is not None else None
+        if dest.exists():
+            sz = dest.stat().st_size
+            if expected is not None and sz == expected: return dest
+            if expected is None and sz > 10_000_000: return dest
+            try: dest.unlink()
             except Exception: pass
-            done = 0
-        if expected is not None and done == expected:
-            os.replace(tmp, dest); return dest
-        try:
-            hdrs = {"Range": f"bytes={done}-"} if done > 0 else {}
-            r = requests.get(url, headers=hdrs, stream=True, timeout=(STREAM_CONNECT_TIMEOUT, STREAM_READ_TIMEOUT), allow_redirects=True)
-            if r.status_code == 416:
-                if expected is not None and done >= expected:
-                    os.replace(tmp, dest); return dest
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        last_err = None
+        for attempt in range(3):
+            if stop_evt.is_set(): raise KeyboardInterrupt("Stop requested")
+            try: done = tmp.stat().st_size if tmp.exists() else 0
+            except OSError: done = 0
+            if expected is not None and done > expected:
+                # Stale/oversized fragment; a Range request would be unsatisfiable.
                 try: tmp.unlink()
                 except Exception: pass
                 done = 0
-                r.raise_for_status()
-            if r.status_code not in (200, 206): r.raise_for_status()
-            append = r.status_code == 206 and done > 0
-            if not append: done = 0  # server ignored Range (or we had nothing): rewrite
-            remaining = int(r.headers.get("content-length", 0) or 0)
-            total = expected if expected is not None else done + remaining
-            last_emit = 0.0
-            with open(tmp, "ab" if append else "wb") as f:
-                for chunk in r.iter_content(chunk_size=1024 * 1024):
-                    if stop_evt.is_set(): raise KeyboardInterrupt("Stop requested")
-                    if not chunk: continue
-                    f.write(chunk); done += len(chunk); now = time.time()
-                    if now - last_emit > 0.25: emit("overlay_progress", {"done": done, "total": total}); last_emit = now
-            if expected is not None and done != expected: raise RuntimeError(f"Size mismatch for {label}: got {done}, expected {expected}")
-            os.replace(tmp, dest); return dest
-        except KeyboardInterrupt:
-            # Keep the partial file so a later run can resume from it.
-            raise
-        except Exception as e:
-            last_err = e
-            if attempt < 2: emit("log", f"Download retry {attempt + 1} for {label}: {e}"); time.sleep(5 * (attempt + 1))
-    raise RuntimeError(f"Failed to download {label}: {last_err}")
+            if expected is not None and done == expected:
+                os.replace(tmp, dest); return dest
+            try:
+                hdrs = {"Range": f"bytes={done}-"} if done > 0 else {}
+                r = requests.get(url, headers=hdrs, stream=True, timeout=(STREAM_CONNECT_TIMEOUT, STREAM_READ_TIMEOUT), allow_redirects=True)
+                if r.status_code == 416:
+                    if expected is not None and done >= expected:
+                        os.replace(tmp, dest); return dest
+                    try: tmp.unlink()
+                    except Exception: pass
+                    done = 0
+                    r.raise_for_status()
+                if r.status_code not in (200, 206): r.raise_for_status()
+                append = r.status_code == 206 and done > 0
+                if not append: done = 0  # server ignored Range (or we had nothing): rewrite
+                remaining = int(r.headers.get("content-length", 0) or 0)
+                total = expected if expected is not None else done + remaining
+                last_emit = 0.0
+                with open(tmp, "ab" if append else "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        if stop_evt.is_set(): raise KeyboardInterrupt("Stop requested")
+                        if not chunk: continue
+                        f.write(chunk); done += len(chunk); now = time.time()
+                        if now - last_emit > 0.25: emit("overlay_progress", {"done": done, "total": total}); last_emit = now
+                if expected is not None and done != expected: raise RuntimeError(f"Size mismatch for {label}: got {done}, expected {expected}")
+                os.replace(tmp, dest); return dest
+            except KeyboardInterrupt:
+                # Keep the partial file so a later run can resume from it.
+                raise
+            except Exception as e:
+                last_err = e
+                if attempt < 2: emit("log", f"Download retry {attempt + 1} for {label}: {e}"); time.sleep(5 * (attempt + 1))
+        raise RuntimeError(f"Failed to download {label}: {last_err}")
 
 def _load_safetensors_flat(path, expected_numel, label="weights"):
     try: from safetensors.torch import load_file
@@ -2638,6 +2652,8 @@ def fetch_weights_from_hf(md, se, emit):
     ie = _load_safetensors_flat(paths["engram"], EXPECTED_ENGRAM_SIZE, "engram weights") if ENGRAM_ACTIVE else None
     try:
         for p in CHECKPOINT_DIR.rglob("*.part"):
+            busy = _DOWNLOAD_LOCKS.get(p.with_suffix(""))
+            if busy is not None and busy.locked(): continue   # another thread is still downloading it
             try: p.unlink()
             except Exception: pass
     except Exception: pass
@@ -3643,6 +3659,7 @@ def run_single_round_wrapper(srv, at, se, emit):
     timing_handoff = False
     h = {"Authorization": f"Bearer {at}"} if at else {}
     if DEVICE_ID: h["X-Client-Device"] = DEVICE_ID
+    h["X-Client-Version"] = CLIENT_VERSION   # the server version-gates /fl/submit too
     emit('status', 'waiting'); rs = wait_for_round(srv, h, se, emit)
     if not rs:
         timing.finish(ok=False, error="no_round")
