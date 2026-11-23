@@ -1123,6 +1123,14 @@ def detect_training_backend(force=None):
     return torch.device('cpu'), "CPU"
 
 def install_hard_vram_cap(device, safety_gb=SAFETY_MARGIN_GB):
+    if device is not None and device.type == "mps":
+        # torch's default MPS limit is 1.7x Metal's recommended working set (above physical RAM on
+        # most Macs), so an oversized batch swaps instead of raising the OOM that the degrade ladder catches.
+        try:
+            torch.mps.set_per_process_memory_fraction(1.0)
+            return torch.mps.recommended_max_memory() / 1024**3
+        except Exception as e:
+            log.warning("MPS memory cap not set: %s", e); return None
     if device is None or device.type != "cuda": return None
     try:
         idx = device.index if device.index is not None else 0
@@ -1179,7 +1187,14 @@ def auto_detect_vram_budget():
         try:
             out = subprocess.check_output(["sysctl", "-n", "hw.memsize"]).decode().strip()
             total_gb = int(out) / 1024**3
-            usable = max(0.5, total_gb * 0.75 - SAFETY_MARGIN_GB)
+            share = UMA_VRAM_SHARE_DEFAULT
+            try: share = max(0.4, min(1.0, float(os.environ.get("CROWDGPT_UMA_VRAM_SHARE", share) or share)))
+            except ValueError: pass
+            ceiling_gb = total_gb * share
+            # Metal's recommended working set is the most the GPU can hold without paging (~78% of RAM).
+            try: ceiling_gb = min(ceiling_gb, torch.mps.recommended_max_memory() / 1024**3)
+            except Exception as e: log.warning("MPS recommended_max_memory unavailable: %s", e)
+            usable = max(0.5, ceiling_gb - SAFETY_MARGIN_GB)
             memory_config.update({"ram_gb": round(usable, 2), "is_auto_detected": True}); return
         except Exception: pass
     if train_backend == "XPU":
@@ -2732,6 +2747,7 @@ def _clear_accel_cache(device):
     try:
         if device is not None and device.type == 'cuda': torch.cuda.empty_cache()
         elif device is not None and device.type == 'xpu': torch.xpu.empty_cache()
+        elif device is not None and device.type == 'mps': torch.mps.empty_cache()
     except Exception: pass
     gc.collect()
 
@@ -3096,8 +3112,13 @@ def _clip_base_grads(model, max_norm=1.0):
 
 def _trim_heap():
     gc.collect()
-    try: ctypes.CDLL("libc.so.6").malloc_trim(0)
-    except Exception: pass
+    try:
+        if sys.platform == "darwin":
+            # macOS has no malloc_trim; this asks every malloc zone to return free pages.
+            ctypes.CDLL("/usr/lib/libSystem.B.dylib").malloc_zone_pressure_relief(None, 0)
+        else:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError): pass  # no trim call on this libc (e.g. musl); gc already ran
 
 def _bf16_from_bytes(buf, offset, nbytes):
     a = np.frombuffer(buf, dtype=np.int16, count=nbytes // 2, offset=offset).copy()
@@ -3751,10 +3772,7 @@ def run_single_round_wrapper(srv, at, se, emit):
         model = None
         while bs >= 1:
             try:
-                if train_backend in ("CUDA", "ROCM"):
-                    try: torch.cuda.empty_cache()
-                    except Exception: pass
-                gc.collect()
+                _clear_accel_cache(train_device)
                 model = _build_model(
                     train_backend, train_device, iw, ie, emit, bs=bs, sl=sl,
                     u8_override=_u8_override, act_bytes_override=_act_bytes_override,
