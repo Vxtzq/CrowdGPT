@@ -681,7 +681,7 @@ class GuiLoop(unittest.TestCase):
     def setUp(self):
         self.token_file = Path(_TMP) / "auth_token.json"
         self.token_file.write_text('{"token": "tok"}')
-        self.api = client.Api.__new__(client.Api)  # skip __init__: no UI pump thread, no backend probing
+        self.api = client.Api.__new__(client.Api)  # skip __init__: no backend probing, no saved-session files
         self.api.emit = self.events = _Events()
         self.api.stop_event = threading.Event()
         self.api.auth_token = "tok"; self.api.server_url = SERVER

@@ -4032,14 +4032,34 @@ def _check_updates_between_rounds(emit):
         if check_for_update(): emit('log', "🔄 Updated to a new version — restarting..."); emit('status', 'idle'); time.sleep(2); _restart_self(resume_training=True)
     except Exception: pass
 
+class PywebviewSink:
+    """Delivers Api events to the desktop window: a bounded queue drained by one thread once the page has loaded."""
+    def __init__(self, window, ready_event):
+        self.window, self._ready = window, ready_event
+        self._queue = queue.Queue(maxsize=2048)
+        threading.Thread(target=self._pump, daemon=True, name="ui-emit").start()
+
+    def send(self, ev, data):
+        try: script = f"window.handleEvent({json.dumps(ev)}, {json.dumps(data)});"
+        except Exception: return
+        try: self._queue.put_nowait(script)
+        except queue.Full: pass
+
+    def _pump(self):
+        self._ready.wait()
+        time.sleep(0.1)
+        while True:
+            script = self._queue.get()
+            try: self.window.evaluate_js(script)
+            except Exception as e: log.warning(f"Emit failed: {e}")
+
+
 class Api:
     def __init__(self):
         self.window = None; self.stop_event = threading.Event(); self.thread = None; self._activity_monitor = None
         self.auth_token = None; self.username = None; self.server_url = DEFAULT_SERVER
         self._lp = 0.0
-        self._ui_queue = queue.Queue(maxsize=2048)
         self._ui_ready = threading.Event()
-        threading.Thread(target=self._ui_pump, daemon=True, name="ui-emit").start()
         # v2.5: a saved session is used ONLY if "Remember me" was ticked, or if we just restarted because of an update
         # while training. A normal start without "Remember me" forgets the token and shows the login screen.
         self._saved = None
@@ -4066,8 +4086,13 @@ class Api:
             if self._vram_file.exists(): self.vram_gb = max(0.0, float(json.loads(self._vram_file.read_text()).get("vram_gb", 0) or 0))
         except Exception: pass
 
+    _sinks = ()  # class default: an Api built with __new__ (tests) has no sinks
+
+    def _add_sink(self, sink):
+        self._sinks = [*self._sinks, sink]  # copy-on-write: emit() iterates a stable snapshot
+
     def emit(self, ev, data):
-        if not self.window: return
+        if not self._sinks: return
         if ev in ('log', 'status'):
             try: print(f"[EMIT {ev}] {data}", flush=True)
             except Exception: pass
@@ -4079,18 +4104,11 @@ class Api:
             n = time.time()
             if n - getattr(self, "_last_stats_emit", 0.0) < 0.10: return
             self._last_stats_emit = n
-        try: script = f"window.handleEvent({json.dumps(ev)}, {json.dumps(sanitize_for_json(data))});"
+        try: data = sanitize_for_json(data)
         except Exception: return
-        try: self._ui_queue.put_nowait(script)
-        except queue.Full: pass
-
-    def _ui_pump(self):
-        self._ui_ready.wait()
-        time.sleep(0.1) 
-        while True:
-            script = self._ui_queue.get()
-            try: self.window.evaluate_js(script)
-            except Exception as e: log.warning(f"Emit failed: {e}")
+        for sink in self._sinks:
+            try: sink.send(ev, data)
+            except Exception as e: log.warning(f"Emit to {type(sink).__name__} failed: {e}")
 
     def _mark_ui_ready(self):
         if self._ui_ready.is_set(): return
@@ -5157,6 +5175,7 @@ def run_gui(args):
 
     html_out = (html_template.replace("__LOGO__", LOGO_URI_LIGHT).replace("__LOGO_DARK__", LOGO_URI_DARK).replace("__VERSION__", CLIENT_VERSION))
     window = _create_window_safe("CrowdGPT", html_out, kwargs); api.window = window
+    api._add_sink(PywebviewSink(window, api._ui_ready))
 
     def _on_loaded():
         try: startup()
