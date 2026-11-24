@@ -71,6 +71,7 @@ os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
 import re, sys, io, json, time, struct, math, gc, threading, queue, base64, logging, tempfile, atexit, subprocess, hashlib, shutil, ctypes, signal, argparse, datetime, uuid, getpass
 import platform
+import ipaddress
 import secrets
 import importlib.metadata as importlib_metadata
 from pathlib import Path
@@ -4950,6 +4951,26 @@ def resolve_web_token(override, path=WEB_TOKEN_FILE):
     token = secrets.token_urlsafe(32)
     _write_private(path, token + "\n")
     return token
+
+def is_loopback(host):
+    """True for 127.0.0.0/8, ::1 (also bracketed or IPv4-mapped) and `localhost`. No DNS lookup."""
+    h = str(host).strip().strip("[]").lower()
+    if h == "localhost": return True
+    try: ip = ipaddress.ip_address(h)
+    except ValueError: return False
+    return (getattr(ip, "ipv4_mapped", None) or ip).is_loopback
+
+def auth_required(mode, host):
+    """Whether the web UI asks for a token: always for `token`, never for `none`, off loopback for `auto`."""
+    if mode == "token": return True
+    if mode == "none": return False
+    if mode == "auto": return not is_loopback(host)
+    raise ValueError(f"web auth mode must be one of {', '.join(WEB_AUTH_MODES)}, got {mode!r}")
+
+def web_url(sockname):
+    """Display URL for a bound socket address (2- or 4-tuple); IPv6 hosts get brackets."""
+    host, port = sockname[0], sockname[1]
+    return f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}"
 
 def parse_args():
     p = argparse.ArgumentParser(prog="client.py", description="CrowdGPT client. Runs GUI by default; use --headless for SSH/servers.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)

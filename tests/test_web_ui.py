@@ -154,5 +154,51 @@ class ResolveWebToken(unittest.TestCase):
         self.assertEqual(client.WEB_TOKEN_FILE, client.CHECKPOINT_DIR / "web_token")
 
 
+HOSTS = {  # host -> loopback?
+    "127.0.0.1": True, "::1": True, "localhost": True,
+    "0.0.0.0": False, "::": False, "192.168.1.20": False,
+}
+
+
+class IsLoopback(unittest.TestCase):
+    def test_table(self):
+        for host, want in HOSTS.items():
+            with self.subTest(host=host):
+                self.assertIs(client.is_loopback(host), want)
+
+    def test_variants(self):
+        cases = {"127.8.9.10": True, "LocalHost": True, "[::1]": True, " ::1 ": True,
+                 "::ffff:127.0.0.1": True, "example.com": False, "": False}
+        for host, want in cases.items():
+            with self.subTest(host=host):
+                self.assertIs(client.is_loopback(host), want)
+
+
+class AuthRequired(unittest.TestCase):
+    def test_matrix(self):
+        for mode in client.WEB_AUTH_MODES:
+            for host, loop in HOSTS.items():
+                want = {"token": True, "none": False, "auto": not loop}[mode]
+                with self.subTest(mode=mode, host=host):
+                    self.assertIs(client.auth_required(mode, host), want)
+
+    def test_unknown_mode_rejected(self):
+        with self.assertRaises(ValueError):
+            client.auth_required("open", "127.0.0.1")
+
+
+class WebUrl(unittest.TestCase):
+    def test_formats_bound_address(self):
+        cases = [
+            (("127.0.0.1", 8765), "http://127.0.0.1:8765"),
+            (("0.0.0.0", 80), "http://0.0.0.0:80"),
+            (("::1", 8765, 0, 0), "http://[::1]:8765"),
+            (("::", 9000, 0, 0), "http://[::]:9000"),
+        ]
+        for sockname, want in cases:
+            with self.subTest(sockname=sockname):
+                self.assertEqual(client.web_url(sockname), want)
+
+
 if __name__ == "__main__":
     unittest.main()
