@@ -4905,6 +4905,19 @@ class WebConfig(NamedTuple):
     allowed_hosts: tuple
     any_host: bool
 
+def _web_port(raw):
+    try: port = 8765 if raw is None else int(raw)
+    except (TypeError, ValueError): raise ValueError(f"web port must be a number, got {raw!r}") from None
+    if not 1 <= port <= 65535: raise ValueError(f"web port must be 1-65535, got {port}")
+    return port
+
+def _web_allowed_hosts(raw):
+    hosts = []
+    for item in (raw or "").split(","):
+        h = item.strip().lower()
+        if h and h not in hosts: hosts.append(h)
+    return tuple(hosts)
+
 def resolve_web_config(args, env):
     """Web UI settings from argparse flags and an env mapping; a flag beats its env variable.
 
@@ -4912,24 +4925,17 @@ def resolve_web_config(args, env):
     def pick(flag, name):
         v = getattr(args, flag, None)
         if v is not None: return v
-        v = (env.get(name) or "").strip()
-        return v or None
+        return (env.get(name) or "").strip() or None
     host = pick("web_host", "CROWDGPT_WEB_HOST") or "127.0.0.1"
-    raw_port = pick("web_port", "CROWDGPT_WEB_PORT")
-    try: port = 8765 if raw_port is None else int(raw_port)
-    except (TypeError, ValueError): raise ValueError(f"web port must be a number, got {raw_port!r}")
-    if not 1 <= port <= 65535: raise ValueError(f"web port must be 1-65535, got {port}")
+    port = _web_port(pick("web_port", "CROWDGPT_WEB_PORT"))
     auth = str(pick("web_auth", "CROWDGPT_WEB_AUTH") or "auto").strip().lower()
     if auth not in WEB_AUTH_MODES:
         raise ValueError(f"web auth mode must be one of {', '.join(WEB_AUTH_MODES)}, got {auth!r}")
     token = pick("web_token", "CROWDGPT_WEB_TOKEN") or None
     if token is not None and len(token) < WEB_TOKEN_MIN_LEN:
         raise ValueError(f"web token must be at least {WEB_TOKEN_MIN_LEN} characters")
-    hosts = []
-    for h in (env.get("CROWDGPT_WEB_ALLOWED_HOSTS") or "").split(","):
-        h = h.strip().lower()
-        if h and h not in hosts: hosts.append(h)
-    return WebConfig(host, port, auth, token, tuple(hosts), "*" in hosts)
+    hosts = _web_allowed_hosts(env.get("CROWDGPT_WEB_ALLOWED_HOSTS"))
+    return WebConfig(host, port, auth, token, hosts, "*" in hosts)
 
 def parse_args():
     p = argparse.ArgumentParser(prog="client.py", description="CrowdGPT client. Runs GUI by default; use --headless for SSH/servers.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)

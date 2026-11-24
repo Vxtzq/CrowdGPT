@@ -11,7 +11,7 @@ from test_coordinator_rejected import client
 
 
 def _args(**kw):
-    base = dict(web=False, web_host=None, web_port=None, web_auth=None, web_token=None)
+    base = {"web": False, "web_host": None, "web_port": None, "web_auth": None, "web_token": None}
     base.update(kw)
     return argparse.Namespace(**base)
 
