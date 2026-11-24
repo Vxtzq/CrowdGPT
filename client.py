@@ -71,6 +71,7 @@ os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
 import re, sys, io, json, time, struct, math, gc, threading, queue, base64, logging, tempfile, atexit, subprocess, hashlib, shutil, ctypes, signal, argparse, datetime, uuid, getpass
 import platform
+import secrets
 import importlib.metadata as importlib_metadata
 from pathlib import Path
 from typing import NamedTuple, Optional
@@ -443,6 +444,7 @@ CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 AUTH_TOKEN_FILE = CHECKPOINT_DIR / "auth_token.json"
 GPU_SELECTION_FILE = CHECKPOINT_DIR / "selected_gpu.json"
 DEVICE_ID_FILE = CHECKPOINT_DIR / "device_id.json"
+WEB_TOKEN_FILE = CHECKPOINT_DIR / "web_token"
 
 def _write_private(path, text):
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -4936,6 +4938,18 @@ def resolve_web_config(args, env):
         raise ValueError(f"web token must be at least {WEB_TOKEN_MIN_LEN} characters")
     hosts = _web_allowed_hosts(env.get("CROWDGPT_WEB_ALLOWED_HOSTS"))
     return WebConfig(host, port, auth, token, hosts, "*" in hosts)
+
+def resolve_web_token(override, path=WEB_TOKEN_FILE):
+    """The web UI token: the override, else the saved file, else a new one saved with mode 0600.
+
+    An empty file counts as missing. Read errors other than a missing file propagate."""
+    if override: return override
+    try: saved = Path(path).read_text(encoding="utf-8").strip()
+    except FileNotFoundError: saved = ""
+    if saved: return saved
+    token = secrets.token_urlsafe(32)
+    _write_private(path, token + "\n")
+    return token
 
 def parse_args():
     p = argparse.ArgumentParser(prog="client.py", description="CrowdGPT client. Runs GUI by default; use --headless for SSH/servers.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)

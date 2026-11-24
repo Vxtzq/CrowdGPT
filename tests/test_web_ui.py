@@ -5,7 +5,11 @@ Reuses the stubbed client import from test_coordinator_rejected: no torch, no GU
     python -m unittest discover -s tests -v
 """
 import argparse
+import os
+import stat
+import tempfile
 import unittest
+from pathlib import Path
 
 from test_coordinator_rejected import client
 
@@ -104,6 +108,50 @@ class WebFlags(unittest.TestCase):
         a = self._parse([])
         self.assertFalse(a.web)
         self.assertEqual((a.web_host, a.web_port, a.web_auth, a.web_token), (None, None, None, None))
+
+
+class ResolveWebToken(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "web_token"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_override_wins_over_saved_file(self):
+        self.path.write_text("saved-token-from-file-123")
+        self.assertEqual(client.resolve_web_token("override-token-abcdef", self.path), "override-token-abcdef")
+        self.assertEqual(self.path.read_text(), "saved-token-from-file-123")
+
+    def test_override_does_not_create_file(self):
+        client.resolve_web_token("override-token-abcdef", self.path)
+        self.assertFalse(self.path.exists())
+
+    def test_saved_file_used_and_stripped(self):
+        self.path.write_text("saved-token-from-file-123\n")
+        self.assertEqual(client.resolve_web_token(None, self.path), "saved-token-from-file-123")
+
+    def test_generated_when_no_file(self):
+        token = client.resolve_web_token(None, self.path)
+        self.assertGreaterEqual(len(token), 40)
+        self.assertEqual(self.path.read_text().strip(), token)
+
+    def test_generated_file_mode_0600(self):
+        client.resolve_web_token(None, self.path)
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
+
+    def test_generated_token_reused(self):
+        first = client.resolve_web_token(None, self.path)
+        self.assertEqual(client.resolve_web_token(None, self.path), first)
+
+    def test_empty_file_regenerated(self):
+        self.path.write_text("  \n")
+        token = client.resolve_web_token(None, self.path)
+        self.assertTrue(token)
+        self.assertEqual(self.path.read_text().strip(), token)
+
+    def test_default_path_is_checkpoint_web_token(self):
+        self.assertEqual(client.WEB_TOKEN_FILE, client.CHECKPOINT_DIR / "web_token")
 
 
 if __name__ == "__main__":
