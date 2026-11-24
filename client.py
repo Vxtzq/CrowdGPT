@@ -73,6 +73,7 @@ import re, sys, io, json, time, struct, math, gc, threading, queue, base64, logg
 import platform
 import importlib.metadata as importlib_metadata
 from pathlib import Path
+from typing import NamedTuple, Optional
 
 try:
     import termios, tty, select
@@ -4893,6 +4894,43 @@ _HEADLESS_EXIT_MESSAGES = {
     6: "The coordinator rejected this client's architecture.",
 }
 
+WEB_AUTH_MODES = ("auto", "token", "none")
+WEB_TOKEN_MIN_LEN = 16
+
+class WebConfig(NamedTuple):
+    host: str
+    port: int
+    auth: str
+    token: Optional[str]
+    allowed_hosts: tuple
+    any_host: bool
+
+def resolve_web_config(args, env):
+    """Web UI settings from argparse flags and an env mapping; a flag beats its env variable.
+
+    An empty env value counts as unset. Raises ValueError on a bad auth mode, port or token."""
+    def pick(flag, name):
+        v = getattr(args, flag, None)
+        if v is not None: return v
+        v = (env.get(name) or "").strip()
+        return v or None
+    host = pick("web_host", "CROWDGPT_WEB_HOST") or "127.0.0.1"
+    raw_port = pick("web_port", "CROWDGPT_WEB_PORT")
+    try: port = 8765 if raw_port is None else int(raw_port)
+    except (TypeError, ValueError): raise ValueError(f"web port must be a number, got {raw_port!r}")
+    if not 1 <= port <= 65535: raise ValueError(f"web port must be 1-65535, got {port}")
+    auth = str(pick("web_auth", "CROWDGPT_WEB_AUTH") or "auto").strip().lower()
+    if auth not in WEB_AUTH_MODES:
+        raise ValueError(f"web auth mode must be one of {', '.join(WEB_AUTH_MODES)}, got {auth!r}")
+    token = pick("web_token", "CROWDGPT_WEB_TOKEN") or None
+    if token is not None and len(token) < WEB_TOKEN_MIN_LEN:
+        raise ValueError(f"web token must be at least {WEB_TOKEN_MIN_LEN} characters")
+    hosts = []
+    for h in (env.get("CROWDGPT_WEB_ALLOWED_HOSTS") or "").split(","):
+        h = h.strip().lower()
+        if h and h not in hosts: hosts.append(h)
+    return WebConfig(host, port, auth, token, tuple(hosts), "*" in hosts)
+
 def parse_args():
     p = argparse.ArgumentParser(prog="client.py", description="CrowdGPT client. Runs GUI by default; use --headless for SSH/servers.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--headless", action="store_true", help="no window; train in the terminal")
@@ -4922,6 +4960,11 @@ def parse_args():
     p.add_argument("--no-tui", action="store_true", help="use plain log lines instead of the dashboard")
     p.add_argument("--doctor", action="store_true", help="run read-only environment diagnostics and exit")
     p.add_argument("--json", action="store_true", help="with --doctor, print the report as JSON")
+    p.add_argument("--web", action="store_true", help="serve the client UI over HTTP")
+    p.add_argument("--web-host", default=None, help="web UI bind address (or env CROWDGPT_WEB_HOST; default 127.0.0.1)")
+    p.add_argument("--web-port", type=int, default=None, help="web UI port (or env CROWDGPT_WEB_PORT; default 8765)")
+    p.add_argument("--web-auth", default=None, help="web UI auth mode: auto, token or none (or env CROWDGPT_WEB_AUTH; default auto)")
+    p.add_argument("--web-token", default=None, help="fixed web UI token, 16+ characters (or env CROWDGPT_WEB_TOKEN)")
     p.add_argument("--version", action="version", version=f"crowdgpt-client {CLIENT_VERSION}")
     args = p.parse_args()
     if getattr(args, "paradigm", ""): os.environ["CROWDGPT_PARADIGM"] = str(args.paradigm)
