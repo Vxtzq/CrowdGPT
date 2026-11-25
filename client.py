@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v4.1
-v4.1 changes
-  - Finally fixed Windows app not responding on startup
-  - Fixed app icon on Windows
+CrowdGPT GUI Client v4.0
 v3.4 changes
   - Auto-pause: VRAM is measured as growth since start (the CUDA context and desktop were counted as "another app"), 4 samples of debounce
   - Stop now fully releases VRAM (the degradation ladder kept the model alive after Stop)
@@ -906,74 +903,345 @@ def _wait_for_window(title: str, timeout: float = 5.0) -> bool:
         time.sleep(0.1)
     return False
 
-# ── CROWDGPT-GUI-FIX v1 ────────────────────────────────────────────────────
-# Deterministic Windows icon + off-thread accelerator probing.
-# Applied by fix_client_gui.py; undo with: python fix_client_gui.py --restore
-CROWDGPT_GUI_FIX = 1
 
+
+# ── CROWDGPT-FREEZE-FIX v2 ─────────────────────────────────────────────────
+# The WinForms message loop lives in .NET, but every pywebview event handler and
+# every js_api call re-enters Python on the UI thread. The GIL is process-wide,
+# so a worker thread sitting inside torch.cuda.is_available(), a cold cuBLAS/PTX
+# JIT, torch_directml enumeration or `import bitsandbytes` stalls that re-entry
+# and Windows paints "Not responding" — moving the work to a thread does not
+# help. All of it now runs in a CHILD process and the verdict is cached on disk,
+# so this process never touches a driver while the window is pumping.
+CROWDGPT_FREEZE_FIX = 2
+
+_GUI_MODE = False
+_WARMUP = {"active": False}
 _BACKEND_CACHE = {"available": None, "gpus": None, "preferred": None, "busy": False}
 _BACKEND_LOCK = threading.Lock()
-_WARMUP = {"active": False}
+_HW_PROBE = {"data": None, "stamp": 0.0}
 _ICON_HANDLES = {}
 _ICON_STATE = {"applied": False}
+_HW_ORDER = ("cuda", "rocm", "mps", "xpu", "directml", "cpu")
 
 
-def _probe_backends_now(api=None):
-    """Enumerate accelerators on the CALLING thread and publish the result.
+def _hw_cache_file():
+    return CHECKPOINT_DIR / "hw_probe.json"
 
-    torch.cuda.is_available()/device_count() and torch_directml.is_available()
-    can hold the GIL for seconds on a cold Windows driver. Doing that on the UI
-    thread (Api.__init__ / get_backends) is what made the window say
-    "Not responding" immediately after launch.
-    """
+
+def _hw_cache_key():
+    ver = getattr(torch, "version", None)
+    raw = "|".join((
+        str(getattr(torch, "__version__", "?")),
+        str(getattr(ver, "hip", "") or ""),
+        str(getattr(ver, "cuda", "") or ""),
+        sys.platform, platform.machine(), str(sys.executable), CLIENT_VERSION,
+    ))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def _hw_cache_load():
+    try:
+        j = json.loads(_hw_cache_file().read_text(encoding="utf-8"))
+        if j.get("key") != _hw_cache_key():
+            return None
+        if time.time() - float(j.get("at", 0)) > 7 * 24 * 3600:
+            return None
+        d = j.get("data")
+        return d if isinstance(d, dict) and d.get("available") else None
+    except Exception:
+        return None
+
+
+def _hw_cache_save(data):
+    try:
+        _write_private(_hw_cache_file(), json.dumps(
+            {"key": _hw_cache_key(), "at": time.time(), "data": data}))
+    except Exception:
+        pass
+
+
+_HW_PROBE_SRC = r"""
+import json, os, sys
+cfg = {}
+try:
+    cfg = json.loads(sys.argv[1])
+except Exception:
+    pass
+for k, v in (cfg.get("env") or {}).items():
+    os.environ[k] = v
+out = {"available": {"cpu": True}, "gpus": [], "preferred": "cpu",
+       "bnb": False, "bnb8": False, "bf16": False, "cc": "", "warmed": False,
+       "torch": "", "hip": "", "error": None}
+try:
+    import torch
+    out["torch"] = str(getattr(torch, "__version__", ""))
+    hip = bool(getattr(torch.version, "hip", None))
+    out["hip"] = str(getattr(torch.version, "hip", "") or "")
+    try:
+        cuda_ok = bool(torch.cuda.is_available())
+    except Exception:
+        cuda_ok = False
+    out["available"]["cuda"] = bool(cuda_ok and not hip)
+    out["available"]["rocm"] = bool(cuda_ok and hip)
+    try:
+        out["available"]["mps"] = bool(hasattr(torch.backends, "mps")
+                                       and torch.backends.mps.is_available())
+    except Exception:
+        out["available"]["mps"] = False
+    try:
+        out["available"]["xpu"] = bool(hasattr(torch, "xpu") and torch.xpu.is_available())
+    except Exception:
+        out["available"]["xpu"] = False
+    try:
+        import torch_directml
+        out["available"]["directml"] = bool(torch_directml.is_available())
+    except Exception:
+        out["available"]["directml"] = False
+    for b in ("cuda", "rocm", "mps", "xpu", "directml", "cpu"):
+        if out["available"].get(b):
+            out["preferred"] = b
+            break
+    if cuda_ok:
+        try:
+            arch = [str(a) for a in torch.cuda.get_arch_list()]
+        except Exception:
+            arch = []
+        try:
+            n = int(torch.cuda.device_count())
+        except Exception:
+            n = 0
+        for i in range(n):
+            try:
+                p = torch.cuda.get_device_properties(i)
+                need, ok = "rocm", True
+                if not hip:
+                    mj, mn = torch.cuda.get_device_capability(i)
+                    need = "sm_%d%d" % (mj, mn)
+                    ok = ((not arch) or (need in arch) or (need + "a" in arch)
+                          or any(a.startswith("sm_%d" % mj) and a[3:].isdigit() for a in arch)
+                          or any(a.startswith("compute_%d" % mj) and a[8:].isdigit() for a in arch))
+                out["gpus"].append({"idx": i, "name": str(p.name),
+                                    "vram_gb": round(int(p.total_memory) / (1024 ** 3), 1),
+                                    "arch_ok": bool(ok), "arch_needed": need})
+            except Exception:
+                pass
+        try:
+            out["bf16"] = bool(torch.cuda.is_bf16_supported())
+        except Exception:
+            pass
+        if not hip and out["gpus"]:
+            try:
+                mj, mn = torch.cuda.get_device_capability(0)
+                out["cc"] = "sm_%d%d" % (mj, mn)
+            except Exception:
+                pass
+    if cfg.get("bnb") and (out["available"]["cuda"] or out["available"]["rocm"]):
+        try:
+            import bitsandbytes as bnb
+            out["bnb"] = True
+            if hasattr(bnb, "optim") and hasattr(bnb.optim, "AdamW8bit") and cuda_ok:
+                p = torch.nn.Parameter(torch.ones(8, device="cuda"))
+                before = p.detach().clone()
+                o = bnb.optim.AdamW8bit([p], lr=0.1)
+                p.grad = torch.ones_like(p)
+                o.step()
+                out["bnb8"] = bool(not torch.allclose(before, p.detach()))
+        except Exception:
+            out["bnb"] = False
+    if cfg.get("warm") and cuda_ok:
+        try:
+            idx = int(cfg.get("gpu") or 0)
+            if idx >= max(1, len(out["gpus"])):
+                idx = 0
+            with torch.cuda.device(idx):
+                a = torch.zeros(64, 64, device="cuda")
+                for _ in range(3):
+                    a = (a @ a) * 0.0 + 1.0
+                float(a.sum().item())
+                del a
+            torch.cuda.empty_cache()
+            out["warmed"] = True
+        except Exception:
+            out["warmed"] = False
+except Exception as exc:
+    out["error"] = "%s: %s" % (type(exc).__name__, exc)
+sys.stdout.write("@@HW@@" + json.dumps(out) + "\n")
+sys.stdout.flush()
+"""
+
+
+def _hw_probe_subprocess(timeout_s=None, warm=False):
+    """Run the probe in a CHILD process. communicate() releases the GIL, so the
+    window keeps painting for the whole cold-driver / PTX-JIT wait."""
+    if getattr(sys, "frozen", False):
+        return None
+    try:
+        timeout_s = float(timeout_s if timeout_s is not None
+                          else os.environ.get("CROWDGPT_HW_PROBE_TIMEOUT", "180"))
+    except (TypeError, ValueError):
+        timeout_s = 180.0
+    cfg = {"warm": bool(warm),
+           "bnb": os.environ.get("CROWDGPT_DISABLE_BNB") != "1",
+           "gpu": _load_saved_gpu_idx() or 0,
+           "env": {"PYTORCH_CUDA_ALLOC_CONF":
+                       os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"),
+                   "CROWDGPT_DISABLE_BNB": os.environ.get("CROWDGPT_DISABLE_BNB", "0")}}
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.pop("PYTHONPATH", None)
+    for extra in (["-I"], []):
+        try:
+            proc = subprocess.Popen(
+                [sys.executable] + extra + ["-c", _HW_PROBE_SRC, json.dumps(cfg)],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL, cwd=str(tempfile.gettempdir()), env=env)
+        except Exception as e:
+            log.warning(f"[hw] probe could not start: {e}")
+            return None
+        try:
+            raw, _ = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill(); proc.communicate(timeout=5)
+            except Exception:
+                pass
+            log.warning(f"[hw] probe timed out after {timeout_s:.0f}s")
+            return None
+        except Exception as e:
+            try: proc.kill()
+            except Exception: pass
+            log.warning(f"[hw] probe failed: {e}")
+            return None
+        for line in (raw or b"").decode("utf-8", "replace").splitlines():
+            if line.startswith("@@HW@@"):
+                try:
+                    d = json.loads(line[6:])
+                    if isinstance(d, dict) and d.get("available"):
+                        return d
+                except Exception:
+                    pass
+        if extra:
+            continue
+        return None
+    return None
+
+
+def _hw_probe_inline_fallback():
+    """Only used when a child process cannot be spawned (frozen build, no
+    interpreter). Correctness beats smoothness on that rare path."""
+    avail = _get_available_backends_inline()
+    return {"available": avail, "gpus": _get_gpu_list_inline(),
+            "preferred": next((b for b in _HW_ORDER if avail.get(b)), "cpu"),
+            "bnb": None, "bnb8": None, "bf16": False, "cc": "",
+            "error": "child probe unavailable; probed inline"}
+
+
+def hw_probe(refresh=False, warm=False, publish=None):
+    """Cached verdict, else a child-process probe. Safe from any thread."""
     with _BACKEND_LOCK:
         if _BACKEND_CACHE["busy"]:
-            return
+            return _HW_PROBE.get("data")
         _BACKEND_CACHE["busy"] = True
     try:
-        avail = get_available_backends()
-        pref = next((b for b in ("cuda", "rocm", "mps", "xpu", "directml", "cpu")
-                     if avail.get(b)), "cpu")
-        gpus = get_gpu_list()
-        _BACKEND_CACHE.update(available=avail, gpus=gpus, preferred=pref)
-        if api is None:
-            return
-        try:
-            honor = os.environ.get("CROWDGPT_HONOR_SAVED_BACKEND") == "1"
-            idle = api.thread is None or not api.thread.is_alive()
-            sel = api.selected_backend
-            untouched = sel == getattr(api, "_initial_backend", sel)
-            if not honor and idle and untouched:
-                if sel in ("", None, "auto"):
-                    api.selected_backend = pref
-                elif sel == "cpu" and pref != "cpu":
-                    api.selected_backend = pref
-                elif sel == "directml" and pref in ("cuda", "rocm", "mps", "xpu"):
-                    api.selected_backend = pref
-            api.emit('backends', {'available': avail,
-                                  'current': api.selected_backend,
-                                  'probing': False})
-            saved_idx = _load_saved_gpu_idx()
-            if not gpus:
-                cur = 0
-            elif saved_idx is None or not any(g["idx"] == saved_idx for g in gpus):
-                cur = gpus[0]["idx"]
-            else:
-                cur = saved_idx
-            api.emit('gpus', {'list': gpus, 'current': cur})
-        except Exception as e:
-            log.warning(f"[gpu] publishing backend list failed: {e}")
-    except Exception as e:
-        log.warning(f"[gpu] backend probe failed: {e}")
+        data = _HW_PROBE.get("data")
+        if data is None:
+            data = _hw_cache_load()
+        if data is None or refresh:
+            got = _hw_probe_subprocess(warm=warm)
+            if got is not None:
+                data = got
+                _hw_cache_save(data)
+            elif data is None:
+                data = _hw_probe_inline_fallback()
+        if data is None:
+            data = _hw_probe_inline_fallback()
+        _HW_PROBE["data"] = data
+        _HW_PROBE["stamp"] = time.time()
+        _BACKEND_CACHE.update(available=dict(data.get("available") or {"cpu": True}),
+                              gpus=list(data.get("gpus") or []),
+                              preferred=data.get("preferred") or "cpu")
+        if publish is not None:
+            try:
+                publish(data)
+            except Exception as e:
+                log.warning(f"[hw] publish failed: {e}")
+        return data
     finally:
         with _BACKEND_LOCK:
             _BACKEND_CACHE["busy"] = False
 
 
+def _publish_backends(api, data):
+    honor = os.environ.get("CROWDGPT_HONOR_SAVED_BACKEND") == "1"
+    idle = api.thread is None or not api.thread.is_alive()
+    sel = api.selected_backend
+    pref = data.get("preferred") or "cpu"
+    if not honor and idle and sel == getattr(api, "_initial_backend", sel):
+        if sel in ("", None, "auto"):
+            api.selected_backend = pref
+        elif sel == "cpu" and pref != "cpu":
+            api.selected_backend = pref
+        elif sel == "directml" and pref in ("cuda", "rocm", "mps", "xpu"):
+            api.selected_backend = pref
+    api.emit('backends', {'available': data.get("available") or {"cpu": True},
+                          'current': api.selected_backend, 'probing': False})
+    gpus = data.get("gpus") or []
+    saved = _load_saved_gpu_idx()
+    if not gpus:
+        cur = 0
+    elif saved is None or not any(g["idx"] == saved for g in gpus):
+        cur = gpus[0]["idx"]
+    else:
+        cur = saved
+    api.emit('gpus', {'list': gpus, 'current': cur})
+
+
+def _probe_backends_now(api=None):
+    """Child-process probe. Name kept so older call sites keep working."""
+    return hw_probe(refresh=os.environ.get("CROWDGPT_HW_PROBE") == "refresh",
+                    warm=True,
+                    publish=(lambda d: _publish_backends(api, d)) if api is not None else None)
+
+
 def probe_backends_async(api=None):
-    """Same probe, on a daemon thread. Never call the sync version from the UI."""
     threading.Thread(target=_probe_backends_now, args=(api,),
-                     daemon=True, name="backend-probe").start()
+                     daemon=True, name="hw-probe").start()
+
+
+def _get_available_backends_inline():
+    backends = {}
+    backends['cuda'] = torch.cuda.is_available() and not (hasattr(torch.version, 'hip') and torch.version.hip)
+    backends['rocm'] = hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available()
+    backends['mps'] = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+    backends['xpu'] = _xpu_available()
+    try:
+        import torch_directml
+        backends['directml'] = torch_directml.is_available()
+    except ImportError:
+        backends['directml'] = False
+    backends['cpu'] = True
+    return backends
+
+
+def _get_gpu_list_inline():
+    try:
+        if not torch.cuda.is_available():
+            return []
+        n = torch.cuda.device_count()
+    except Exception:
+        return []
+    out = []
+    for idx in range(n):
+        try:
+            props = torch.cuda.get_device_properties(idx)
+            arch_ok, arch_needed, _ = _check_arch_compat(idx)
+            out.append({"idx": idx, "name": str(props.name),
+                        "vram_gb": round(int(props.total_memory) / (1024 ** 3), 1),
+                        "arch_ok": arch_ok, "arch_needed": arch_needed})
+        except Exception as e:
+            log.warning(f"[gpu] probe {idx} failed: {e}")
+    return out
 
 
 def _own_process_hwnds():
@@ -1010,11 +1278,6 @@ def _own_process_hwnds():
 
 
 def _window_hwnd(window=None):
-    """HWND of the pywebview window: native handle first, own-process scan second.
-
-    FindWindowW(None, "CrowdGPT") failed whenever the WebView2 document title
-    changed the form caption, which silently killed the old icon path.
-    """
     if sys.platform != "win32":
         return None
     native = getattr(window, "native", None)
@@ -1048,7 +1311,7 @@ def _window_hwnd(window=None):
 
 
 def set_windows_icon_hwnd(hwnd, ico_path):
-    """WM_SETICON on a known HWND. Handles are cached so retries do not leak."""
+    """WM_SETICON on a known HWND. Handles cached so retries do not leak."""
     if sys.platform != "win32" or not hwnd or not ico_path:
         return False
     ico_path = os.path.abspath(ico_path)
@@ -1099,8 +1362,8 @@ def set_windows_icon_hwnd(hwnd, ico_path):
     if hb:
         user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hb); ok = True
     if ok:
-        try:  # nudge the frame so Alt-Tab / taskbar redraw the new icon
-            SWP = 0x1 | 0x2 | 0x4 | 0x20  # NOSIZE|NOMOVE|NOZORDER|FRAMECHANGED
+        try:
+            SWP = 0x1 | 0x2 | 0x4 | 0x20   # NOSIZE|NOMOVE|NOZORDER|FRAMECHANGED
             user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
                                             ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
             user32.SetWindowPos.restype = ctypes.c_bool
@@ -1111,7 +1374,6 @@ def set_windows_icon_hwnd(hwnd, ico_path):
 
 
 def apply_windows_icon(window=None, ico_path=None):
-    """Apply the .ico to the real window. Safe from the `loaded` handler."""
     if sys.platform != "win32":
         return False
     path = ico_path or WINDOWS_ICO_PATH
@@ -1129,21 +1391,19 @@ def apply_windows_icon(window=None, ico_path=None):
         _ICON_STATE["applied"] = True
         log.info(f"[icon] applied to HWND 0x{int(hwnd):X} from {os.path.basename(path)}")
     return ok
-# ── end CROWDGPT-GUI-FIX v1 helpers ────────────────────────────────────────
+# ── end CROWDGPT-FREEZE-FIX v2 helpers ─────────────────────────────────────
 
 
 def get_available_backends():
-    backends = {}
-    backends['cuda'] = torch.cuda.is_available() and not (hasattr(torch.version, 'hip') and torch.version.hip)
-    backends['rocm'] = hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available()
-    backends['mps'] = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
-    backends['xpu'] = _xpu_available()
-    try:
-        import torch_directml
-        backends['directml'] = torch_directml.is_available()
-    except ImportError: backends['directml'] = False
-    backends['cpu'] = True
-    return backends
+    """GUI: serve the child-process verdict, never touch a driver on this thread.
+    CLI / --doctor / --headless: probe inline (no window to stall)."""
+    if _GUI_MODE:
+        d = _HW_PROBE.get("data") or _hw_cache_load()
+        if d and d.get("available"):
+            return dict(d["available"])
+        return {"cpu": True}
+    return _get_available_backends_inline()
+
 
 def _xpu_available():
     """Intel Arc / DC GPU. Modern PyTorch (>=2.4) supports XPU natively via
@@ -1233,28 +1493,11 @@ def _check_arch_compat(device_idx):
 
 
 def get_gpu_list():
-    """Returns [{idx, name, vram_gb, arch_ok, arch_needed}, ...]. Empty if no CUDA/ROCm devices."""
-    try:
-        if not torch.cuda.is_available():
-            return []
-        n = torch.cuda.device_count()
-    except Exception:
-        return []
-    out = []
-    for idx in range(n):
-        try:
-            props = torch.cuda.get_device_properties(idx)
-            arch_ok, arch_needed, _ = _check_arch_compat(idx)
-            out.append({
-                "idx": idx,
-                "name": str(props.name),
-                "vram_gb": round(int(props.total_memory) / (1024 ** 3), 1),
-                "arch_ok": arch_ok,
-                "arch_needed": arch_needed,
-            })
-        except Exception as e:
-            log.warning(f"[gpu] probe {idx} failed: {e}")
-    return out
+    """[{idx, name, vram_gb, arch_ok, arch_needed}, ...] — cached in GUI mode."""
+    if _GUI_MODE:
+        d = _HW_PROBE.get("data") or _hw_cache_load()
+        return list((d or {}).get("gpus") or [])
+    return _get_gpu_list_inline()
 
 
 def _load_saved_gpu_idx():
@@ -1464,19 +1707,32 @@ def apply_vram_override(user_gb=0.0):
     if cap > 0: memory_config["is_auto_detected"] = False
 
 def has_bitsandbytes():
+    """`import bitsandbytes` loads native CUDA libs and holds the GIL for
+    seconds; in GUI mode the child process already answered this."""
+    d = _HW_PROBE.get("data")
+    if d is not None and isinstance(d.get("bnb"), bool):
+        return bool(d["bnb"])
     try:
-        import bitsandbytes; return True
-    except Exception: return False
+        import bitsandbytes
+        return True
+    except Exception:
+        return False
+
 
 _BNB_SELFTEST = None
 
 def _bnb_optimizer_works():
-    """Import is not enough on ROCm: verify AdamW8bit actually updates a tensor."""
+    """Import is not enough on ROCm: AdamW8bit must actually update a tensor.
+    The child process runs that self-test; only fall back inline without it."""
     global _BNB_SELFTEST
     if _BNB_SELFTEST is not None:
         return _BNB_SELFTEST
     if os.environ.get("CROWDGPT_DISABLE_BNB") == "1":
         _BNB_SELFTEST = False; return False
+    d = _HW_PROBE.get("data")
+    if d is not None and isinstance(d.get("bnb8"), bool):
+        _BNB_SELFTEST = bool(d["bnb8"])
+        return _BNB_SELFTEST
     try:
         import bitsandbytes as bnb
         if not hasattr(bnb, "optim") or not hasattr(bnb.optim, "AdamW8bit"):
@@ -1492,6 +1748,7 @@ def _bnb_optimizer_works():
     except Exception:
         _BNB_SELFTEST = False
     return bool(_BNB_SELFTEST)
+
 
 def _optimizer_8bit_available(backend):
     if backend not in ("CUDA", "ROCM"):
@@ -4370,10 +4627,8 @@ class Api:
         try:
             if self._backend_file.exists(): saved = json.loads(self._backend_file.read_text()).get("backend")
         except Exception: pass
-        # Lazy backend selection: probing CUDA/XPU/DirectML here ran on the main
-        # thread before the window existed and could hold the GIL for seconds.
-        # _probe_backends_now() fills the real list in the background and upgrades
-        # a stale cpu/directml choice once it knows better.
+        # Lazy: no accelerator probing on the UI thread. The verdict comes from a
+        # child process (hw_probe) plus a disk cache, so the window paints instantly.
         self.selected_backend = saved or "auto"
         self._initial_backend = self.selected_backend
         self._vram_file = CHECKPOINT_DIR / "selected_vram.json"; self.vram_gb = 0.0
@@ -4425,7 +4680,7 @@ class Api:
         except Exception as e: log.warning(f"[auth] auto-login failed: {e}")
 
     def get_backends(self):
-        """Non-blocking. Serve the cache, probe on a worker if it is still cold."""
+        """Non-blocking. Serve the cache; a cold cache is filled by a child process."""
         cached = _BACKEND_CACHE.get("available")
         probing = cached is None
         self.emit('backends', {'available': cached or {"cpu": True},
@@ -4538,6 +4793,9 @@ class Api:
     def _check_updates_between_rounds(self): _check_updates_between_rounds(self.emit)
 
     def _rs(self):
+        start_tokenizer_loader()
+        if _GUI_MODE and _HW_PROBE.get("data") is None:
+            hw_probe(warm=True)
         try: _do_backend_setup(self.selected_backend, self.vram_gb, self.emit)
         except Exception as e:
             self.emit('log', f"Error: {e}"); self.emit('status', 'idle'); return
@@ -4611,10 +4869,6 @@ def startup():
     except Exception:
         pass
     if sys.platform == "win32":
-        # Synchronous, on the thread already running Python (the `loaded`
-        # handler). The old background _win_icon thread had to wake from
-        # time.sleep and win the GIL against the WinForms message loop, and
-        # FindWindowW(None, "CrowdGPT") failed whenever the caption changed.
         try:
             apply_windows_icon(webview.windows[0] if webview.windows else None)
         except Exception as e:
@@ -4629,24 +4883,19 @@ def _create_window_safe(title, html, kwargs):
         kwargs.pop("min_size", None); return webview.create_window(title, html=html, **kwargs)
 
 def _start_icon_kwargs():
-    """Hand the icon to pywebview on EVERY platform, Windows included.
-
-    Windows used to get {} here and relied on a background FindWindowW thread
-    that never ran reliably once the WinForms pump owned the main thread.
-    The ICO is additionally applied directly in startup() / _on_loaded.
-    """
+    """Hand the icon to pywebview on every platform, Windows included."""
     if not ICON_PATH or not os.path.exists(ICON_PATH):
         return {}
     path = WINDOWS_ICO_PATH if sys.platform == "win32" else ICON_PATH
     if not path or not os.path.exists(path):
         return {}
     if sys.platform != "win32" and path.lower().endswith(".ico"):
-        # Qt reads every size inside the ICO; GTK needs gdk-pixbuf to open it,
-        # otherwise window creation fails. Fall back to a real PNG.
         try:
             import gi; gi.require_version("GdkPixbuf", "2.0")
             from gi.repository import GdkPixbuf
             GdkPixbuf.Pixbuf.new_from_file(path)
+        except (ImportError, ValueError):
+            pass                      # Qt reads every size inside the ICO
         except Exception:
             path = _embedded_png(256) or path
     return {"icon": path}
@@ -5519,41 +5768,67 @@ def _start_stall_watchdog(limit_s: float = 8.0):
         _STALL_FH = open(CHECKPOINT_DIR / "stall_trace.log", "a", buffering=1)
         def _beat():
             while True:
-                try: faulthandler.dump_traceback_later(limit_s, repeat=False, file=_STALL_FH)
+                try:
+                    if _WARMUP.get("active"):
+                        faulthandler.cancel_dump_traceback_later()
+                    else:
+                        faulthandler.dump_traceback_later(limit_s, repeat=False, file=_STALL_FH)
                 except Exception: return
                 time.sleep(1.0)
         threading.Thread(target=_beat, daemon=True, name="stall-watchdog").start()
     except Exception as e: log.warning(f"[ui] stall watchdog unavailable: {e}")
 
 def _prewarm_gpu(api):
-    """Initialise CUDA/ROCm *before* the window exists. torch's one-time GPU initialisation holds the Python GIL for
-    5-20 s on a cold Windows start; the window's message loop is Python too, so if that happens while the window is
-    open Windows shows "Not responding". Doing it first moves the wait to before the window appears.
-    CROWDGPT_PREWARM_GPU=0 disables it."""
-    if os.environ.get("CROWDGPT_PREWARM_GPU", "1") == "0": return
+    """Warm the driver in a CHILD process. Doing it in-process — even on a worker
+    thread — holds the GIL through CUDA init / PTX JIT and freezes the WinForms
+    pump. The child fills the shared on-disk kernel cache, so this process's
+    later CUDA init is fast. CROWDGPT_PREWARM_GPU=0 disables it."""
+    if os.environ.get("CROWDGPT_PREWARM_GPU", "1") == "0":
+        return
+    if _GUI_MODE:
+        hw_probe(warm=True)
+        return
     try:
-        if not torch.cuda.is_available(): return
-        dev, be = detect_training_backend(api.selected_backend)
-        if be not in ("CUDA", "ROCM"): return
-        t0 = time.time(); log.info("[gpu] initialising the GPU — the window opens right after...")
+        if not torch.cuda.is_available():
+            return
+        dev, be = detect_training_backend(getattr(api, "selected_backend", None))
+        if be not in ("CUDA", "ROCM"):
+            return
+        t0 = time.time()
         with torch.cuda.device(dev):
-            a = torch.zeros(16, 16, device=dev); float((a @ a).sum().item()); del a       # context + cuBLAS handle
-            torch.cuda.empty_cache()
+            a = torch.zeros(16, 16, device=dev); float((a @ a).sum().item()); del a
+        torch.cuda.empty_cache()
         log.info(f"[gpu] ready in {time.time() - t0:.1f}s")
-    except Exception as e: log.warning(f"[gpu] pre-warm skipped: {e}")
+    except Exception as e:
+        log.warning(f"[gpu] pre-warm skipped: {e}")
+
 
 def run_gui(args):
+    global _GUI_MODE
     if not _WEBVIEW_OK:
         log.error(f"GUI unavailable: {_WEBVIEW_ERR}"); return 4
-    api = Api()                      # no accelerator probing in here any more
-    start_tokenizer_loader()
+    _GUI_MODE = True
+    # Every pywebview event re-enters Python on the UI thread. A 5 ms GIL slice
+    # lets a Python-heavy worker monopolise it; 0.5 ms keeps the pump responsive
+    # at no measurable cost to training (torch ops release the GIL anyway).
+    try:
+        sys.setswitchinterval(0.0005)
+    except Exception:
+        pass
+    cached = _hw_cache_load()
+    if cached:
+        _HW_PROBE["data"] = cached
+        _BACKEND_CACHE.update(available=dict(cached.get("available") or {"cpu": True}),
+                              gpus=list(cached.get("gpus") or []),
+                              preferred=cached.get("preferred") or "cpu")
+    api = Api()
     _start_stall_watchdog()
     kwargs = {"js_api": api, "width": 1000, "height": 720, "min_size": (320, 240)}
     html_path = Path(__file__).resolve().parent / "client.html"
     tmp_html = html_path.with_name(html_path.name + ".new")
     try:
         if not html_path.is_file():
-            response = requests.get(HTML_URL, timeout=60); response.raise_for_status(); downloaded_html = response.text
+            response = requests.get(HTML_URL, timeout=20); response.raise_for_status(); downloaded_html = response.text
             if ("<html" not in downloaded_html[:500].lower() or "__LOGO__" not in downloaded_html or "__LOGO_DARK__" not in downloaded_html or "__VERSION__" not in downloaded_html):
                 raise ValueError("Downloaded client.html failed validation")
             try: tmp_html.write_text(downloaded_html, encoding="utf-8"); os.replace(str(tmp_html), str(html_path))
@@ -5570,22 +5845,30 @@ def run_gui(args):
     api._add_sink(PywebviewSink(window, api._ui_ready))
 
     def _warmup():
-        # Everything that can block for seconds on a cold driver runs HERE,
-        # after the window exists, so the message loop keeps painting.
+        # Runs after first paint. The heavy part is a CHILD process, so this
+        # thread only waits on a pipe (GIL released) — the window stays live.
         _WARMUP["active"] = True
         try:
             _probe_backends_now(api)
-            _prewarm_gpu(api)
         except Exception as e:
-            log.warning(f"[gpu] startup warmup skipped: {e}")
-        finally:
-            _WARMUP["active"] = False
+            log.warning(f"[hw] startup probe skipped: {e}")
+        try:
+            if not args.no_update and not _upload_active():
+                if check_for_update():
+                    log.info("[update] new version staged; it applies at the next round boundary")
+        except Exception:
+            pass
+        try:
+            prune_hf_cache()
+        except Exception:
+            pass
+        _WARMUP["active"] = False
 
     def _on_loaded():
         try: startup()
         except Exception: pass
         api._mark_ui_ready()
-        threading.Thread(target=_warmup, daemon=True, name="gpu-warmup").start()
+        threading.Thread(target=_warmup, daemon=True, name="hw-warmup").start()
 
     subscribed = False
     for attr_chain in (("events", "loaded"), ("loaded",)):
@@ -5600,15 +5883,23 @@ def run_gui(args):
         log.warning("[ui] No 'loaded' event available; using fallback thread.")
         threading.Thread(target=lambda: (time.sleep(3.0), _on_loaded()), daemon=True).start()
     if sys.platform == "win32":
-        # Some builds reset the icon on first paint or a DPI change.
         def _icon_retry():
             for delay in (0.4, 1.2, 3.0):
                 time.sleep(delay)
                 try: apply_windows_icon(window)
                 except Exception: pass
         threading.Thread(target=_icon_retry, daemon=True, name="icon-retry").start()
-    try: webview.start(debug=False, **_start_icon_kwargs())
-    except TypeError: webview.start(debug=False)
+    icon_kwargs = _start_icon_kwargs()
+    if icon_kwargs:
+        # A TypeError from a partially-initialised start() must never lead to a
+        # second start(): that wedges the message loop for good.
+        try:
+            import inspect
+            if "icon" not in inspect.signature(webview.start).parameters:
+                icon_kwargs = {}
+        except Exception:
+            icon_kwargs = {}
+    webview.start(debug=False, **icon_kwargs)
     return 0
 
 
@@ -5723,11 +6014,12 @@ if __name__ == "__main__":
         try: ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Vxtzq.CrowdGPT.1")
         except Exception: pass
 
-    if not args.no_update:
+    if not args.no_update and args.headless:
         try:
             if check_for_update():
                 _restart_self()
-        except Exception: pass
+        except Exception:
+            pass
 
     if args.headless: sys.exit(run_headless(args))
     else: sys.exit(run_gui(args))
