@@ -1431,6 +1431,8 @@ def _hardware_headers(force_mode=None):
     return {
         "X-Client-Backend":   (train_backend or "UNKNOWN").upper(),
         "X-Client-Batch-Size": str(bs),
+        "X-Client-Batch-Size-Declared": str(int(_BS_STATE["declared"] or bs)),
+        "X-Client-Oom-Downscales": str(int(_BS_STATE["downscales"])),
         "X-Client-Vram-Gb":   f"{memory_config.get('ram_gb', 0.0):.2f}",
         "X-Client-Gpu-Name":  gpu,
         "X-Client-Autocast":  autocast_str,
@@ -2716,6 +2718,14 @@ def _fwl(m, x, y, sl, ua, ad, ls=1.0, preview=False, loss_chunk=LOSS_CHUNK):
         except Exception: cards = []
     return lo * ls, cards
 
+# Batch-size state shared between the sizing call, the OOM ladder and the
+# request headers. An OOM downscale is legitimate on a small card, but the
+# server keys a peer's identity off the batch size it declared, so a silent
+# halving used to look like a different machine and the delta got flagged as a
+# cross-check outlier. Declared is what we sized for; downscales count the
+# reductions, so the coordinator can tell "small card" from "claiming to be big".
+_BS_STATE = {"declared": 0, "downscales": 0}
+
 _OOM_MARKERS = ("out of memory", "cublas_status_alloc_failed", "cudnn_status_alloc_failed",
                 "cublas_status_not_initialized", "cusolver_status_alloc_failed")
 
@@ -3740,6 +3750,7 @@ def run_single_round_wrapper(srv, at, se, emit):
         ds = StreamingShardDataset(dc.get("repoId", DATASET_REPO_ID), dc.get("chunkIdx", 0), dc.get("subChunkSize", 10 * 1024 * 1024), dc.get("tokensPerSample", sl + 1), slot, at, cohort_mode=cohort_mode)
 
         _bs_est = recommend_batch_size(sl, force_mode=optim_mode)
+        _BS_STATE["declared"] = int(_bs_est)
         bs = _bs_est
         predegrade = False
         if cohort_mode and cc_bs and int(cc_bs) > 0:
@@ -3767,6 +3778,7 @@ def run_single_round_wrapper(srv, at, se, emit):
                 _clear_accel_cache(train_device)
                 if bs == 1 or (cohort_mode and cc_bs and bs <= int(cc_bs)):
                     emit('log', f"Model build OOM at bs={bs}; skipping this round (try a lower --vram-gb)"); break
+                _BS_STATE["downscales"] += 1
                 bs = max(1, bs // 2); emit('log', f"Model build OOM → bs={bs}")
         if model is None: return
         if cohort_mode and cc_bs and bs < int(cc_bs): emit('log', f"[COHORT] OOM at target bs={cc_bs}; aborting round"); return
@@ -3915,6 +3927,8 @@ def run_single_round_wrapper(srv, at, se, emit):
             "actualSeed": int(cc_seed) if (cohort_mode and cc_seed is not None) else None,
             "actualSteps": int(micro_step),
             "actualBatchSize": int(bs),
+            "declaredBatchSize": int(_BS_STATE["declared"] or bs),
+            "oomDownscales": int(_BS_STATE["downscales"]),
             "lastLoss": float(last_step_loss) if last_step_loss is not None else None,
             "lossStd": float(fl_std),
             "lossSamples": int(round_loss_count),
