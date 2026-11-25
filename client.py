@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v4.0
+CrowdGPT GUI Client v4.1
+v4.1 changes
+  - Finally fixed Windows app not responding on startup
+  - Fixed app icon on Windows
 v3.4 changes
   - Auto-pause: VRAM is measured as growth since start (the CUDA context and desktop were counted as "another app"), 4 samples of debounce
   - Stop now fully releases VRAM (the degradation ladder kept the model alive after Stop)
@@ -210,7 +213,7 @@ class TimingRecorder:
         self.phase("total", time.monotonic() - self.started, ok=ok, **fields)
 
 
-CLIENT_VERSION = "4.0"
+CLIENT_VERSION = "4.1"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
@@ -902,6 +905,232 @@ def _wait_for_window(title: str, timeout: float = 5.0) -> bool:
         if user32.FindWindowW(None, title): return True
         time.sleep(0.1)
     return False
+
+# ── CROWDGPT-GUI-FIX v1 ────────────────────────────────────────────────────
+# Deterministic Windows icon + off-thread accelerator probing.
+# Applied by fix_client_gui.py; undo with: python fix_client_gui.py --restore
+CROWDGPT_GUI_FIX = 1
+
+_BACKEND_CACHE = {"available": None, "gpus": None, "preferred": None, "busy": False}
+_BACKEND_LOCK = threading.Lock()
+_WARMUP = {"active": False}
+_ICON_HANDLES = {}
+_ICON_STATE = {"applied": False}
+
+
+def _probe_backends_now(api=None):
+    """Enumerate accelerators on the CALLING thread and publish the result.
+
+    torch.cuda.is_available()/device_count() and torch_directml.is_available()
+    can hold the GIL for seconds on a cold Windows driver. Doing that on the UI
+    thread (Api.__init__ / get_backends) is what made the window say
+    "Not responding" immediately after launch.
+    """
+    with _BACKEND_LOCK:
+        if _BACKEND_CACHE["busy"]:
+            return
+        _BACKEND_CACHE["busy"] = True
+    try:
+        avail = get_available_backends()
+        pref = next((b for b in ("cuda", "rocm", "mps", "xpu", "directml", "cpu")
+                     if avail.get(b)), "cpu")
+        gpus = get_gpu_list()
+        _BACKEND_CACHE.update(available=avail, gpus=gpus, preferred=pref)
+        if api is None:
+            return
+        try:
+            honor = os.environ.get("CROWDGPT_HONOR_SAVED_BACKEND") == "1"
+            idle = api.thread is None or not api.thread.is_alive()
+            sel = api.selected_backend
+            untouched = sel == getattr(api, "_initial_backend", sel)
+            if not honor and idle and untouched:
+                if sel in ("", None, "auto"):
+                    api.selected_backend = pref
+                elif sel == "cpu" and pref != "cpu":
+                    api.selected_backend = pref
+                elif sel == "directml" and pref in ("cuda", "rocm", "mps", "xpu"):
+                    api.selected_backend = pref
+            api.emit('backends', {'available': avail,
+                                  'current': api.selected_backend,
+                                  'probing': False})
+            saved_idx = _load_saved_gpu_idx()
+            if not gpus:
+                cur = 0
+            elif saved_idx is None or not any(g["idx"] == saved_idx for g in gpus):
+                cur = gpus[0]["idx"]
+            else:
+                cur = saved_idx
+            api.emit('gpus', {'list': gpus, 'current': cur})
+        except Exception as e:
+            log.warning(f"[gpu] publishing backend list failed: {e}")
+    except Exception as e:
+        log.warning(f"[gpu] backend probe failed: {e}")
+    finally:
+        with _BACKEND_LOCK:
+            _BACKEND_CACHE["busy"] = False
+
+
+def probe_backends_async(api=None):
+    """Same probe, on a daemon thread. Never call the sync version from the UI."""
+    threading.Thread(target=_probe_backends_now, args=(api,),
+                     daemon=True, name="backend-probe").start()
+
+
+def _own_process_hwnds():
+    """Visible top-level windows of THIS process. No caption matching."""
+    if sys.platform != "win32":
+        return []
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    pid = kernel32.GetCurrentProcessId()
+    out = []
+    EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    user32.EnumWindows.argtypes = [EnumWindowsProc, ctypes.c_void_p]
+    user32.EnumWindows.restype = ctypes.c_bool
+    user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    user32.GetWindowThreadProcessId.restype = ctypes.c_uint
+    user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+    user32.IsWindowVisible.restype = ctypes.c_bool
+
+    def _cb(hwnd, lparam):
+        try:
+            owner = ctypes.c_uint(0)
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+            if owner.value == pid and user32.IsWindowVisible(hwnd):
+                out.append(hwnd)
+        except Exception:
+            pass
+        return True
+
+    try:
+        user32.EnumWindows(EnumWindowsProc(_cb), None)
+    except Exception:
+        pass
+    return out
+
+
+def _window_hwnd(window=None):
+    """HWND of the pywebview window: native handle first, own-process scan second.
+
+    FindWindowW(None, "CrowdGPT") failed whenever the WebView2 document title
+    changed the form caption, which silently killed the old icon path.
+    """
+    if sys.platform != "win32":
+        return None
+    native = getattr(window, "native", None)
+    for getter in (lambda: int(native.Handle.ToInt64()),
+                   lambda: int(native.Handle),
+                   lambda: int(native)):
+        try:
+            h = getter()
+            if h:
+                return h
+        except Exception:
+            continue
+    hwnds = _own_process_hwnds()
+    if not hwnds:
+        return None
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+    user32.GetWindowTextW.restype = ctypes.c_int
+    titled = []
+    for h in hwnds:
+        try:
+            buf = ctypes.create_unicode_buffer(512)
+            user32.GetWindowTextW(h, buf, 512)
+            if buf.value:
+                if WINDOW_TITLE.lower() in buf.value.lower():
+                    return h
+                titled.append(h)
+        except Exception:
+            continue
+    return titled[0] if titled else hwnds[0]
+
+
+def set_windows_icon_hwnd(hwnd, ico_path):
+    """WM_SETICON on a known HWND. Handles are cached so retries do not leak."""
+    if sys.platform != "win32" or not hwnd or not ico_path:
+        return False
+    ico_path = os.path.abspath(ico_path)
+    if not os.path.exists(ico_path) or not ico_path.lower().endswith(".ico"):
+        return False
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.LoadImageW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint,
+                                  ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+    user32.LoadImageW.restype = ctypes.c_void_p
+    user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                    ctypes.c_void_p, ctypes.c_void_p]
+    user32.SendMessageW.restype = ctypes.c_void_p
+    user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+    user32.GetSystemMetrics.restype = ctypes.c_int
+    IMAGE_ICON, LR_LOADFROMFILE, WM_SETICON, ICON_SMALL, ICON_BIG = 1, 0x0010, 0x0080, 0, 1
+    SM_CXSMICON, SM_CYSMICON, SM_CXICON, SM_CYICON = 49, 50, 11, 12
+    cx = user32.GetSystemMetrics(SM_CXSMICON) or 16
+    cy = user32.GetSystemMetrics(SM_CYSMICON) or 16
+    bx = user32.GetSystemMetrics(SM_CXICON) or 32
+    by = user32.GetSystemMetrics(SM_CYICON) or 32
+    try:
+        user32.GetDpiForWindow.argtypes = [ctypes.c_void_p]
+        user32.GetDpiForWindow.restype = ctypes.c_uint
+        user32.GetSystemMetricsForDpi.argtypes = [ctypes.c_int, ctypes.c_uint]
+        user32.GetSystemMetricsForDpi.restype = ctypes.c_int
+        dpi = user32.GetDpiForWindow(hwnd) or 96
+        cx = user32.GetSystemMetricsForDpi(SM_CXSMICON, dpi) or cx
+        cy = user32.GetSystemMetricsForDpi(SM_CYSMICON, dpi) or cy
+        bx = user32.GetSystemMetricsForDpi(SM_CXICON, dpi) or bx
+        by = user32.GetSystemMetricsForDpi(SM_CYICON, dpi) or by
+    except Exception:
+        pass
+
+    def _handle(w, h):
+        key = (ico_path, int(w), int(h))
+        got = _ICON_HANDLES.get(key)
+        if got:
+            return got
+        made = user32.LoadImageW(None, ico_path, IMAGE_ICON, int(w), int(h), LR_LOADFROMFILE)
+        if made:
+            _ICON_HANDLES[key] = made
+        return made
+
+    hs, hb = _handle(cx, cy), _handle(bx, by)
+    ok = False
+    if hs:
+        user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hs); ok = True
+    if hb:
+        user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hb); ok = True
+    if ok:
+        try:  # nudge the frame so Alt-Tab / taskbar redraw the new icon
+            SWP = 0x1 | 0x2 | 0x4 | 0x20  # NOSIZE|NOMOVE|NOZORDER|FRAMECHANGED
+            user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
+                                            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+            user32.SetWindowPos.restype = ctypes.c_bool
+            user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP)
+        except Exception:
+            pass
+    return ok
+
+
+def apply_windows_icon(window=None, ico_path=None):
+    """Apply the .ico to the real window. Safe from the `loaded` handler."""
+    if sys.platform != "win32":
+        return False
+    path = ico_path or WINDOWS_ICO_PATH
+    if not path:
+        return False
+    hwnd = _window_hwnd(window)
+    if not hwnd:
+        return False
+    try:
+        ok = set_windows_icon_hwnd(hwnd, path)
+    except Exception as e:
+        log.warning(f"[icon] WM_SETICON failed: {e}")
+        return False
+    if ok and not _ICON_STATE["applied"]:
+        _ICON_STATE["applied"] = True
+        log.info(f"[icon] applied to HWND 0x{int(hwnd):X} from {os.path.basename(path)}")
+    return ok
+# ── end CROWDGPT-GUI-FIX v1 helpers ────────────────────────────────────────
+
 
 def get_available_backends():
     backends = {}
@@ -4141,11 +4370,12 @@ class Api:
         try:
             if self._backend_file.exists(): saved = json.loads(self._backend_file.read_text()).get("backend")
         except Exception: pass
-        available = get_available_backends(); preferred_backend = get_best_default_backend()
-        if saved and available.get(saved, False):
-            should_upgrade = (os.environ.get("CROWDGPT_HONOR_SAVED_BACKEND") != "1" and ((saved == "cpu" and preferred_backend != "cpu") or (saved == "directml" and preferred_backend in ("cuda", "rocm", "mps", "xpu"))))
-            self.selected_backend = preferred_backend if should_upgrade else saved
-        else: self.selected_backend = preferred_backend
+        # Lazy backend selection: probing CUDA/XPU/DirectML here ran on the main
+        # thread before the window existed and could hold the GIL for seconds.
+        # _probe_backends_now() fills the real list in the background and upgrades
+        # a stale cpu/directml choice once it knows better.
+        self.selected_backend = saved or "auto"
+        self._initial_backend = self.selected_backend
         self._vram_file = CHECKPOINT_DIR / "selected_vram.json"; self.vram_gb = 0.0
         try:
             if self._vram_file.exists(): self.vram_gb = max(0.0, float(json.loads(self._vram_file.read_text()).get("vram_gb", 0) or 0))
@@ -4195,9 +4425,13 @@ class Api:
         except Exception as e: log.warning(f"[auth] auto-login failed: {e}")
 
     def get_backends(self):
-        self.emit('backends', {'available': get_available_backends(), 'current': self.selected_backend})
+        """Non-blocking. Serve the cache, probe on a worker if it is still cold."""
+        cached = _BACKEND_CACHE.get("available")
+        probing = cached is None
+        self.emit('backends', {'available': cached or {"cpu": True},
+                               'current': self.selected_backend, 'probing': probing})
         self.emit('vram', {'current': self.vram_gb})
-        gpus = get_gpu_list()
+        gpus = _BACKEND_CACHE.get("gpus") or []
         saved = _load_saved_gpu_idx()
         if not gpus:
             current = 0
@@ -4206,6 +4440,8 @@ class Api:
         else:
             current = saved
         self.emit('gpus', {'list': gpus, 'current': current})
+        if probing:
+            probe_backends_async(self)
 
     def set_gpu(self, idx):
         try:
@@ -4372,17 +4608,20 @@ def startup():
         w = max(320, min(w, aw - 16)); h = max(240, min(h, ah - 48))
         webview.windows[0].resize(w, h)
         webview.windows[0].move(max(0, (aw - w) // 2), max(0, (ah - h) // 2))
-        if sys.platform == "win32" and WINDOWS_ICO_PATH:
-            def _win_icon():
-                if _wait_for_window(WINDOW_TITLE, timeout=10.0):
-                    for delay in (0.0, 1.5):          # twice: some builds reset the icon right after the first paint
-                        time.sleep(delay)
-                        try: set_windows_icon(WINDOW_TITLE, WINDOWS_ICO_PATH)
-                        except Exception: pass
-            threading.Thread(target=_win_icon, daemon=True).start()
-        elif sys.platform != "win32":
-            threading.Thread(target=_apply_gtk_icon_list, daemon=True).start()
-    except Exception: pass
+    except Exception:
+        pass
+    if sys.platform == "win32":
+        # Synchronous, on the thread already running Python (the `loaded`
+        # handler). The old background _win_icon thread had to wake from
+        # time.sleep and win the GIL against the WinForms message loop, and
+        # FindWindowW(None, "CrowdGPT") failed whenever the caption changed.
+        try:
+            apply_windows_icon(webview.windows[0] if webview.windows else None)
+        except Exception as e:
+            log.warning(f"[icon] {e}")
+    else:
+        threading.Thread(target=_apply_gtk_icon_list, daemon=True).start()
+
 
 def _create_window_safe(title, html, kwargs):
     try: return webview.create_window(title, html=html, **kwargs)
@@ -4390,17 +4629,28 @@ def _create_window_safe(title, html, kwargs):
         kwargs.pop("min_size", None); return webview.create_window(title, html=html, **kwargs)
 
 def _start_icon_kwargs():
-    if sys.platform == "win32" or not ICON_PATH or not os.path.exists(ICON_PATH): return {}
-    path = ICON_PATH
-    if path.lower().endswith(".ico"):
-        # Qt reads every size inside the ICO. GTK needs gdk-pixbuf to be able to open it, otherwise window creation fails.
+    """Hand the icon to pywebview on EVERY platform, Windows included.
+
+    Windows used to get {} here and relied on a background FindWindowW thread
+    that never ran reliably once the WinForms pump owned the main thread.
+    The ICO is additionally applied directly in startup() / _on_loaded.
+    """
+    if not ICON_PATH or not os.path.exists(ICON_PATH):
+        return {}
+    path = WINDOWS_ICO_PATH if sys.platform == "win32" else ICON_PATH
+    if not path or not os.path.exists(path):
+        return {}
+    if sys.platform != "win32" and path.lower().endswith(".ico"):
+        # Qt reads every size inside the ICO; GTK needs gdk-pixbuf to open it,
+        # otherwise window creation fails. Fall back to a real PNG.
         try:
             import gi; gi.require_version("GdkPixbuf", "2.0")
             from gi.repository import GdkPixbuf
             GdkPixbuf.Pixbuf.new_from_file(path)
-        except (ImportError, ValueError): pass
-        except Exception: path = _embedded_png(256) or path
+        except Exception:
+            path = _embedded_png(256) or path
     return {"icon": path}
+
 
 _TUI_STATUS = {
     "idle": ("Idle", "dim"),
@@ -5295,14 +5545,12 @@ def _prewarm_gpu(api):
 def run_gui(args):
     if not _WEBVIEW_OK:
         log.error(f"GUI unavailable: {_WEBVIEW_ERR}"); return 4
-
-    api = Api(); start_tokenizer_loader()
-    _prewarm_gpu(api); _start_stall_watchdog()
+    api = Api()                      # no accelerator probing in here any more
+    start_tokenizer_loader()
+    _start_stall_watchdog()
     kwargs = {"js_api": api, "width": 1000, "height": 720, "min_size": (320, 240)}
-
     html_path = Path(__file__).resolve().parent / "client.html"
     tmp_html = html_path.with_name(html_path.name + ".new")
-
     try:
         if not html_path.is_file():
             response = requests.get(HTML_URL, timeout=60); response.raise_for_status(); downloaded_html = response.text
@@ -5317,15 +5565,27 @@ def run_gui(args):
             raise ValueError("Local client.html is invalid")
     except Exception as e:
         log.error(f"Could not load/download {html_path}: {e}"); return 4
-
     html_out = (html_template.replace("__LOGO__", LOGO_URI_LIGHT).replace("__LOGO_DARK__", LOGO_URI_DARK).replace("__VERSION__", CLIENT_VERSION))
     window = _create_window_safe("CrowdGPT", html_out, kwargs); api.window = window
     api._add_sink(PywebviewSink(window, api._ui_ready))
+
+    def _warmup():
+        # Everything that can block for seconds on a cold driver runs HERE,
+        # after the window exists, so the message loop keeps painting.
+        _WARMUP["active"] = True
+        try:
+            _probe_backends_now(api)
+            _prewarm_gpu(api)
+        except Exception as e:
+            log.warning(f"[gpu] startup warmup skipped: {e}")
+        finally:
+            _WARMUP["active"] = False
 
     def _on_loaded():
         try: startup()
         except Exception: pass
         api._mark_ui_ready()
+        threading.Thread(target=_warmup, daemon=True, name="gpu-warmup").start()
 
     subscribed = False
     for attr_chain in (("events", "loaded"), ("loaded",)):
@@ -5336,14 +5596,21 @@ def run_gui(args):
             subscribed = True
             break
         except Exception: continue
-
     if not subscribed:
         log.warning("[ui] No 'loaded' event available; using fallback thread.")
         threading.Thread(target=lambda: (time.sleep(3.0), _on_loaded()), daemon=True).start()
-
+    if sys.platform == "win32":
+        # Some builds reset the icon on first paint or a DPI change.
+        def _icon_retry():
+            for delay in (0.4, 1.2, 3.0):
+                time.sleep(delay)
+                try: apply_windows_icon(window)
+                except Exception: pass
+        threading.Thread(target=_icon_retry, daemon=True, name="icon-retry").start()
     try: webview.start(debug=False, **_start_icon_kwargs())
     except TypeError: webview.start(debug=False)
     return 0
+
 
 # The desktop UI predates these codes; keep its generic registration message.
 _GUI_REGISTER_CODES = {
