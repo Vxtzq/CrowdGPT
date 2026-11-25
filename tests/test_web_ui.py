@@ -315,6 +315,69 @@ class WebApp(unittest.TestCase):
                 self.assertEqual(c.get(path).status_code, 404)
 
 
+class _RecordingApi(_FakeApi):
+    """Every page-facing Api method, recording its calls; plus private ones that must stay unreachable."""
+    def __init__(self): self.calls = []
+    def _rec(self, name, *a): self.calls.append((name, a))
+    def get_backends(self): self._rec("get_backends")
+    def set_gpu(self, idx): self._rec("set_gpu", idx)
+    def set_vram(self, gb): self._rec("set_vram", gb)
+    def set_backend(self, backend_name): self._rec("set_backend", backend_name)
+    def login(self, s, u, p, remember=False): self._rec("login", s, u, p, remember)
+    def register(self, s, u, email, p, remember=False): self._rec("register", s, u, email, p, remember)
+    def login_anon(self): self._rec("login_anon")
+    def start(self): self._rec("start")
+    def stop(self): self._rec("stop")
+    def logout(self): self._rec("logout")
+    def emit(self, ev, data): self._rec("emit", ev, data)
+    def _rs(self): self._rec("_rs")
+    def _do_login(self, *a): self._rec("_do_login", *a)
+
+
+@unittest.skipUnless(_HAVE_WEB, "needs fastapi, uvicorn and httpx")
+class WebApiDispatch(unittest.TestCase):
+    def setUp(self):
+        from fastapi.testclient import TestClient
+        self.api = _RecordingApi()
+        self.c = TestClient(client.create_web_app(self.api, {"html": "x"}))
+
+    def test_allowed_calls_arrive_with_args(self):
+        cases = [
+            ("get_backends", []), ("set_gpu", [1]), ("set_vram", [6.5]), ("set_backend", ["cpu"]),
+            ("login", ["https://s", "u", "pw", True]), ("register", ["https://s", "u", "e@x", "pw"]),
+            ("login_anon", []), ("start", []), ("stop", []), ("logout", []),
+        ]
+        for name, args in cases:
+            with self.subTest(name=name):
+                self.api.calls.clear()
+                r = self.c.post(f"/api/{name}", json=args)
+                self.assertEqual(r.status_code, 204)
+                self.assertEqual(self.api.calls[0][0], name)
+                self.assertEqual(list(self.api.calls[0][1][:len(args)]), args)
+
+    def test_unlisted_names_are_404(self):
+        for name in ("_rs", "_do_login", "emit", "nope", "__init__"):
+            with self.subTest(name=name):
+                self.assertEqual(self.c.post(f"/api/{name}", json=[]).status_code, 404)
+        self.assertEqual(self.api.calls, [])
+
+    def test_non_array_body_is_400(self):
+        for body in (b'{"a": 1}', b'"x"', b"1", b"not json", b""):
+            with self.subTest(body=body):
+                r = self.c.post("/api/stop", content=body, headers={"content-type": "application/json"})
+                self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.api.calls, [])
+
+    def test_wrong_arg_count_is_400(self):
+        self.assertEqual(self.c.post("/api/set_gpu", json=[]).status_code, 400)
+        self.assertEqual(self.c.post("/api/stop", json=[1]).status_code, 400)
+        self.assertEqual(self.api.calls, [])
+
+    def test_get_is_not_allowed(self):
+        self.assertEqual(self.c.get("/api/stop").status_code, 405)
+        self.assertEqual(self.api.calls, [])
+
+
 @unittest.skipUnless(_HAVE_WEB, "needs fastapi, uvicorn and httpx")
 class WebServerThread(unittest.TestCase):
     def test_start_fetch_stop(self):

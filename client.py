@@ -71,6 +71,7 @@ os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
 import re, sys, io, json, time, struct, math, gc, threading, queue, base64, logging, tempfile, atexit, subprocess, hashlib, shutil, ctypes, signal, argparse, datetime, uuid, getpass
 import platform
+import inspect
 import ipaddress
 import secrets
 import importlib.metadata as importlib_metadata
@@ -5012,12 +5013,35 @@ def _web_status(api):
     t = getattr(api, "thread", None)
     return "running" if t is not None and t.is_alive() else "idle"
 
+# The Api methods client.html calls; nothing else on Api is reachable over HTTP.
+WEB_API_METHODS = frozenset({"get_backends", "set_gpu", "set_vram", "set_backend", "login",
+                             "register", "login_anon", "start", "stop", "logout"})
+
+def _web_api_args(body, fn):
+    """Positional args from a JSON array body, or None if it isn't one or doesn't fit fn's signature."""
+    try: args = json.loads(body)
+    except ValueError: return None
+    if not isinstance(args, list): return None
+    try: inspect.signature(fn).bind(*args)
+    except TypeError: return None
+    return args
+
 def create_web_app(api, opts):
-    """FastAPI app serving opts["html"] at / and a health check; the docs endpoints are off."""
+    """FastAPI app: opts["html"] at /, a health check, and allow-listed Api calls; the docs endpoints are off."""
     fastapi, _ = _import_web_stack()
-    from fastapi.responses import HTMLResponse
+    from fastapi.responses import HTMLResponse, Response
+    from starlette.concurrency import run_in_threadpool
     app = fastapi.FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     html = opts["html"]
+
+    @app.post("/api/{method}")
+    async def call_api(method: str, request: fastapi.Request):
+        if method not in WEB_API_METHODS: return Response(status_code=404)
+        fn = getattr(api, method)
+        args = _web_api_args(await request.body(), fn)
+        if args is None: return Response(status_code=400)
+        await run_in_threadpool(fn, *args)  # Api methods block; keep them off the event loop
+        return Response(status_code=204)
 
     @app.get("/", response_class=HTMLResponse)
     def index():
