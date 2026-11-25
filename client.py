@@ -2067,7 +2067,13 @@ class SotaGPT(nn.Module):
     def embed(self, idx, head_w=None):
         """Token (+ engram) embedding. Split out so a paradigm can run the trunk in pieces."""
         dev = self.main_device; wdev = self.wte.weight.device
-        if head_w is not None and not self.head_on_gpu and head_w.device == dev:
+        # Only reuse the on-device head copy when it carries the weight's own dtype.
+        # In a bf16 cohort head_w is a bf16 cast of the tied weight, so embedding
+        # from it rounds the ids and sends the embedding gradient back through a
+        # bf16 cast, while a GPU-head peer embeds from the fp32 wte.weight. That
+        # made pre-degraded (CPU-head) clients look like cross-check outliers.
+        if (head_w is not None and not self.head_on_gpu and head_w.device == dev
+                and head_w.dtype == self.wte.weight.dtype):
             x = F.embedding(idx.to(dev), head_w)
             if x.dtype != torch.float32: x = x.float()
         else:
