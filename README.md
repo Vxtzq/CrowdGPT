@@ -333,7 +333,7 @@ python client.py
 
 ### CrowdGPT power-trainers applications are open!! 
 
-Power-trainers can train by themselves, without any checks. Reach a trust-score of 1, and you're eligible.
+Power-trainers can train by themselves, without any checks. Reach a trust-score of 1, and you're eligible. You also must've trained on 1B tokens (2B+ is better), so we can make sure you won't destroy what you used compute for.
 
 ## 📄 License
 
