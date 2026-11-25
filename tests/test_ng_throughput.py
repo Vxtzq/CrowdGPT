@@ -8,6 +8,7 @@ never a throughput claim -- ``config.trimmedLayers`` records the trim.
 
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -25,6 +26,23 @@ except ImportError:  # pragma: no cover - the stdlib-only CI job has neither
     numpy = torch = None
 
 _NEEDS_STACK = unittest.skipIf(torch is None or numpy is None, "torch and numpy are required")
+
+
+def _total_ram_gb() -> float | None:
+    try:
+        return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 1024**3
+    except (AttributeError, ValueError, OSError):  # not POSIX: unknown, let the test run
+        return None
+
+
+# Even trimmed to one layer, the real model keeps the full vocab embedding and the
+# engram table (~580M params): fp32 weights + grads + AdamW state need ~10 GB.
+_MIN_RAM_GB = 16
+_RAM_GB = _total_ram_gb()
+_NEEDS_RAM = unittest.skipIf(
+    _RAM_GB is not None and _RAM_GB < _MIN_RAM_GB,
+    f"the real-model smoke run needs >= {_MIN_RAM_GB} GB RAM (have {_RAM_GB or 0:.1f} GB)",
+)
 
 
 @_NEEDS_STACK
@@ -49,6 +67,7 @@ class ProjectionTests(unittest.TestCase):
 
 
 @_NEEDS_STACK
+@_NEEDS_RAM
 class SmokeTests(unittest.TestCase):
     def test_trimmed_cpu_run_emits_the_schema(self):
         import bench_throughput
