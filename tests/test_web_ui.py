@@ -6,12 +6,14 @@ Reuses the stubbed client import from test_coordinator_rejected: no torch, no GU
 """
 import argparse
 import os
+import shutil
 import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from test_coordinator_rejected import client
+from test_coordinator_rejected import _load_client, client
 
 
 def _args(**kw):
@@ -248,6 +250,28 @@ class RenderWebHtml(unittest.TestCase):
         out = client.render_web_html(_TEMPLATE, {"x": "</script><b>"})
         self.assertNotIn("</script><b>", out)
         self.assertIn(_SHIM_MARK, out)
+
+
+class ImportWebStack(unittest.TestCase):
+    _BLOCKED = ("fastapi", "uvicorn")
+
+    def setUp(self):
+        missing = object()
+        saved = {name: sys.modules.get(name, missing) for name in self._BLOCKED}
+        for name in self._BLOCKED:
+            sys.modules[name] = None  # an import of it raises ImportError
+
+        def restore():
+            for name, orig in saved.items():
+                if orig is missing: sys.modules.pop(name, None)
+                else: sys.modules[name] = orig
+        self.addCleanup(restore)
+
+    def test_client_imports_without_web_stack(self):
+        mod, tmp = _load_client()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        with self.assertRaisesRegex(RuntimeError, "pip install fastapi uvicorn"):
+            mod._import_web_stack()
 
 
 if __name__ == "__main__":

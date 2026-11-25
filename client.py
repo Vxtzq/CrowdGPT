@@ -4972,6 +4972,15 @@ def web_url(sockname):
     host, port = sockname[0], sockname[1]
     return f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}"
 
+def _import_web_stack():
+    """Import FastAPI and uvicorn on demand: the updater can ship this file to installs without them."""
+    try:
+        import fastapi
+        import uvicorn
+    except ImportError as e:
+        raise RuntimeError("the web UI needs FastAPI and uvicorn: pip install fastapi uvicorn") from e
+    return fastapi, uvicorn
+
 def render_client_html(template):
     """Fill client.html's logo and version placeholders."""
     return template.replace("__LOGO__", LOGO_URI_LIGHT).replace("__LOGO_DARK__", LOGO_URI_DARK).replace("__VERSION__", CLIENT_VERSION)
