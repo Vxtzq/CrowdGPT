@@ -398,5 +398,123 @@ class WebServerThread(unittest.TestCase):
         self.assertFalse(srv.thread.is_alive())
 
 
+class _LoopThread:
+    """A running asyncio loop on its own thread, standing in for uvicorn's."""
+    def __init__(self):
+        import asyncio
+        import threading
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self.thread.start()
+
+    def run(self, coro):
+        import asyncio
+        return asyncio.run_coroutine_threadsafe(coro, self.loop).result(5)
+
+    def close(self):
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(5)
+        self.loop.close()
+
+
+async def _drain(q):
+    out = []
+    while not q.empty(): out.append(q.get_nowait())
+    return out
+
+
+def _frames(raw):
+    """(id, payload) per SSE frame string."""
+    import json
+    out = []
+    for frame in raw:
+        lines = dict(line.split(": ", 1) for line in frame.strip().split("\n"))
+        out.append((int(lines["id"]), json.loads(lines["data"])))
+    return out
+
+
+async def _subscribe(sink): return sink.subscribe()
+
+
+class WebSinkFanOut(unittest.TestCase):
+    def setUp(self):
+        self.lt = _LoopThread()
+        self.addCleanup(self.lt.close)
+
+    def test_send_before_bind_is_noop(self):
+        sink = client.WebSink()
+        sink.send("log", "early")  # no loop yet: must not raise
+        sink.bind(self.lt.loop)
+        q = self.lt.run(_subscribe(sink))
+        self.assertEqual(self.lt.run(_drain(q)), [])
+
+    def test_two_subscribers_same_events_in_order(self):
+        sink = client.WebSink()
+        sink.bind(self.lt.loop)
+        a, b = self.lt.run(_subscribe(sink)), self.lt.run(_subscribe(sink))
+        for i in range(5): sink.send("log", f"line {i}")  # from this thread, not the loop's
+        sink.send("stats", {"loss": 1.5})
+        want = [(i + 1, {"ev": "log", "data": f"line {i}"}) for i in range(5)] + [(6, {"ev": "stats", "data": {"loss": 1.5}})]
+        self.assertEqual(_frames(self.lt.run(_drain(a))), want)
+        self.assertEqual(_frames(self.lt.run(_drain(b))), want)
+
+    def test_stalled_subscriber_drops_oldest_and_blocks_nobody(self):
+        import time
+        sink = client.WebSink(queue_size=4)
+        sink.bind(self.lt.loop)
+        stalled, live = self.lt.run(_subscribe(sink)), self.lt.run(_subscribe(sink))
+        t0 = time.monotonic()
+        for i in range(100): sink.send("log", i)
+        self.assertLess(time.monotonic() - t0, 1.0)
+        self.assertEqual([p["data"] for _, p in _frames(self.lt.run(_drain(live)))], [96, 97, 98, 99])
+        for i in range(100, 103): sink.send("log", i)
+        self.assertEqual([p["data"] for _, p in _frames(self.lt.run(_drain(live)))], [100, 101, 102])
+        self.assertEqual([p["data"] for _, p in _frames(self.lt.run(_drain(stalled)))], [99, 100, 101, 102])
+
+    def test_unsubscribe_stops_delivery(self):
+        sink = client.WebSink()
+        sink.bind(self.lt.loop)
+        q = self.lt.run(_subscribe(sink))
+        self.assertEqual(sink.subscriber_count(), 1)
+        sink.unsubscribe(q)
+        self.assertEqual(sink.subscriber_count(), 0)
+        sink.send("log", "x")
+        self.assertEqual(self.lt.run(_drain(q)), [])
+
+
+@unittest.skipUnless(_HAVE_WEB, "needs fastapi, uvicorn and httpx")
+class WebEventsStream(unittest.TestCase):
+    def _wait(self, cond, timeout=5):
+        import time
+        deadline = time.monotonic() + timeout
+        while not cond():
+            if time.monotonic() > deadline: self.fail("condition not met in time")
+            time.sleep(0.02)
+
+    def test_stream_frames_heartbeat_and_disconnect(self):
+        import json
+        import urllib.request
+        sink = client.WebSink()
+        app = client.create_web_app(_FakeApi(), {"html": "x", "sink": sink, "heartbeat": 0.1})
+        srv = client.WebServer(app, "127.0.0.1", 0)
+        port = srv.start(timeout=5)[1]
+        self.addCleanup(srv.stop)
+        r = urllib.request.urlopen(f"http://127.0.0.1:{port}/events", timeout=5)
+        self.assertTrue(r.headers["content-type"].startswith("text/event-stream"))
+        self._wait(lambda: sink.subscriber_count() == 1)
+        self.assertEqual(r.readline(), b": ping\n")  # heartbeat before any event
+        self.assertEqual(r.readline(), b"\n")
+        sink.send("status", "training")
+        lines = []
+        while len(lines) < 2:
+            line = r.readline().decode()
+            if line.startswith(":") or line == "\n": continue
+            lines.append(line.rstrip("\n"))
+        self.assertEqual(lines[0], "id: 1")
+        self.assertEqual(json.loads(lines[1].removeprefix("data: ")), {"ev": "status", "data": "training"})
+        r.close()
+        self._wait(lambda: sink.subscriber_count() == 0)
+
+
 if __name__ == "__main__":
     unittest.main()

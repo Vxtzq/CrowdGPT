@@ -71,6 +71,8 @@ os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
 import re, sys, io, json, time, struct, math, gc, threading, queue, base64, logging, tempfile, atexit, subprocess, hashlib, shutil, ctypes, signal, argparse, datetime, uuid, getpass
 import platform
+import asyncio
+import contextlib
 import inspect
 import ipaddress
 import secrets
@@ -4059,6 +4061,42 @@ class PywebviewSink:
             except Exception as e: log.warning(f"Emit failed: {e}")
 
 
+class WebSink:
+    """Delivers Api events to browsers: send() hands each event to the server loop, which fans it out
+    into one bounded queue per subscriber (oldest dropped when full), so a slow browser never blocks emit."""
+    def __init__(self, queue_size=256):
+        self._queue_size = queue_size
+        self._loop = None
+        self._subs = set()
+        self._seq = 0  # only touched on the loop thread
+
+    def bind(self, loop): self._loop = loop
+    def unbind(self): self._loop = None
+    def subscriber_count(self): return len(self._subs)
+
+    def subscribe(self):
+        q = asyncio.Queue(maxsize=self._queue_size)
+        self._subs.add(q)
+        return q
+
+    def unsubscribe(self, q): self._subs.discard(q)
+
+    def send(self, ev, data):
+        loop = self._loop
+        if loop is None or loop.is_closed(): return
+        try: payload = json.dumps({"ev": ev, "data": data})
+        except (TypeError, ValueError): return
+        with contextlib.suppress(RuntimeError):  # the loop closed between the check and the call
+            loop.call_soon_threadsafe(self._publish, payload)
+
+    def _publish(self, payload):
+        self._seq += 1
+        frame = f"id: {self._seq}\ndata: {payload}\n\n"
+        for q in tuple(self._subs):
+            if q.full(): q.get_nowait()
+            q.put_nowait(frame)
+
+
 class Api:
     def __init__(self):
         self.window = None; self.stop_event = threading.Event(); self.thread = None; self._activity_monitor = None
@@ -5026,13 +5064,42 @@ def _web_api_args(body, fn):
     except TypeError: return None
     return args
 
+def _web_lifespan(sink):
+    """Binds the sink to the server loop for the app's lifetime, so send() has somewhere to deliver."""
+    @contextlib.asynccontextmanager
+    async def lifespan(_app):
+        if sink: sink.bind(asyncio.get_running_loop())
+        try: yield
+        finally:
+            if sink: sink.unbind()
+    return lifespan
+
+def _add_events_route(app, sink, heartbeat):
+    """GET /events: the sink's frames as Server-Sent Events, with a comment line as heartbeat."""
+    from fastapi.responses import StreamingResponse
+
+    async def stream():
+        q = sink.subscribe()
+        try:
+            while True:
+                try: yield await asyncio.wait_for(q.get(), heartbeat)
+                except asyncio.TimeoutError: yield ": ping\n\n"
+        finally: sink.unsubscribe(q)  # runs when the client disconnects and the generator is cancelled
+
+    @app.get("/events")
+    async def events():
+        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
 def create_web_app(api, opts):
-    """FastAPI app: opts["html"] at /, a health check, and allow-listed Api calls; the docs endpoints are off."""
+    """FastAPI app: opts["html"] at /, a health check, allow-listed Api calls and, with opts["sink"],
+    the /events stream. The docs endpoints are off."""
     fastapi, _ = _import_web_stack()
     from fastapi.responses import HTMLResponse, Response
     from starlette.concurrency import run_in_threadpool
-    app = fastapi.FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    sink = opts.get("sink")
+    app = fastapi.FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=_web_lifespan(sink))
     html = opts["html"]
+    if sink: _add_events_route(app, sink, float(opts.get("heartbeat", 15)))
 
     @app.post("/api/{method}")
     async def call_api(method: str, request: fastapi.Request):
