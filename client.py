@@ -5007,6 +5007,49 @@ def render_web_html(template, opts):
     at = m.start() if m else len(html)
     return html[:at] + shim + html[at:]
 
+def _web_status(api):
+    """Coarse training state for /healthz: whether the training thread is alive."""
+    t = getattr(api, "thread", None)
+    return "running" if t is not None and t.is_alive() else "idle"
+
+def create_web_app(api, opts):
+    """FastAPI app serving opts["html"] at / and a health check; the docs endpoints are off."""
+    fastapi, _ = _import_web_stack()
+    from fastapi.responses import HTMLResponse
+    app = fastapi.FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    html = opts["html"]
+
+    @app.get("/", response_class=HTMLResponse)
+    def index():
+        return html
+
+    @app.get("/healthz")
+    def healthz():
+        return {"ok": True, "status": _web_status(api)}
+
+    return app
+
+class WebServer:
+    """uvicorn in a daemon thread. Off the main thread uvicorn leaves signal handling to the caller."""
+    def __init__(self, app, host, port):
+        _, uvicorn = _import_web_stack()
+        self.server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))
+        self.thread = threading.Thread(target=self.server.run, name="web-server", daemon=True)
+
+    def start(self, timeout=10.0):
+        """Start serving; return the bound socket address once listening."""
+        self.thread.start()
+        deadline = time.monotonic() + timeout
+        while not self.server.started:
+            if not self.thread.is_alive(): raise RuntimeError("web server failed to start")
+            if time.monotonic() > deadline: raise TimeoutError("web server did not start in time")
+            time.sleep(0.02)
+        return self.server.servers[0].sockets[0].getsockname()
+
+    def stop(self, timeout=10.0):
+        self.server.should_exit = True
+        if self.thread.is_alive(): self.thread.join(timeout)
+
 def parse_args():
     p = argparse.ArgumentParser(prog="client.py", description="CrowdGPT client. Runs GUI by default; use --headless for SSH/servers.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--headless", action="store_true", help="no window; train in the terminal")

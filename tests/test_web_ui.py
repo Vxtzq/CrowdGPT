@@ -5,6 +5,7 @@ Reuses the stubbed client import from test_coordinator_rejected: no torch, no GU
     python -m unittest discover -s tests -v
 """
 import argparse
+import importlib.util
 import os
 import shutil
 import stat
@@ -272,6 +273,66 @@ class ImportWebStack(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         with self.assertRaisesRegex(RuntimeError, "pip install fastapi uvicorn"):
             mod._import_web_stack()
+
+
+_HAVE_WEB = all(importlib.util.find_spec(m) for m in ("fastapi", "httpx", "uvicorn"))
+
+
+class _FakeApi:
+    thread = None
+
+
+class _Alive:
+    def is_alive(self): return True
+
+
+@unittest.skipUnless(_HAVE_WEB, "needs fastapi, uvicorn and httpx")
+class WebApp(unittest.TestCase):
+    def _client(self, api=None):
+        from fastapi.testclient import TestClient
+        app = client.create_web_app(api or _FakeApi(), {"html": "<html>page</html>"})
+        return TestClient(app)
+
+    def test_root_serves_page(self):
+        r = self._client().get("/")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("text/html", r.headers["content-type"])
+        self.assertEqual(r.text, "<html>page</html>")
+
+    def test_healthz_idle(self):
+        r = self._client().get("/healthz")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {"ok": True, "status": "idle"})
+
+    def test_healthz_running(self):
+        api = _FakeApi(); api.thread = _Alive()
+        self.assertEqual(self._client(api).get("/healthz").json(), {"ok": True, "status": "running"})
+
+    def test_unknown_and_docs_are_404(self):
+        c = self._client()
+        for path in ("/nope", "/docs", "/redoc", "/openapi.json"):
+            with self.subTest(path=path):
+                self.assertEqual(c.get(path).status_code, 404)
+
+
+@unittest.skipUnless(_HAVE_WEB, "needs fastapi, uvicorn and httpx")
+class WebServerThread(unittest.TestCase):
+    def test_start_fetch_stop(self):
+        import json
+        import time
+        import urllib.request
+        app = client.create_web_app(_FakeApi(), {"html": "x"})
+        srv = client.WebServer(app, "127.0.0.1", 0)
+        host, port = srv.start(timeout=5)[:2]
+        self.addCleanup(srv.stop)
+        self.assertEqual(host, "127.0.0.1")
+        self.assertGreater(port, 0)
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=5) as r:
+            self.assertEqual(json.loads(r.read()), {"ok": True, "status": "idle"})
+        t0 = time.monotonic()
+        srv.stop(timeout=5)
+        self.assertLess(time.monotonic() - t0, 5)
+        self.assertFalse(srv.thread.is_alive())
 
 
 if __name__ == "__main__":
