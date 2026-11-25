@@ -17,6 +17,7 @@ import re
 import secrets
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import NamedTuple, Optional
 
@@ -162,21 +163,31 @@ def _web_lifespan(sink):
             if sink: sink.unbind()
     return lifespan
 
+def _last_event_id(raw):
+    """The Last-Event-ID header as an int, or None when it's missing or not a number."""
+    try: return int(raw)
+    except (TypeError, ValueError): return None
+
 def _add_events_route(app, sink, heartbeat):
-    """GET /events: the sink's frames as Server-Sent Events, with a comment line as heartbeat."""
+    """GET /events: the sink's frames as Server-Sent Events, with a comment line as heartbeat. A new
+    stream starts with the sink's backlog for the browser's Last-Event-ID."""
+    from fastapi import Request
     from fastapi.responses import StreamingResponse
 
-    async def stream():
+    async def stream(last_id):
         q = sink.subscribe()
+        backlog = sink.backlog(last_id)  # no await since subscribe: nothing published in between
         try:
+            for frame in backlog: yield frame
             while True:
                 try: yield await asyncio.wait_for(q.get(), heartbeat)
                 except asyncio.TimeoutError: yield ": ping\n\n"
         finally: sink.unsubscribe(q)  # runs when the client disconnects and the generator is cancelled
 
     @app.get("/events")
-    async def events():
-        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+    async def events(request: Request):
+        last_id = _last_event_id(request.headers.get("last-event-id"))
+        return StreamingResponse(stream(last_id), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 def create_web_app(api, opts):
     """FastAPI app: opts["html"] at /, a health check, allow-listed Api calls and, with opts["sink"],
@@ -230,14 +241,30 @@ class WebServer:
         if self.thread.is_alive(): self.thread.join(timeout)
 
 
+# Event -> state group. backlog() replays the latest frame per group; events in one group overwrite
+# each other (a logout replaces the login). Events not listed, like login_error, aren't replayed.
+WEB_STATE_GROUPS = {
+    "login_success": "auth", "logged_out": "auth",
+    "started": "train", "stopped": "train", "start_refused": "train",
+    "overlay_show": "overlay", "overlay_hide": "overlay", "overlay_progress": "overlay_progress",
+    "status": "status", "stats": "stats", "cal_stats": "stats", "model_preview": "preview",
+    "backends": "backends", "vram": "vram", "gpus": "gpus", "meta": "meta",
+}
+
 class WebSink:
     """Delivers Api events to browsers: send() hands each event to the server loop, which fans it out
-    into one bounded queue per subscriber (oldest dropped when full), so a slow browser never blocks emit."""
-    def __init__(self, queue_size=256):
+    into one bounded queue per subscriber (oldest dropped when full), so a slow browser never blocks emit.
+
+    It also keeps the latest frame per state group and a ring of log frames, so backlog() can bring a
+    new or reconnecting browser up to date. All of that state is only touched on the loop thread."""
+    def __init__(self, queue_size=256, log_size=500):
         self._queue_size = queue_size
         self._loop = None
         self._subs = set()
-        self._seq = 0  # only touched on the loop thread
+        self._seq = 0
+        self._state = {}                        # group -> (seq, frame)
+        self._log = deque(maxlen=log_size)      # (seq, frame)
+        self._evicted = 0                       # highest seq that has left the log ring
 
     def bind(self, loop): self._loop = loop
     def unbind(self): self._loop = None
@@ -250,17 +277,32 @@ class WebSink:
 
     def unsubscribe(self, q): self._subs.discard(q)
 
+    def backlog(self, last_id=None):
+        """Frames a browser that has seen up to last_id is missing, in seq order. The full snapshot
+        (state plus log tail) when last_id is None, already out of the log ring, or ahead of the sink."""
+        if last_id is None or last_id < self._evicted or last_id > self._seq: last_id = 0
+        kept = [*self._state.values(), *self._log]
+        return [frame for seq, frame in sorted(kept) if seq > last_id]
+
     def send(self, ev, data):
         loop = self._loop
         if loop is None or loop.is_closed(): return
         try: payload = json.dumps({"ev": ev, "data": data})
         except (TypeError, ValueError): return
         with contextlib.suppress(RuntimeError):  # the loop closed between the check and the call
-            loop.call_soon_threadsafe(self._publish, payload)
+            loop.call_soon_threadsafe(self._publish, ev, payload)
 
-    def _publish(self, payload):
+    def _publish(self, ev, payload):
         self._seq += 1
         frame = f"id: {self._seq}\ndata: {payload}\n\n"
+        self._remember(ev, frame)
         for q in tuple(self._subs):
             if q.full(): q.get_nowait()
             q.put_nowait(frame)
+
+    def _remember(self, ev, frame):
+        if ev == "log":
+            if len(self._log) == self._log.maxlen: self._evicted = self._log[0][0]
+            self._log.append((self._seq, frame))
+        elif ev in WEB_STATE_GROUPS:
+            self._state[WEB_STATE_GROUPS[ev]] = (self._seq, frame)

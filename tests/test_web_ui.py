@@ -515,6 +515,84 @@ class WebSinkFanOut(unittest.TestCase):
         self.assertEqual(self.lt.run(_drain(q)), [])
 
 
+async def _backlog(sink, last_id): return sink.backlog(last_id)
+
+
+class WebSinkReplay(unittest.TestCase):
+    """Late joiners get the state snapshot and log tail; reconnects get only what they missed."""
+    def setUp(self):
+        self.lt = _LoopThread()
+        self.addCleanup(self.lt.close)
+
+    def _sink(self, **kw):
+        sink = cw.WebSink(**kw)
+        sink.bind(self.lt.loop)
+        return sink
+
+    def _replay(self, sink, last_id=None):
+        return _frames(self.lt.run(_backlog(sink, last_id)))
+
+    def test_late_join_gets_state_and_log_tail_in_order(self):
+        sink = self._sink()
+        sink.send("login_success", {"username": "alice"})   # 1
+        sink.send("log", "a")                                # 2
+        sink.send("status", "training")                      # 3
+        sink.send("login_error", {"code": "network"})        # 4: transient, not replayed
+        sink.send("stats", {"loss": 2.0})                    # 5
+        sink.send("log", "b")                                # 6
+        self.assertEqual(self._replay(sink), [
+            (1, {"ev": "login_success", "data": {"username": "alice"}}),
+            (2, {"ev": "log", "data": "a"}),
+            (3, {"ev": "status", "data": "training"}),
+            (5, {"ev": "stats", "data": {"loss": 2.0}}),
+            (6, {"ev": "log", "data": "b"}),
+        ])
+
+    def test_latest_event_per_state_group(self):
+        sink = self._sink()
+        for ev, data in [("status", "idle"), ("login_success", {"username": "a"}), ("stats", {"loss": 3}),
+                         ("overlay_show", {"title": "x"}), ("started", {}), ("status", "training"),
+                         ("cal_stats", {"loss": 2}), ("logged_out", {}), ("overlay_hide", {}), ("stopped", {})]:
+            sink.send(ev, data)
+        self.assertEqual([p["ev"] for _, p in self._replay(sink)],
+                         ["status", "cal_stats", "logged_out", "overlay_hide", "stopped"])
+
+    def test_resume_gets_only_what_was_missed(self):
+        sink = self._sink()
+        sink.send("status", "training")      # 1
+        sink.send("log", "seen")              # 2
+        sink.send("stats", {"loss": 3})       # 3: the browser saw up to here
+        sink.send("log", "missed")            # 4
+        sink.send("stats", {"loss": 2})       # 5
+        self.assertEqual(self._replay(sink, 3), [
+            (4, {"ev": "log", "data": "missed"}),
+            (5, {"ev": "stats", "data": {"loss": 2}}),
+        ])
+        self.assertEqual(self._replay(sink, 5), [])
+
+    def test_resume_past_ring_buffer_gets_snapshot(self):
+        sink = self._sink(log_size=3)
+        sink.send("status", "training")                  # 1
+        for i in range(6): sink.send("log", i)            # 2..7; 2..4 leave the ring
+        snap = [(1, {"ev": "status", "data": "training"})] + [(n, {"ev": "log", "data": n - 2}) for n in (5, 6, 7)]
+        self.assertEqual(self._replay(sink, 2), snap)    # 3 and 4 are gone
+        self.assertEqual(self._replay(sink, 4), snap[1:])  # nothing after 4 was lost
+
+    def test_unknown_last_id_gets_snapshot(self):
+        sink = self._sink()
+        sink.send("status", "training")
+        sink.send("log", "x")
+        snap = self._replay(sink)
+        self.assertEqual(self._replay(sink, 99), snap)   # ahead of the sink: a server restart
+        self.assertEqual(len(snap), 2)
+
+    def test_log_ring_holds_500_lines(self):
+        sink = self._sink()
+        for i in range(600): sink.send("log", i)
+        tail = self._replay(sink)
+        self.assertEqual([p["data"] for _, p in tail], list(range(100, 600)))
+
+
 @unittest.skipUnless(_HAVE_WEB, "needs fastapi, uvicorn and httpx")
 class WebEventsStream(unittest.TestCase):
     def _wait(self, cond, timeout=5):
@@ -547,6 +625,40 @@ class WebEventsStream(unittest.TestCase):
         self.assertEqual(json.loads(lines[1].removeprefix("data: ")), {"ev": "status", "data": "training"})
         r.close()
         self._wait(lambda: sink.subscriber_count() == 0)
+
+    def _read_frames(self, r, n, timeout=5):
+        """The next n event frames; heartbeats keep the socket alive, so the deadline is ours."""
+        import json
+        import time
+        deadline = time.monotonic() + timeout
+        out, cur = [], {}
+        while len(out) < n:
+            if time.monotonic() > deadline: self.fail(f"got {out} before the deadline, wanted {n} frames")
+            line = r.readline().decode().rstrip("\n")
+            if line.startswith(":"): continue
+            if line == "":
+                if cur: out.append((int(cur["id"]), json.loads(cur["data"]))); cur = {}
+                continue
+            k, v = line.split(": ", 1); cur[k] = v
+        return out
+
+    def test_stream_replays_from_last_event_id(self):
+        import urllib.request
+        sink = cw.WebSink()
+        app = cw.create_web_app(_FakeApi(), {"html": "x", "sink": sink, "heartbeat": 0.1})
+        srv = cw.WebServer(app, "127.0.0.1", 0)
+        port = srv.start(timeout=5)[1]
+        self.addCleanup(srv.stop)
+        sink.send("status", "training")   # 1
+        sink.send("log", "seen")           # 2
+        sink.send("log", "missed")         # 3
+        url = f"http://127.0.0.1:{port}/events"
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"Last-Event-ID": "2"}), timeout=5) as r:
+            self.assertEqual(self._read_frames(r, 1), [(3, {"ev": "log", "data": "missed"})])
+            sink.send("log", "live")       # 4
+            self.assertEqual(self._read_frames(r, 1), [(4, {"ev": "log", "data": "live"})])
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"Last-Event-ID": "junk"}), timeout=5) as r:
+            self.assertEqual([i for i, _ in self._read_frames(r, 4)], [1, 2, 3, 4])
 
 
 if __name__ == "__main__":
