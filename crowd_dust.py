@@ -87,19 +87,24 @@ class _Perturb:
         return False
 
 
-def _draw(layers, rows: int, seq: int, *, cfg: DustConfig, step: int, draw: int, device, dtype):
+def _draw(layers, rows: int, seq: int, *, cfg: DustConfig, step: int, draw: int):
     noise = {}
     for name, layer in layers.items():
         gen = torch.Generator(device="cpu").manual_seed(derive_seed(cfg.seed, step, draw, name))
+        # Each layer's own device: the real model parks some layers on CPU.
         noise[name] = torch.randn((rows, seq, layer.out_features), generator=gen).to(
-            device=device, dtype=dtype
+            device=layer.weight.device, dtype=layer.weight.dtype
         )
     return noise
 
 
-def dust_step(model, x, y, *, cfg: DustConfig = DustConfig(), step: int = 0, loss_fn=None) -> float:
-    """Fill ``.grad`` on every parameter from a population of perturbation draws.
+def dust_step(model, x, y, *, cfg: DustConfig = DustConfig(), step: int = 0, loss_fn=None,
+              loss_scale: float = 1.0) -> float:
+    """Add a perturbation estimate, times ``loss_scale``, to each Linear's ``.grad``.
 
+    Grads are accumulated like ``loss.backward()`` so gradient accumulation works, and
+    only Linear weights and biases are touched: other parameters (the sparse Engram
+    table under SparseAdam) keep ``grad=None`` instead of getting a dense zero grad.
     Returns the mean loss of the clean forward, for logging. ``loss_fn(logits, y)``
     defaults to cross-entropy over the last two dims flattened.
     """
@@ -109,23 +114,18 @@ def dust_step(model, x, y, *, cfg: DustConfig = DustConfig(), step: int = 0, los
     loss_fn = loss_fn or (lambda logits, tgt: F.cross_entropy(
         logits[:, :-1].float().reshape(-1, logits.shape[-1]), tgt[:, :-1].reshape(-1)))
     rows, seq = x.shape[0], x.shape[1]
-    device = next(model.parameters()).device
-    dtype = next(model.parameters()).dtype
-
-    for p in model.parameters():
-        p.grad = torch.zeros_like(p)
 
     clean = 0.0
     for start in range(0, cfg.population, cfg.chunk):
         for draw in range(start, min(start + cfg.chunk, cfg.population)):
-            noise = _draw(layers, rows, seq, cfg=cfg, step=step, draw=draw, device=device, dtype=dtype)
+            noise = _draw(layers, rows, seq, cfg=cfg, step=step, draw=draw)
             with torch.no_grad():
                 with _Perturb(layers, noise, +1.0) as plus:
                     loss_plus = float(loss_fn(model(x), y))
                 plus_inputs = plus.inputs
                 with _Perturb(layers, noise, -1.0):
                     loss_minus = float(loss_fn(model(x), y))
-            coef = (loss_plus - loss_minus) / (2.0 * cfg.sigma * cfg.population)
+            coef = loss_scale * (loss_plus - loss_minus) / (2.0 * cfg.sigma * cfg.population)
             for name, layer in layers.items():
                 weight = layer.weight
                 inp = plus_inputs.get(name)
@@ -147,7 +147,9 @@ def dust_step(model, x, y, *, cfg: DustConfig = DustConfig(), step: int = 0, los
                 if weight.grad is None:
                     weight.grad = torch.zeros_like(weight)
                 weight.grad += (coef * contrib).to(dtype=weight.dtype)
-                if layer.bias is not None and layer.bias.grad is not None:
+                if layer.bias is not None:
+                    if layer.bias.grad is None:
+                        layer.bias.grad = torch.zeros_like(layer.bias)
                     layer.bias.grad += (coef * n.sum(dim=(0, 1))).to(dtype=layer.bias.dtype)
             if draw == start:
                 clean = 0.5 * (loss_plus + loss_minus)
