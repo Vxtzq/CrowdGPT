@@ -4972,6 +4972,32 @@ def web_url(sockname):
     host, port = sockname[0], sockname[1]
     return f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}"
 
+def render_client_html(template):
+    """Fill client.html's logo and version placeholders."""
+    return template.replace("__LOGO__", LOGO_URI_LIGHT).replace("__LOGO_DARK__", LOGO_URI_DARK).replace("__VERSION__", CLIENT_VERSION)
+
+# Stands in for pywebview in a browser: api calls POST to /api/<name>, events arrive over SSE.
+# Both the stream and pywebviewready wait for DOMContentLoaded so the page's handlers exist.
+_WEB_SHIM = (
+    "<script>window.__CROWD_WEB__=%s;(function(){"
+    "var api=new Proxy({},{get:function(_,n){if(typeof n!=='string'||n==='then')return undefined;"
+    "return function(){return fetch('/api/'+encodeURIComponent(n),{method:'POST',credentials:'same-origin',"
+    "headers:{'Content-Type':'application/json'},body:JSON.stringify(Array.prototype.slice.call(arguments))})}}});"
+    "window.pywebview={api:api};"
+    "document.addEventListener('DOMContentLoaded',function(){"
+    "var es=new EventSource('/events');es.onmessage=function(m){var p;try{p=JSON.parse(m.data)}catch(e){return}"
+    "if(window.handleEvent)window.handleEvent(p.ev,p.data)};"
+    "window.dispatchEvent(new Event('pywebviewready'))})})();</script>"
+)
+
+def render_web_html(template, opts):
+    """client.html for a browser: placeholders filled, bridge shim before the page's first script."""
+    html = render_client_html(template)
+    shim = _WEB_SHIM % json.dumps(opts).replace("</", "<\\/")
+    m = re.search(r"<script", html, re.IGNORECASE)
+    at = m.start() if m else len(html)
+    return html[:at] + shim + html[at:]
+
 def parse_args():
     p = argparse.ArgumentParser(prog="client.py", description="CrowdGPT client. Runs GUI by default; use --headless for SSH/servers.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--headless", action="store_true", help="no window; train in the terminal")
@@ -5257,7 +5283,7 @@ def run_gui(args):
     except Exception as e:
         log.error(f"Could not load/download {html_path}: {e}"); return 4
 
-    html_out = (html_template.replace("__LOGO__", LOGO_URI_LIGHT).replace("__LOGO_DARK__", LOGO_URI_DARK).replace("__VERSION__", CLIENT_VERSION))
+    html_out = render_client_html(html_template)
     window = _create_window_safe("CrowdGPT", html_out, kwargs); api.window = window
     api._add_sink(PywebviewSink(window, api._ui_ready))
 

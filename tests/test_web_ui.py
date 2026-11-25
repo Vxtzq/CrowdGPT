@@ -200,5 +200,55 @@ class WebUrl(unittest.TestCase):
                 self.assertEqual(client.web_url(sockname), want)
 
 
+_TEMPLATE = (Path(__file__).resolve().parent.parent / "client.html").read_text(encoding="utf-8")
+_SHIM_MARK = "window.__CROWD_WEB__"
+
+
+class RenderClientHtml(unittest.TestCase):
+    def test_placeholders_replaced(self):
+        out = client.render_client_html(_TEMPLATE)
+        for ph in ("__LOGO__", "__LOGO_DARK__", "__VERSION__"):
+            self.assertNotIn(ph, out)
+
+    def test_matches_previous_gui_output(self):
+        want = (_TEMPLATE.replace("__LOGO__", client.LOGO_URI_LIGHT)
+                .replace("__LOGO_DARK__", client.LOGO_URI_DARK)
+                .replace("__VERSION__", client.CLIENT_VERSION))
+        self.assertEqual(client.render_client_html(_TEMPLATE), want)
+
+    def test_no_shim_in_gui_output(self):
+        self.assertNotIn(_SHIM_MARK, client.render_client_html(_TEMPLATE))
+
+
+class RenderWebHtml(unittest.TestCase):
+    def test_placeholders_replaced(self):
+        out = client.render_web_html(_TEMPLATE, {})
+        for ph in ("__LOGO__", "__LOGO_DARK__", "__VERSION__"):
+            self.assertNotIn(ph, out)
+
+    def test_shim_once_before_first_page_script(self):
+        out = client.render_web_html(_TEMPLATE, {})
+        self.assertEqual(out.count(_SHIM_MARK), 1)
+        page_script = out.lower().index("<script", out.index(_SHIM_MARK))
+        self.assertLess(out.index(_SHIM_MARK), page_script)
+        self.assertEqual(out.lower().count("<script"), _TEMPLATE.lower().count("<script") + 1)
+
+    def test_shim_wires_bridge(self):
+        out = client.render_web_html(_TEMPLATE, {})
+        for needle in ("Proxy", "'/api/'", "EventSource('/events')", "handleEvent", "pywebviewready"):
+            self.assertIn(needle, out)
+
+    def test_rest_of_page_unchanged(self):
+        out = client.render_web_html(_TEMPLATE, {})
+        start = out.index("<script")
+        end = out.index("</script>", start) + len("</script>")
+        self.assertEqual(out[:start] + out[end:], client.render_client_html(_TEMPLATE))
+
+    def test_opts_cannot_close_script(self):
+        out = client.render_web_html(_TEMPLATE, {"x": "</script><b>"})
+        self.assertNotIn("</script><b>", out)
+        self.assertIn(_SHIM_MARK, out)
+
+
 if __name__ == "__main__":
     unittest.main()
