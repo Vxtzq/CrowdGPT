@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v3.5
+CrowdGPT GUI Client v4.0
 v3.4 changes
   - Auto-pause: VRAM is measured as growth since start (the CUDA context and desktop were counted as "another app"), 4 samples of debounce
   - Stop now fully releases VRAM (the degradation ladder kept the model alive after Stop)
@@ -210,7 +210,7 @@ class TimingRecorder:
         self.phase("total", time.monotonic() - self.started, ok=ok, **fields)
 
 
-CLIENT_VERSION = "3.9"
+CLIENT_VERSION = "4.0"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
