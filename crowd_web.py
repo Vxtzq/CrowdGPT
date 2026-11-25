@@ -9,6 +9,7 @@ FastAPI and uvicorn are imported on demand too, so importing this module needs o
 """
 import asyncio
 import contextlib
+import hmac
 import inspect
 import ipaddress
 import json
@@ -19,6 +20,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
+from urllib.parse import parse_qs
 from typing import NamedTuple, Optional
 
 
@@ -189,9 +191,58 @@ def _add_events_route(app, sink, heartbeat):
         last_id = _last_event_id(request.headers.get("last-event-id"))
         return StreamingResponse(stream(last_id), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
+WEB_AUTH_COOKIE = "crowdgpt_web_token"
+_TOKEN_PAGE = (b"<!doctype html><meta charset=utf-8><title>CrowdGPT</title>"
+               b"<form method=get action=/><p>Web UI token: <input name=\"token\" type=password autofocus>"
+               b" <button>Open</button></p></form>")
+
+def _token_matches(candidate, token):
+    """Constant-time comparison; an empty or non-ASCII candidate never matches."""
+    if not candidate: return False
+    try: return hmac.compare_digest(candidate.encode("ascii"), token.encode("ascii"))
+    except UnicodeEncodeError: return False
+
+def _cookie_value(raw, name):
+    """One cookie's value from a raw Cookie header, or None."""
+    for part in raw.split(";"):
+        k, _, v = part.strip().partition("=")
+        if k == name: return v
+    return None
+
+class _TokenGate:
+    """ASGI middleware: every HTTP request but /healthz needs the token as a Bearer header, the cookie
+    or ?token= (which sets the cookie and redirects). Others get the token page on / or a 401."""
+    def __init__(self, app, token):
+        self.app, self.token = app, token
+
+    def _authorized(self, headers):
+        """A matching Bearer header or cookie."""
+        scheme, _, cred = headers.get("authorization", "").partition(" ")
+        if scheme.lower() == "bearer" and _token_matches(cred.strip(), self.token): return True
+        return _token_matches(_cookie_value(headers.get("cookie", ""), WEB_AUTH_COOKIE), self.token)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["path"] == "/healthz":
+            return await self.app(scope, receive, send)
+        if self._authorized({k.decode("latin-1"): v.decode("latin-1") for k, v in scope["headers"]}):
+            return await self.app(scope, receive, send)
+        query = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+        if scope["method"] == "GET" and _token_matches((query.get("token") or [""])[0], self.token):
+            cookie = f"{WEB_AUTH_COOKIE}={self.token}; HttpOnly; SameSite=Strict; Path=/"
+            return await _respond(send, 303, [(b"location", scope["path"].encode()), (b"set-cookie", cookie.encode())])
+        if scope["path"] == "/":
+            return await _respond(send, 401, [(b"content-type", b"text/html; charset=utf-8")], _TOKEN_PAGE)
+        await _respond(send, 401)
+
+async def _respond(send, status, headers=(), body=b""):
+    await send({"type": "http.response.start", "status": status,
+                "headers": [*headers, (b"content-length", str(len(body)).encode())]})
+    await send({"type": "http.response.body", "body": body})
+
 def create_web_app(api, opts):
     """FastAPI app: opts["html"] at /, a health check, allow-listed Api calls and, with opts["sink"],
-    the /events stream. The docs endpoints are off."""
+    the /events stream. The docs endpoints are off. With opts["token"], every route but /healthz
+    needs it (see _TokenGate)."""
     fastapi, _ = _import_web_stack()
     from fastapi.responses import HTMLResponse, Response
     from starlette.concurrency import run_in_threadpool
@@ -199,6 +250,7 @@ def create_web_app(api, opts):
     app = fastapi.FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=_web_lifespan(sink))
     html = opts["html"]
     if sink: _add_events_route(app, sink, float(opts.get("heartbeat", 15)))
+    if opts.get("token"): app.add_middleware(_TokenGate, token=opts["token"])
 
     @app.post("/api/{method}")
     async def call_api(method: str, request: fastapi.Request):

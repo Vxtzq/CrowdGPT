@@ -411,6 +411,86 @@ class WebApiDispatch(unittest.TestCase):
         self.assertEqual(self.api.calls, [])
 
 
+_TOKEN = "t" * 20 + "-good"
+
+
+@unittest.skipUnless(_HAVE_WEB, "needs fastapi, uvicorn and httpx")
+class WebTokenAuth(unittest.TestCase):
+    def _client(self, token=_TOKEN):
+        from fastapi.testclient import TestClient
+        self.api = _RecordingApi()
+        opts = {"html": "<html>page</html>", "sink": cw.WebSink(), "token": token}
+        return TestClient(cw.create_web_app(self.api, opts))
+
+    def test_no_auth_needed_leaves_routes_open(self):
+        c = self._client(token=None)
+        self.assertEqual(c.get("/").text, "<html>page</html>")
+        self.assertEqual(c.post("/api/stop", json=[]).status_code, 204)
+
+    def test_good_query_token_sets_cookie_and_redirects(self):
+        c = self._client()
+        r = c.get("/", params={"token": _TOKEN}, follow_redirects=False)
+        self.assertEqual(r.status_code, 303)
+        self.assertEqual(r.headers["location"], "/")
+        cookie = r.headers["set-cookie"]
+        self.assertIn(f"crowdgpt_web_token={_TOKEN}", cookie)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+        self.assertIn("Path=/", cookie)
+        self.assertEqual(c.get("/").text, "<html>page</html>")  # the cookie now carries the auth
+
+    def test_bad_query_token_gets_token_page_and_no_cookie(self):
+        r = self._client().get("/", params={"token": "wrong"}, follow_redirects=False)
+        self.assertEqual(r.status_code, 401)
+        self.assertNotIn("set-cookie", r.headers)
+        self.assertIn('name="token"', r.text)
+
+    def test_cookie_is_accepted(self):
+        c = self._client()
+        c.cookies.set("crowdgpt_web_token", _TOKEN)
+        self.assertEqual(c.get("/").text, "<html>page</html>")
+        self.assertEqual(c.post("/api/stop", json=[]).status_code, 204)
+
+    def test_bad_cookie_is_rejected(self):
+        c = self._client()
+        c.cookies.set("crowdgpt_web_token", "wrong")
+        self.assertEqual(c.post("/api/stop", json=[]).status_code, 401)
+        self.assertEqual(self.api.calls, [])
+
+    def test_bearer_is_accepted(self):
+        c = self._client()
+        r = c.post("/api/stop", json=[], headers={"Authorization": f"Bearer {_TOKEN}"})
+        self.assertEqual(r.status_code, 204)
+        self.assertEqual(self.api.calls, [("stop", ())])
+
+    def test_bad_or_empty_bearer_is_rejected(self):
+        c = self._client()
+        for value in ("Bearer wrong", "Bearer ", "Basic " + _TOKEN, _TOKEN):
+            with self.subTest(value=value):
+                r = c.post("/api/stop", json=[], headers={"Authorization": value})
+                self.assertEqual(r.status_code, 401)
+        self.assertEqual(self.api.calls, [])
+
+    def test_missing_token_on_each_route(self):
+        c = self._client()
+        page = c.get("/")
+        self.assertEqual(page.status_code, 401)
+        self.assertIn("text/html", page.headers["content-type"])
+        self.assertIn('name="token"', page.text)
+        self.assertNotIn("page</html>", page.text)
+        for method, path in (("POST", "/api/stop"), ("GET", "/events"), ("GET", "/nope")):
+            with self.subTest(path=path):
+                r = c.request(method, path, json=[] if method == "POST" else None)
+                self.assertEqual(r.status_code, 401)
+                self.assertNotIn('name="token"', r.text)
+        self.assertEqual(self.api.calls, [])
+
+    def test_healthz_stays_open_and_minimal(self):
+        r = self._client().get("/healthz")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {"ok": True, "status": "idle"})
+
+
 @unittest.skipUnless(_HAVE_WEB, "needs fastapi, uvicorn and httpx")
 class WebServerThread(unittest.TestCase):
     def test_start_fetch_stop(self):
