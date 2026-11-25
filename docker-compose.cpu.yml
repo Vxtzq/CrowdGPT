@@ -6,6 +6,7 @@ services:
         BASE_IMAGE: "${BASE_IMAGE:-python:3.11-slim-bookworm}"
         BACKEND: cpu
         TORCH_INDEX: "https://download.pytorch.org/whl/cpu"
+        TORCH_SPEC: "torch==2.6.0"
         INSTALL_BITSANDBYTES: "0"
     environment:
       OMP_NUM_THREADS:
