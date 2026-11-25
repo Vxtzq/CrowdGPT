@@ -24,16 +24,6 @@ if [ -z "${BASH_VERSION:-}" ]; then
     exit 1
 fi
 
-if grep -q $'\r' "$0" 2>/dev/null; then
-    echo "WARNING: $0 has Windows (CRLF) line endings — fixing..."
-    sed -i 's/\r$//' "$0" 2>/dev/null || {
-        echo "ERROR: Could not auto-fix CRLF. Run: sed -i 's/\\r$//' $0"
-        exit 1
-    }
-    echo "Fixed. Re-executing..."
-    exec bash "$0" "$@"
-fi
-
 set -Eeuo pipefail
 
 REPO_URL="https://github.com/Vxtzq/CrowdGPT.git"
@@ -108,6 +98,11 @@ echo "============================================================"
 echo
 
 # ── 1. git ──
+# On a Mac without Command Line Tools /usr/bin/git is only a stub that opens the install dialog.
+if [[ "$(uname -s)" == "Darwin" ]] && ! xcode-select -p >/dev/null 2>&1; then
+    xcode-select --install >/dev/null 2>&1 || true  # the dialog may already be open
+    die "Install the Xcode Command Line Tools (dialog opened), then rerun"
+fi
 if ! command -v git >/dev/null 2>&1; then
     log "Installing git..."
     if [[ "$(uname -s)" == "Darwin" ]]; then

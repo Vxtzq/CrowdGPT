@@ -1534,6 +1534,13 @@ def _doctor_update_probe():
         result["error"] = f"{type(exc).__name__}: {exc}"
     return result
 
+# certifi does not read the macOS keychain or Windows store, so a TLS-inspecting
+# corporate proxy breaks every HTTPS call until the user points requests at its CA.
+_TLS_HINT = ("Certificate check failed; a TLS-inspecting proxy (for example a corporate network) "
+             "is likely. Set REQUESTS_CA_BUNDLE and SSL_CERT_FILE to a PEM bundle that includes "
+             "its root CA, then rerun")
+
+
 def _doctor_http_probe(url, headers=None, timeout=3.0):
     started = time.time()
     try:
@@ -1545,6 +1552,9 @@ def _doctor_http_probe(url, headers=None, timeout=3.0):
             "ms": int((time.time() - started) * 1000),
             "error": None,
         }
+    except requests.exceptions.SSLError as exc:
+        return {"ok": False, "status": None, "ms": int((time.time() - started) * 1000),
+                "error": f"{type(exc).__name__}: {exc}. {_TLS_HINT}", "tls": True}
     except Exception as exc:
         return {"ok": False, "status": None, "ms": int((time.time() - started) * 1000), "error": f"{type(exc).__name__}: {exc}"}
 
@@ -1742,7 +1752,7 @@ def _doctor_collect_report(args):
             _doctor_add(checks, "Updates", "client.html", "ok", "matches the signed release manifest")
 
     hf = _doctor_http_probe(f"https://huggingface.co/api/models/{HF_MODEL_REPO_ID}")
-    _doctor_add(checks, "Network", "hugging-face", "ok" if hf["ok"] else "warn",
+    _doctor_add(checks, "Network", "hugging-face", "ok" if hf["ok"] else ("fail" if hf.get("tls") else "warn"),
                 f"HTTP {hf['status']} in {hf['ms']} ms" if hf["status"] else hf["error"])
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     coordinator = _doctor_http_probe(args.server.rstrip("/") + "/fl/round_status", headers, timeout=5.0)
@@ -1752,7 +1762,8 @@ def _doctor_collect_report(args):
         coordinator_detail = f"reachable, but HTTP {coordinator['status']}; saved session is not authorized"
     else:
         coordinator_detail = f"HTTP {coordinator['status']} in {coordinator['ms']} ms" if coordinator["status"] else coordinator["error"]
-    _doctor_add(checks, "Network", "coordinator", "ok" if coordinator["ok"] else "warn", coordinator_detail)
+    _doctor_add(checks, "Network", "coordinator",
+                "ok" if coordinator["ok"] else ("fail" if coordinator.get("tls") else "warn"), coordinator_detail)
 
     self_test = _doctor_self_test(device, selected.upper())
     _doctor_add(checks, "Self-test", "matmul", self_test["status"], self_test["detail"])

@@ -47,6 +47,7 @@ def _install_stubs():
     _stub("numpy")
     exc = types.ModuleType("requests.exceptions")
     exc.ChunkedEncodingError = type("ChunkedEncodingError", (Exception,), {})
+    exc.SSLError = type("SSLError", (Exception,), {})
     sys.modules["requests.exceptions"] = exc
     _stub("requests", exceptions=exc)
     sys.modules["webview"] = None  # force the "no GUI toolkit" branch
