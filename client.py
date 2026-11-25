@@ -4088,6 +4088,7 @@ class Api:
         except Exception: pass
 
     _sinks = ()  # class default: an Api built with __new__ (tests) has no sinks
+    max_rounds = 0  # the web entry point sets it from --rounds; 0 = no cap
 
     def _add_sink(self, sink):
         self._sinks = [*self._sinks, sink]  # copy-on-write: emit() iterates a stable snapshot
@@ -4237,6 +4238,10 @@ class Api:
         self.emit('logged_out', {})
     def _check_updates_between_rounds(self): _check_updates_between_rounds(self.emit)
 
+    def _round_cap_reached(self, round_count):
+        if not self.max_rounds or round_count < self.max_rounds: return False
+        self.emit('log', f"Reached {self.max_rounds} rounds."); return True
+
     def _rs(self):
         try: _do_backend_setup(self.selected_backend, self.vram_gb, self.emit)
         except Exception as e:
@@ -4269,6 +4274,7 @@ class Api:
                 fails += 1
             else: fails = 0
             if self.stop_event.is_set(): break
+            if self._round_cap_reached(round_count): break
             wait_s = 10 if not fails else min(10 * 2 ** (fails - 1), 300)     # back off on repeated failures: each retry re-downloads the weights
             self._check_updates_between_rounds(); self.emit('status', 'waiting')
             self.emit('log', f"✅ Round complete. Auto-relaunching next round in {wait_s}s..." if not fails

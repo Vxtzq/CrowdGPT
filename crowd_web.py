@@ -240,6 +240,43 @@ async def _respond(send, status, headers=(), body=b""):
                 "headers": [*headers, (b"content-length", str(len(body)).encode())]})
     await send({"type": "http.response.body", "body": body})
 
+def cli_credentials(args, env):
+    """The login the CLI asked for (--anon, --token, --user/--password or their env variables)."""
+    return {"anon": bool(args.anon), "token": args.token or env.get("CROWDGPT_TOKEN"),
+            "user": args.user, "password": args.password or env.get("CROWDGPT_PASSWORD")}
+
+def _saved_for_server(saved, server):
+    """(token, username) from a saved session for this server, or None."""
+    saved = saved or {}
+    if saved.get("token") and (saved.get("server") or "").rstrip("/") == server.rstrip("/"):
+        return saved["token"], saved.get("username")
+    return None
+
+def _password_login(creds, server, do_login):
+    if not creds.get("password"): return "missing_password"
+    tok, err = do_login(server, creds["user"], creds["password"])
+    return (tok, creds["user"]) if tok else (err or "login_failed")
+
+def resolve_cli_login(creds, server, saved, do_login):
+    """In headless order: anon, token, user + password, then the saved session for this server.
+    Returns (token, username), an error code string, or None when nothing was given."""
+    if creds.get("anon"): return None, "anonymous"
+    if creds.get("token"): return creds["token"], creds.get("user")
+    if creds.get("user"): return _password_login(creds, server, do_login)
+    return _saved_for_server(saved, server)
+
+def web_autologin(api, creds, saved, do_login, autostart=False):
+    """Log the Api in from CLI credentials, without saving them; start training if autostart.
+    Emits login_success or login_error like the page's own login. True on login."""
+    got = resolve_cli_login(creds, api.server_url, saved, do_login)
+    if got is None: return False  # nothing given: the page shows its login screen
+    if isinstance(got, str):
+        api.emit("login_error", {"code": got}); return False
+    api.auth_token, api.username = got
+    api.emit("login_success", {"username": api.username or "restored", "autologin": True})
+    if autostart: api.start()
+    return True
+
 _LOOPBACK_NAMES = ("localhost", "127.0.0.1", "::1")
 
 def _is_unspecified(host):
