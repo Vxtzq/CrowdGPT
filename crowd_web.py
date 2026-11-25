@@ -16,11 +16,12 @@ import json
 import os
 import re
 import secrets
+import socket
 import threading
 import time
 from collections import deque
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 from typing import NamedTuple, Optional
 
 
@@ -239,10 +240,62 @@ async def _respond(send, status, headers=(), body=b""):
                 "headers": [*headers, (b"content-length", str(len(body)).encode())]})
     await send({"type": "http.response.body", "body": body})
 
+_LOOPBACK_NAMES = ("localhost", "127.0.0.1", "::1")
+
+def _is_unspecified(host):
+    """True for the listen-on-everything addresses (0.0.0.0, ::); False for names."""
+    try: return ipaddress.ip_address(host).is_unspecified
+    except ValueError: return False
+
+def web_allowed_hosts(bind, extra):
+    """Host names the web UI answers to: loopback, the bind address and extra; for 0.0.0.0/:: also
+    this machine's hostname and its addresses. None when extra has `*` (the check is off)."""
+    if "*" in extra: return None
+    bind = str(bind).strip().strip("[]").lower()
+    hosts = {*_LOOPBACK_NAMES, *(h.lower() for h in extra)}
+    if not _is_unspecified(bind):
+        return frozenset(hosts | {bind})
+    names = {n.lower() for n in (socket.gethostname(), socket.getfqdn()) if n}
+    hosts |= names
+    for name in names:
+        try: infos = socket.getaddrinfo(name, None)
+        except OSError: continue
+        hosts |= {info[4][0].lower() for info in infos}
+    return frozenset(hosts)
+
+def _hostname(netloc):
+    """The lowercased host part of host[:port] or [v6][:port], or None when it doesn't parse."""
+    try: return urlsplit("//" + netloc).hostname
+    except ValueError: return None
+
+class _HostGate:
+    """ASGI middleware against DNS rebinding and CSRF: the Host header must be in `allowed`, and a
+    POST's Origin, when sent, must be allowed or the same as Host. `allowed=None` turns both off."""
+    def __init__(self, app, allowed):
+        self.app, self.allowed = app, allowed
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in scope["headers"]}
+        host = headers.get("host", "")
+        if _hostname(host) not in self.allowed:
+            return await _respond(send, 400)
+        origin = headers.get("origin")
+        if scope["method"] == "POST" and origin is not None and not self._origin_ok(origin, host):
+            return await _respond(send, 403)
+        await self.app(scope, receive, send)
+
+    def _origin_ok(self, origin, host):
+        try: parts = urlsplit(origin)
+        except ValueError: return False
+        return parts.hostname in self.allowed or (bool(parts.netloc) and parts.netloc.lower() == host.lower())
+
 def create_web_app(api, opts):
     """FastAPI app: opts["html"] at /, a health check, allow-listed Api calls and, with opts["sink"],
     the /events stream. The docs endpoints are off. With opts["token"], every route but /healthz
-    needs it (see _TokenGate)."""
+    needs it (see _TokenGate). With opts["allowed_hosts"] (from web_allowed_hosts), Host and Origin
+    are checked first (see _HostGate); missing or None turns that check off."""
     fastapi, _ = _import_web_stack()
     from fastapi.responses import HTMLResponse, Response
     from starlette.concurrency import run_in_threadpool
@@ -251,6 +304,7 @@ def create_web_app(api, opts):
     html = opts["html"]
     if sink: _add_events_route(app, sink, float(opts.get("heartbeat", 15)))
     if opts.get("token"): app.add_middleware(_TokenGate, token=opts["token"])
+    if opts.get("allowed_hosts") is not None: app.add_middleware(_HostGate, allowed=opts["allowed_hosts"])  # added last, runs first
 
     @app.post("/api/{method}")
     async def call_api(method: str, request: fastapi.Request):

@@ -491,6 +491,89 @@ class WebTokenAuth(unittest.TestCase):
         self.assertEqual(r.json(), {"ok": True, "status": "idle"})
 
 
+class WebAllowedHosts(unittest.TestCase):
+    def _hosts(self, bind, extra=()):
+        from unittest import mock
+        infos = [(None, None, None, "", ("192.168.1.20", 0)), (None, None, None, "", ("fe80::1", 0, 0, 0))]
+        with mock.patch.object(cw.socket, "gethostname", return_value="Box"), \
+                mock.patch.object(cw.socket, "getfqdn", return_value="box.lan"), \
+                mock.patch.object(cw.socket, "getaddrinfo", return_value=infos):
+            return cw.web_allowed_hosts(bind, extra)
+
+    def test_loopback_bind(self):
+        self.assertEqual(self._hosts("127.0.0.1"), {"localhost", "127.0.0.1", "::1"})
+
+    def test_lan_ip_bind_adds_it(self):
+        self.assertEqual(self._hosts("10.0.0.5"), {"localhost", "127.0.0.1", "::1", "10.0.0.5"})
+
+    def test_wildcard_binds_add_hostname_and_interfaces(self):
+        for bind in ("0.0.0.0", "::", "[::]"):
+            with self.subTest(bind=bind):
+                self.assertEqual(self._hosts(bind), {"localhost", "127.0.0.1", "::1", "box", "box.lan",
+                                                     "192.168.1.20", "fe80::1"})
+
+    def test_extra_hosts_and_star(self):
+        self.assertIn("stats.example.com", self._hosts("127.0.0.1", ("stats.example.com",)))
+        self.assertIsNone(self._hosts("127.0.0.1", ("stats.example.com", "*")))
+
+    def test_lookup_failure_keeps_names(self):
+        import socket
+        from unittest import mock
+        with mock.patch.object(cw.socket, "gethostname", return_value="box"), \
+                mock.patch.object(cw.socket, "getfqdn", return_value="box"), \
+                mock.patch.object(cw.socket, "getaddrinfo", side_effect=socket.gaierror):
+            self.assertEqual(cw.web_allowed_hosts("0.0.0.0", ()), {"localhost", "127.0.0.1", "::1", "box"})
+
+
+@unittest.skipUnless(_HAVE_WEB, "needs fastapi, uvicorn and httpx")
+class WebHostOriginChecks(unittest.TestCase):
+    def _client(self, allowed=frozenset({"localhost", "127.0.0.1", "::1"}), base="http://127.0.0.1:8765", **extra):
+        from fastapi.testclient import TestClient
+        self.api = _RecordingApi()
+        opts = {"html": "x", "allowed_hosts": allowed, **extra}
+        return TestClient(cw.create_web_app(self.api, opts), base_url=base)
+
+    def test_same_origin_post_accepted(self):
+        r = self._client().post("/api/stop", json=[], headers={"Origin": "http://127.0.0.1:8765"})
+        self.assertEqual(r.status_code, 204)
+
+    def test_post_without_origin_accepted(self):
+        self.assertEqual(self._client().post("/api/stop", json=[]).status_code, 204)
+
+    def test_cross_site_post_rejected(self):
+        c = self._client()
+        for origin in ("http://evil.example", "null", "http://127.0.0.1.evil.example:8765"):
+            with self.subTest(origin=origin):
+                self.assertEqual(c.post("/api/stop", json=[], headers={"Origin": origin}).status_code, 403)
+        self.assertEqual(self.api.calls, [])
+
+    def test_rebinding_host_rejected_on_every_route(self):
+        c = self._client(base="http://evil.example:8765")
+        for method, path in (("GET", "/"), ("GET", "/healthz"), ("POST", "/api/stop")):
+            with self.subTest(path=path):
+                self.assertEqual(c.request(method, path, json=[] if method == "POST" else None).status_code, 400)
+        self.assertEqual(self.api.calls, [])
+
+    def test_ipv6_host_accepted(self):
+        self.assertEqual(self._client(base="http://[::1]:8765").get("/healthz").status_code, 200)
+
+    def test_extra_allowed_host_accepted_behind_rewriting_proxy(self):
+        allowed = frozenset({"localhost", "127.0.0.1", "::1", "stats.example.com"})
+        c = self._client(allowed=allowed)  # the proxy rewrote Host to 127.0.0.1:8765
+        r = c.post("/api/stop", json=[], headers={"Origin": "https://stats.example.com"})
+        self.assertEqual(r.status_code, 204)
+        self.assertEqual(self._client(allowed=allowed, base="https://stats.example.com").get("/").status_code, 200)
+
+    def test_star_turns_both_checks_off(self):
+        c = self._client(allowed=None, base="http://evil.example")
+        self.assertEqual(c.get("/").status_code, 200)
+        self.assertEqual(c.post("/api/stop", json=[], headers={"Origin": "http://other.example"}).status_code, 204)
+
+    def test_host_check_runs_before_token(self):
+        c = self._client(base="http://evil.example", token="t" * 20)
+        self.assertEqual(c.get("/").status_code, 400)
+
+
 @unittest.skipUnless(_HAVE_WEB, "needs fastapi, uvicorn and httpx")
 class WebServerThread(unittest.TestCase):
     def test_start_fetch_stop(self):
