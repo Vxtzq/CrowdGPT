@@ -1408,13 +1408,13 @@ class InstallerAPI:
         if not req.exists():
             self.log("requirements.txt not found — skipping", "warn")
             return
-        lines = req.read_text().splitlines()
+        lines = req.read_text(encoding="utf-8").splitlines()
         filtered = [
             l for l in lines
             if not re.match(r"^\s*(torch|torchvision|torchaudio|torch-directml)(\s*[<>=!~].*)?$", l)
         ]
         tmp = self.repo_dir / ".requirements.stripped"
-        tmp.write_text("\n".join(filtered) + "\n")
+        tmp.write_text("\n".join(filtered) + "\n", encoding="utf-8")
         try:
             self.run([str(self.installed_venv_py), "-m", "pip", "install", "-r", str(tmp)])
         finally:
