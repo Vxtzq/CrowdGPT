@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v4.1
+CrowdGPT GUI Client v4.3
 v3.4 changes
   - Auto-pause: VRAM is measured as growth since start (the CUDA context and desktop were counted as "another app"), 4 samples of debounce
   - Stop now fully releases VRAM (the degradation ladder kept the model alive after Stop)
@@ -71,6 +71,12 @@ os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
 import re, sys, io, json, time, struct, math, gc, threading, queue, base64, logging, tempfile, atexit, subprocess, hashlib, shutil, ctypes, signal, argparse, datetime, uuid, getpass
 import platform
+# pythonw.exe (what CrowdGPT.pyw / the Start-Menu shortcut use) starts with sys.stdout/sys.stderr = None: every print() or
+# logging StreamHandler would raise. Give them a sink.
+for _n in ("stdout", "stderr"):
+    if getattr(sys, _n, None) is None:
+        try: setattr(sys, _n, open(os.devnull, "w", encoding="utf-8", errors="replace"))
+        except Exception: pass
 import importlib.metadata as importlib_metadata
 from pathlib import Path
 
@@ -207,7 +213,7 @@ class TimingRecorder:
         self.phase("total", time.monotonic() - self.started, ok=ok, **fields)
 
 
-CLIENT_VERSION = "4.2"
+CLIENT_VERSION = "4.3"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
@@ -1068,6 +1074,19 @@ sys.stdout.flush()
 """
 
 
+def _child_python():
+    """Interpreter for helper processes. Under pythonw.exe sys.executable is pythonw.exe, whose child has no usable
+    stdout: the hardware probe printed nothing, failed, and the client fell back to probing CUDA INSIDE the GUI
+    process (GIL held for seconds = "Not responding"). Always use the console python.exe, hidden."""
+    exe = sys.executable or "python"
+    if sys.platform == "win32" and os.path.basename(exe).lower() == "pythonw.exe":
+        cand = os.path.join(os.path.dirname(exe), "python.exe")
+        if os.path.exists(cand): return cand
+    return exe
+
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+
+
 def _hw_probe_subprocess(timeout_s=None, warm=False):
     """Run the probe in a CHILD process. communicate() releases the GIL, so the
     window keeps painting for the whole cold-driver / PTX-JIT wait."""
@@ -1090,9 +1109,10 @@ def _hw_probe_subprocess(timeout_s=None, warm=False):
     for extra in (["-I"], []):
         try:
             proc = subprocess.Popen(
-                [sys.executable] + extra + ["-c", _HW_PROBE_SRC, json.dumps(cfg)],
+                [_child_python()] + extra + ["-c", _HW_PROBE_SRC, json.dumps(cfg)],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL, cwd=str(tempfile.gettempdir()), env=env)
+                stdin=subprocess.DEVNULL, cwd=str(tempfile.gettempdir()), env=env,
+                creationflags=_NO_WINDOW)
         except Exception as e:
             log.warning(f"[hw] probe could not start: {e}")
             return None
