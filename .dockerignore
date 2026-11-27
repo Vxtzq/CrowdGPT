@@ -12,3 +12,15 @@ __pycache__/
 *.new
 *.part
 *.gz
+
+# Local runtime state and checkpoints: large, machine-specific, never in an image.
+data/
+hf_state/
+chunks/
+pending_uploads/
+orchestrator_state.sqlite3*
+*.bin
+*.log
+*.jsonl
+*.pem
+users.json

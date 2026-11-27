@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v3.5
+CrowdGPT GUI Client v4.1
 v3.4 changes
   - Auto-pause: VRAM is measured as growth since start (the CUDA context and desktop were counted as "another app"), 4 samples of debounce
   - Stop now fully releases VRAM (the degradation ladder kept the model alive after Stop)
@@ -207,7 +207,7 @@ class TimingRecorder:
         self.phase("total", time.monotonic() - self.started, ok=ok, **fields)
 
 
-CLIENT_VERSION = "3.9"
+CLIENT_VERSION = "4.1"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
@@ -900,7 +900,313 @@ def _wait_for_window(title: str, timeout: float = 5.0) -> bool:
         time.sleep(0.1)
     return False
 
-def get_available_backends():
+
+
+# ── CROWDGPT-FREEZE-FIX v2 ─────────────────────────────────────────────────
+# The WinForms message loop lives in .NET, but every pywebview event handler and
+# every js_api call re-enters Python on the UI thread. The GIL is process-wide,
+# so a worker thread sitting inside torch.cuda.is_available(), a cold cuBLAS/PTX
+# JIT, torch_directml enumeration or `import bitsandbytes` stalls that re-entry
+# and Windows paints "Not responding" — moving the work to a thread does not
+# help. All of it now runs in a CHILD process and the verdict is cached on disk,
+# so this process never touches a driver while the window is pumping.
+CROWDGPT_FREEZE_FIX = 2
+
+_GUI_MODE = False
+_WARMUP = {"active": False}
+_BACKEND_CACHE = {"available": None, "gpus": None, "preferred": None, "busy": False}
+_BACKEND_LOCK = threading.Lock()
+_HW_PROBE = {"data": None, "stamp": 0.0}
+_ICON_HANDLES = {}
+_ICON_STATE = {"applied": False}
+_HW_ORDER = ("cuda", "rocm", "mps", "xpu", "directml", "cpu")
+
+
+def _hw_cache_file():
+    return CHECKPOINT_DIR / "hw_probe.json"
+
+
+def _hw_cache_key():
+    ver = getattr(torch, "version", None)
+    raw = "|".join((
+        str(getattr(torch, "__version__", "?")),
+        str(getattr(ver, "hip", "") or ""),
+        str(getattr(ver, "cuda", "") or ""),
+        sys.platform, platform.machine(), str(sys.executable), CLIENT_VERSION,
+    ))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def _hw_cache_load():
+    try:
+        j = json.loads(_hw_cache_file().read_text(encoding="utf-8"))
+        if j.get("key") != _hw_cache_key():
+            return None
+        if time.time() - float(j.get("at", 0)) > 7 * 24 * 3600:
+            return None
+        d = j.get("data")
+        return d if isinstance(d, dict) and d.get("available") else None
+    except Exception:
+        return None
+
+
+def _hw_cache_save(data):
+    try:
+        _write_private(_hw_cache_file(), json.dumps(
+            {"key": _hw_cache_key(), "at": time.time(), "data": data}))
+    except Exception:
+        pass
+
+
+_HW_PROBE_SRC = r"""
+import json, os, sys
+cfg = {}
+try:
+    cfg = json.loads(sys.argv[1])
+except Exception:
+    pass
+for k, v in (cfg.get("env") or {}).items():
+    os.environ[k] = v
+out = {"available": {"cpu": True}, "gpus": [], "preferred": "cpu",
+       "bnb": False, "bnb8": False, "bf16": False, "cc": "", "warmed": False,
+       "torch": "", "hip": "", "error": None}
+try:
+    import torch
+    out["torch"] = str(getattr(torch, "__version__", ""))
+    hip = bool(getattr(torch.version, "hip", None))
+    out["hip"] = str(getattr(torch.version, "hip", "") or "")
+    try:
+        cuda_ok = bool(torch.cuda.is_available())
+    except Exception:
+        cuda_ok = False
+    out["available"]["cuda"] = bool(cuda_ok and not hip)
+    out["available"]["rocm"] = bool(cuda_ok and hip)
+    try:
+        out["available"]["mps"] = bool(hasattr(torch.backends, "mps")
+                                       and torch.backends.mps.is_available())
+    except Exception:
+        out["available"]["mps"] = False
+    try:
+        out["available"]["xpu"] = bool(hasattr(torch, "xpu") and torch.xpu.is_available())
+    except Exception:
+        out["available"]["xpu"] = False
+    try:
+        import torch_directml
+        out["available"]["directml"] = bool(torch_directml.is_available())
+    except Exception:
+        out["available"]["directml"] = False
+    for b in ("cuda", "rocm", "mps", "xpu", "directml", "cpu"):
+        if out["available"].get(b):
+            out["preferred"] = b
+            break
+    if cuda_ok:
+        try:
+            arch = [str(a) for a in torch.cuda.get_arch_list()]
+        except Exception:
+            arch = []
+        try:
+            n = int(torch.cuda.device_count())
+        except Exception:
+            n = 0
+        for i in range(n):
+            try:
+                p = torch.cuda.get_device_properties(i)
+                need, ok = "rocm", True
+                if not hip:
+                    mj, mn = torch.cuda.get_device_capability(i)
+                    need = "sm_%d%d" % (mj, mn)
+                    ok = ((not arch) or (need in arch) or (need + "a" in arch)
+                          or any(a.startswith("sm_%d" % mj) and a[3:].isdigit() for a in arch)
+                          or any(a.startswith("compute_%d" % mj) and a[8:].isdigit() for a in arch))
+                out["gpus"].append({"idx": i, "name": str(p.name),
+                                    "vram_gb": round(int(p.total_memory) / (1024 ** 3), 1),
+                                    "arch_ok": bool(ok), "arch_needed": need})
+            except Exception:
+                pass
+        try:
+            out["bf16"] = bool(torch.cuda.is_bf16_supported())
+        except Exception:
+            pass
+        if not hip and out["gpus"]:
+            try:
+                mj, mn = torch.cuda.get_device_capability(0)
+                out["cc"] = "sm_%d%d" % (mj, mn)
+            except Exception:
+                pass
+    if cfg.get("bnb") and (out["available"]["cuda"] or out["available"]["rocm"]):
+        try:
+            import bitsandbytes as bnb
+            out["bnb"] = True
+            if hasattr(bnb, "optim") and hasattr(bnb.optim, "AdamW8bit") and cuda_ok:
+                p = torch.nn.Parameter(torch.ones(8, device="cuda"))
+                before = p.detach().clone()
+                o = bnb.optim.AdamW8bit([p], lr=0.1)
+                p.grad = torch.ones_like(p)
+                o.step()
+                out["bnb8"] = bool(not torch.allclose(before, p.detach()))
+        except Exception:
+            out["bnb"] = False
+    if cfg.get("warm") and cuda_ok:
+        try:
+            idx = int(cfg.get("gpu") or 0)
+            if idx >= max(1, len(out["gpus"])):
+                idx = 0
+            with torch.cuda.device(idx):
+                a = torch.zeros(64, 64, device="cuda")
+                for _ in range(3):
+                    a = (a @ a) * 0.0 + 1.0
+                float(a.sum().item())
+                del a
+            torch.cuda.empty_cache()
+            out["warmed"] = True
+        except Exception:
+            out["warmed"] = False
+except Exception as exc:
+    out["error"] = "%s: %s" % (type(exc).__name__, exc)
+sys.stdout.write("@@HW@@" + json.dumps(out) + "\n")
+sys.stdout.flush()
+"""
+
+
+def _hw_probe_subprocess(timeout_s=None, warm=False):
+    """Run the probe in a CHILD process. communicate() releases the GIL, so the
+    window keeps painting for the whole cold-driver / PTX-JIT wait."""
+    if getattr(sys, "frozen", False):
+        return None
+    try:
+        timeout_s = float(timeout_s if timeout_s is not None
+                          else os.environ.get("CROWDGPT_HW_PROBE_TIMEOUT", "180"))
+    except (TypeError, ValueError):
+        timeout_s = 180.0
+    cfg = {"warm": bool(warm),
+           "bnb": os.environ.get("CROWDGPT_DISABLE_BNB") != "1",
+           "gpu": _load_saved_gpu_idx() or 0,
+           "env": {"PYTORCH_CUDA_ALLOC_CONF":
+                       os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"),
+                   "CROWDGPT_DISABLE_BNB": os.environ.get("CROWDGPT_DISABLE_BNB", "0")}}
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.pop("PYTHONPATH", None)
+    for extra in (["-I"], []):
+        try:
+            proc = subprocess.Popen(
+                [sys.executable] + extra + ["-c", _HW_PROBE_SRC, json.dumps(cfg)],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL, cwd=str(tempfile.gettempdir()), env=env)
+        except Exception as e:
+            log.warning(f"[hw] probe could not start: {e}")
+            return None
+        try:
+            raw, _ = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill(); proc.communicate(timeout=5)
+            except Exception:
+                pass
+            log.warning(f"[hw] probe timed out after {timeout_s:.0f}s")
+            return None
+        except Exception as e:
+            try: proc.kill()
+            except Exception: pass
+            log.warning(f"[hw] probe failed: {e}")
+            return None
+        for line in (raw or b"").decode("utf-8", "replace").splitlines():
+            if line.startswith("@@HW@@"):
+                try:
+                    d = json.loads(line[6:])
+                    if isinstance(d, dict) and d.get("available"):
+                        return d
+                except Exception:
+                    pass
+        if extra:
+            continue
+        return None
+    return None
+
+
+def _hw_probe_inline_fallback():
+    """Only used when a child process cannot be spawned (frozen build, no
+    interpreter). Correctness beats smoothness on that rare path."""
+    avail = _get_available_backends_inline()
+    return {"available": avail, "gpus": _get_gpu_list_inline(),
+            "preferred": next((b for b in _HW_ORDER if avail.get(b)), "cpu"),
+            "bnb": None, "bnb8": None, "bf16": False, "cc": "",
+            "error": "child probe unavailable; probed inline"}
+
+
+def hw_probe(refresh=False, warm=False, publish=None):
+    """Cached verdict, else a child-process probe. Safe from any thread."""
+    with _BACKEND_LOCK:
+        if _BACKEND_CACHE["busy"]:
+            return _HW_PROBE.get("data")
+        _BACKEND_CACHE["busy"] = True
+    try:
+        data = _HW_PROBE.get("data")
+        if data is None:
+            data = _hw_cache_load()
+        if data is None or refresh:
+            got = _hw_probe_subprocess(warm=warm)
+            if got is not None:
+                data = got
+                _hw_cache_save(data)
+            elif data is None:
+                data = _hw_probe_inline_fallback()
+        if data is None:
+            data = _hw_probe_inline_fallback()
+        _HW_PROBE["data"] = data
+        _HW_PROBE["stamp"] = time.time()
+        _BACKEND_CACHE.update(available=dict(data.get("available") or {"cpu": True}),
+                              gpus=list(data.get("gpus") or []),
+                              preferred=data.get("preferred") or "cpu")
+        if publish is not None:
+            try:
+                publish(data)
+            except Exception as e:
+                log.warning(f"[hw] publish failed: {e}")
+        return data
+    finally:
+        with _BACKEND_LOCK:
+            _BACKEND_CACHE["busy"] = False
+
+
+def _publish_backends(api, data):
+    honor = os.environ.get("CROWDGPT_HONOR_SAVED_BACKEND") == "1"
+    idle = api.thread is None or not api.thread.is_alive()
+    sel = api.selected_backend
+    pref = data.get("preferred") or "cpu"
+    if not honor and idle and sel == getattr(api, "_initial_backend", sel):
+        if sel in ("", None, "auto"):
+            api.selected_backend = pref
+        elif sel == "cpu" and pref != "cpu":
+            api.selected_backend = pref
+        elif sel == "directml" and pref in ("cuda", "rocm", "mps", "xpu"):
+            api.selected_backend = pref
+    api.emit('backends', {'available': data.get("available") or {"cpu": True},
+                          'current': api.selected_backend, 'probing': False})
+    gpus = data.get("gpus") or []
+    saved = _load_saved_gpu_idx()
+    if not gpus:
+        cur = 0
+    elif saved is None or not any(g["idx"] == saved for g in gpus):
+        cur = gpus[0]["idx"]
+    else:
+        cur = saved
+    api.emit('gpus', {'list': gpus, 'current': cur})
+
+
+def _probe_backends_now(api=None):
+    """Child-process probe. Name kept so older call sites keep working."""
+    return hw_probe(refresh=os.environ.get("CROWDGPT_HW_PROBE") == "refresh",
+                    warm=True,
+                    publish=(lambda d: _publish_backends(api, d)) if api is not None else None)
+
+
+def probe_backends_async(api=None):
+    threading.Thread(target=_probe_backends_now, args=(api,),
+                     daemon=True, name="hw-probe").start()
+
+
+def _get_available_backends_inline():
     backends = {}
     backends['cuda'] = torch.cuda.is_available() and not (hasattr(torch.version, 'hip') and torch.version.hip)
     backends['rocm'] = hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available()
@@ -909,9 +1215,192 @@ def get_available_backends():
     try:
         import torch_directml
         backends['directml'] = torch_directml.is_available()
-    except ImportError: backends['directml'] = False
+    except ImportError:
+        backends['directml'] = False
     backends['cpu'] = True
     return backends
+
+
+def _get_gpu_list_inline():
+    try:
+        if not torch.cuda.is_available():
+            return []
+        n = torch.cuda.device_count()
+    except Exception:
+        return []
+    out = []
+    for idx in range(n):
+        try:
+            props = torch.cuda.get_device_properties(idx)
+            arch_ok, arch_needed, _ = _check_arch_compat(idx)
+            out.append({"idx": idx, "name": str(props.name),
+                        "vram_gb": round(int(props.total_memory) / (1024 ** 3), 1),
+                        "arch_ok": arch_ok, "arch_needed": arch_needed})
+        except Exception as e:
+            log.warning(f"[gpu] probe {idx} failed: {e}")
+    return out
+
+
+def _own_process_hwnds():
+    """Visible top-level windows of THIS process. No caption matching."""
+    if sys.platform != "win32":
+        return []
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    pid = kernel32.GetCurrentProcessId()
+    out = []
+    EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    user32.EnumWindows.argtypes = [EnumWindowsProc, ctypes.c_void_p]
+    user32.EnumWindows.restype = ctypes.c_bool
+    user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    user32.GetWindowThreadProcessId.restype = ctypes.c_uint
+    user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+    user32.IsWindowVisible.restype = ctypes.c_bool
+
+    def _cb(hwnd, lparam):
+        try:
+            owner = ctypes.c_uint(0)
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+            if owner.value == pid and user32.IsWindowVisible(hwnd):
+                out.append(hwnd)
+        except Exception:
+            pass
+        return True
+
+    try:
+        user32.EnumWindows(EnumWindowsProc(_cb), None)
+    except Exception:
+        pass
+    return out
+
+
+def _window_hwnd(window=None):
+    if sys.platform != "win32":
+        return None
+    native = getattr(window, "native", None)
+    for getter in (lambda: int(native.Handle.ToInt64()),
+                   lambda: int(native.Handle),
+                   lambda: int(native)):
+        try:
+            h = getter()
+            if h:
+                return h
+        except Exception:
+            continue
+    hwnds = _own_process_hwnds()
+    if not hwnds:
+        return None
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+    user32.GetWindowTextW.restype = ctypes.c_int
+    titled = []
+    for h in hwnds:
+        try:
+            buf = ctypes.create_unicode_buffer(512)
+            user32.GetWindowTextW(h, buf, 512)
+            if buf.value:
+                if WINDOW_TITLE.lower() in buf.value.lower():
+                    return h
+                titled.append(h)
+        except Exception:
+            continue
+    return titled[0] if titled else hwnds[0]
+
+
+def set_windows_icon_hwnd(hwnd, ico_path):
+    """WM_SETICON on a known HWND. Handles cached so retries do not leak."""
+    if sys.platform != "win32" or not hwnd or not ico_path:
+        return False
+    ico_path = os.path.abspath(ico_path)
+    if not os.path.exists(ico_path) or not ico_path.lower().endswith(".ico"):
+        return False
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.LoadImageW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint,
+                                  ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+    user32.LoadImageW.restype = ctypes.c_void_p
+    user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                    ctypes.c_void_p, ctypes.c_void_p]
+    user32.SendMessageW.restype = ctypes.c_void_p
+    user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+    user32.GetSystemMetrics.restype = ctypes.c_int
+    IMAGE_ICON, LR_LOADFROMFILE, WM_SETICON, ICON_SMALL, ICON_BIG = 1, 0x0010, 0x0080, 0, 1
+    SM_CXSMICON, SM_CYSMICON, SM_CXICON, SM_CYICON = 49, 50, 11, 12
+    cx = user32.GetSystemMetrics(SM_CXSMICON) or 16
+    cy = user32.GetSystemMetrics(SM_CYSMICON) or 16
+    bx = user32.GetSystemMetrics(SM_CXICON) or 32
+    by = user32.GetSystemMetrics(SM_CYICON) or 32
+    try:
+        user32.GetDpiForWindow.argtypes = [ctypes.c_void_p]
+        user32.GetDpiForWindow.restype = ctypes.c_uint
+        user32.GetSystemMetricsForDpi.argtypes = [ctypes.c_int, ctypes.c_uint]
+        user32.GetSystemMetricsForDpi.restype = ctypes.c_int
+        dpi = user32.GetDpiForWindow(hwnd) or 96
+        cx = user32.GetSystemMetricsForDpi(SM_CXSMICON, dpi) or cx
+        cy = user32.GetSystemMetricsForDpi(SM_CYSMICON, dpi) or cy
+        bx = user32.GetSystemMetricsForDpi(SM_CXICON, dpi) or bx
+        by = user32.GetSystemMetricsForDpi(SM_CYICON, dpi) or by
+    except Exception:
+        pass
+
+    def _handle(w, h):
+        key = (ico_path, int(w), int(h))
+        got = _ICON_HANDLES.get(key)
+        if got:
+            return got
+        made = user32.LoadImageW(None, ico_path, IMAGE_ICON, int(w), int(h), LR_LOADFROMFILE)
+        if made:
+            _ICON_HANDLES[key] = made
+        return made
+
+    hs, hb = _handle(cx, cy), _handle(bx, by)
+    ok = False
+    if hs:
+        user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hs); ok = True
+    if hb:
+        user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hb); ok = True
+    if ok:
+        try:
+            SWP = 0x1 | 0x2 | 0x4 | 0x20   # NOSIZE|NOMOVE|NOZORDER|FRAMECHANGED
+            user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
+                                            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+            user32.SetWindowPos.restype = ctypes.c_bool
+            user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP)
+        except Exception:
+            pass
+    return ok
+
+
+def apply_windows_icon(window=None, ico_path=None):
+    if sys.platform != "win32":
+        return False
+    path = ico_path or WINDOWS_ICO_PATH
+    if not path:
+        return False
+    hwnd = _window_hwnd(window)
+    if not hwnd:
+        return False
+    try:
+        ok = set_windows_icon_hwnd(hwnd, path)
+    except Exception as e:
+        log.warning(f"[icon] WM_SETICON failed: {e}")
+        return False
+    if ok and not _ICON_STATE["applied"]:
+        _ICON_STATE["applied"] = True
+        log.info(f"[icon] applied to HWND 0x{int(hwnd):X} from {os.path.basename(path)}")
+    return ok
+# ── end CROWDGPT-FREEZE-FIX v2 helpers ─────────────────────────────────────
+
+
+def get_available_backends():
+    """GUI: serve the child-process verdict, never touch a driver on this thread.
+    CLI / --doctor / --headless: probe inline (no window to stall)."""
+    if _GUI_MODE:
+        d = _HW_PROBE.get("data") or _hw_cache_load()
+        if d and d.get("available"):
+            return dict(d["available"])
+        return {"cpu": True}
+    return _get_available_backends_inline()
+
 
 def _xpu_available():
     """Intel Arc / DC GPU. Modern PyTorch (>=2.4) supports XPU natively via
@@ -1001,28 +1490,11 @@ def _check_arch_compat(device_idx):
 
 
 def get_gpu_list():
-    """Returns [{idx, name, vram_gb, arch_ok, arch_needed}, ...]. Empty if no CUDA/ROCm devices."""
-    try:
-        if not torch.cuda.is_available():
-            return []
-        n = torch.cuda.device_count()
-    except Exception:
-        return []
-    out = []
-    for idx in range(n):
-        try:
-            props = torch.cuda.get_device_properties(idx)
-            arch_ok, arch_needed, _ = _check_arch_compat(idx)
-            out.append({
-                "idx": idx,
-                "name": str(props.name),
-                "vram_gb": round(int(props.total_memory) / (1024 ** 3), 1),
-                "arch_ok": arch_ok,
-                "arch_needed": arch_needed,
-            })
-        except Exception as e:
-            log.warning(f"[gpu] probe {idx} failed: {e}")
-    return out
+    """[{idx, name, vram_gb, arch_ok, arch_needed}, ...] — cached in GUI mode."""
+    if _GUI_MODE:
+        d = _HW_PROBE.get("data") or _hw_cache_load()
+        return list((d or {}).get("gpus") or [])
+    return _get_gpu_list_inline()
 
 
 def _load_saved_gpu_idx():
@@ -1124,6 +1596,14 @@ def detect_training_backend(force=None):
     return torch.device('cpu'), "CPU"
 
 def install_hard_vram_cap(device, safety_gb=SAFETY_MARGIN_GB):
+    if device is not None and device.type == "mps":
+        # torch's default MPS limit is 1.7x Metal's recommended working set (above physical RAM on
+        # most Macs), so an oversized batch swaps instead of raising the OOM that the degrade ladder catches.
+        try:
+            torch.mps.set_per_process_memory_fraction(1.0)
+            return torch.mps.recommended_max_memory() / 1024**3
+        except Exception as e:
+            log.warning("MPS memory cap not set: %s", e); return None
     if device is None or device.type != "cuda": return None
     try:
         idx = device.index if device.index is not None else 0
@@ -1180,7 +1660,14 @@ def auto_detect_vram_budget():
         try:
             out = subprocess.check_output(["sysctl", "-n", "hw.memsize"]).decode().strip()
             total_gb = int(out) / 1024**3
-            usable = max(0.5, total_gb * 0.75 - SAFETY_MARGIN_GB)
+            share = UMA_VRAM_SHARE_DEFAULT
+            try: share = max(0.4, min(1.0, float(os.environ.get("CROWDGPT_UMA_VRAM_SHARE", share) or share)))
+            except ValueError: pass
+            ceiling_gb = total_gb * share
+            # Metal's recommended working set is the most the GPU can hold without paging (~78% of RAM).
+            try: ceiling_gb = min(ceiling_gb, torch.mps.recommended_max_memory() / 1024**3)
+            except Exception as e: log.warning("MPS recommended_max_memory unavailable: %s", e)
+            usable = max(0.5, ceiling_gb - SAFETY_MARGIN_GB)
             memory_config.update({"ram_gb": round(usable, 2), "is_auto_detected": True}); return
         except Exception: pass
     if train_backend == "XPU":
@@ -1217,19 +1704,32 @@ def apply_vram_override(user_gb=0.0):
     if cap > 0: memory_config["is_auto_detected"] = False
 
 def has_bitsandbytes():
+    """`import bitsandbytes` loads native CUDA libs and holds the GIL for
+    seconds; in GUI mode the child process already answered this."""
+    d = _HW_PROBE.get("data")
+    if d is not None and isinstance(d.get("bnb"), bool):
+        return bool(d["bnb"])
     try:
-        import bitsandbytes; return True
-    except Exception: return False
+        import bitsandbytes
+        return True
+    except Exception:
+        return False
+
 
 _BNB_SELFTEST = None
 
 def _bnb_optimizer_works():
-    """Import is not enough on ROCm: verify AdamW8bit actually updates a tensor."""
+    """Import is not enough on ROCm: AdamW8bit must actually update a tensor.
+    The child process runs that self-test; only fall back inline without it."""
     global _BNB_SELFTEST
     if _BNB_SELFTEST is not None:
         return _BNB_SELFTEST
     if os.environ.get("CROWDGPT_DISABLE_BNB") == "1":
         _BNB_SELFTEST = False; return False
+    d = _HW_PROBE.get("data")
+    if d is not None and isinstance(d.get("bnb8"), bool):
+        _BNB_SELFTEST = bool(d["bnb8"])
+        return _BNB_SELFTEST
     try:
         import bitsandbytes as bnb
         if not hasattr(bnb, "optim") or not hasattr(bnb.optim, "AdamW8bit"):
@@ -1245,6 +1745,7 @@ def _bnb_optimizer_works():
     except Exception:
         _BNB_SELFTEST = False
     return bool(_BNB_SELFTEST)
+
 
 def _optimizer_8bit_available(backend):
     if backend not in ("CUDA", "ROCM"):
@@ -1432,6 +1933,8 @@ def _hardware_headers(force_mode=None):
     return {
         "X-Client-Backend":   (train_backend or "UNKNOWN").upper(),
         "X-Client-Batch-Size": str(bs),
+        "X-Client-Batch-Size-Declared": str(int(_BS_STATE["declared"] or bs)),
+        "X-Client-Oom-Downscales": str(int(_BS_STATE["downscales"])),
         "X-Client-Vram-Gb":   f"{memory_config.get('ram_gb', 0.0):.2f}",
         "X-Client-Gpu-Name":  gpu,
         "X-Client-Autocast":  autocast_str,
@@ -1518,6 +2021,13 @@ def _doctor_update_probe():
         result["error"] = f"{type(exc).__name__}: {exc}"
     return result
 
+# certifi does not read the macOS keychain or Windows store, so a TLS-inspecting
+# corporate proxy breaks every HTTPS call until the user points requests at its CA.
+_TLS_HINT = ("Certificate check failed; a TLS-inspecting proxy (for example a corporate network) "
+             "is likely. Set REQUESTS_CA_BUNDLE and SSL_CERT_FILE to a PEM bundle that includes "
+             "its root CA, then rerun")
+
+
 def _doctor_http_probe(url, headers=None, timeout=3.0):
     started = time.time()
     try:
@@ -1529,6 +2039,9 @@ def _doctor_http_probe(url, headers=None, timeout=3.0):
             "ms": int((time.time() - started) * 1000),
             "error": None,
         }
+    except requests.exceptions.SSLError as exc:
+        return {"ok": False, "status": None, "ms": int((time.time() - started) * 1000),
+                "error": f"{type(exc).__name__}: {exc}. {_TLS_HINT}", "tls": True}
     except Exception as exc:
         return {"ok": False, "status": None, "ms": int((time.time() - started) * 1000), "error": f"{type(exc).__name__}: {exc}"}
 
@@ -1726,7 +2239,7 @@ def _doctor_collect_report(args):
             _doctor_add(checks, "Updates", "client.html", "ok", "matches the signed release manifest")
 
     hf = _doctor_http_probe(f"https://huggingface.co/api/models/{HF_MODEL_REPO_ID}")
-    _doctor_add(checks, "Network", "hugging-face", "ok" if hf["ok"] else "warn",
+    _doctor_add(checks, "Network", "hugging-face", "ok" if hf["ok"] else ("fail" if hf.get("tls") else "warn"),
                 f"HTTP {hf['status']} in {hf['ms']} ms" if hf["status"] else hf["error"])
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     coordinator = _doctor_http_probe(args.server.rstrip("/") + "/fl/round_status", headers, timeout=5.0)
@@ -1736,7 +2249,8 @@ def _doctor_collect_report(args):
         coordinator_detail = f"reachable, but HTTP {coordinator['status']}; saved session is not authorized"
     else:
         coordinator_detail = f"HTTP {coordinator['status']} in {coordinator['ms']} ms" if coordinator["status"] else coordinator["error"]
-    _doctor_add(checks, "Network", "coordinator", "ok" if coordinator["ok"] else "warn", coordinator_detail)
+    _doctor_add(checks, "Network", "coordinator",
+                "ok" if coordinator["ok"] else ("fail" if coordinator.get("tls") else "warn"), coordinator_detail)
 
     self_test = _doctor_self_test(device, selected.upper())
     _doctor_add(checks, "Self-test", "matmul", self_test["status"], self_test["detail"])
@@ -2040,7 +2554,13 @@ class SotaGPT(nn.Module):
     def embed(self, idx, head_w=None):
         """Token (+ engram) embedding. Split out so a paradigm can run the trunk in pieces."""
         dev = self.main_device; wdev = self.wte.weight.device
-        if head_w is not None and not self.head_on_gpu and head_w.device == dev:
+        # Only reuse the on-device head copy when it carries the weight's own dtype.
+        # In a bf16 cohort head_w is a bf16 cast of the tied weight, so embedding
+        # from it rounds the ids and sends the embedding gradient back through a
+        # bf16 cast, while a GPU-head peer embeds from the fp32 wte.weight. That
+        # made pre-degraded (CPU-head) clients look like cross-check outliers.
+        if (head_w is not None and not self.head_on_gpu and head_w.device == dev
+                and head_w.dtype == self.wte.weight.dtype):
             x = F.embedding(idx.to(dev), head_w)
             if x.dtype != torch.float32: x = x.float()
         else:
@@ -2109,6 +2629,7 @@ class StreamingShardDataset:
     def _url(self): return f"https://huggingface.co/datasets/{self.repo_id}/resolve/main/chunks/" + self._fmt.format(self.ci)
 
     def _discover(self, idx):
+        last = "no response"
         for fmt in ("chunk_{:04d}.bin", "chunk_{:d}.bin"):
             url = f"https://huggingface.co/datasets/{self.repo_id}/resolve/main/chunks/" + fmt.format(idx)
             for _ in range(2):
@@ -2117,8 +2638,14 @@ class StreamingShardDataset:
                     if r.status_code == 200:
                         sz = int(r.headers.get('content-length', 0))
                         if sz > 0: self._fmt = fmt; return sz
-                except Exception: time.sleep(1)
-        raise RuntimeError(f"No chunk {idx}")
+                        last = f"{url}: empty content-length"
+                    else:
+                        last = f"{url}: HTTP {r.status_code}"
+                except requests.RequestException as e:
+                    last = f"{url}: {e}"
+                    time.sleep(1)
+                log.warning("Data chunk lookup failed: %s", last)
+        raise RuntimeError(f"No chunk {idx} ({last})")
 
     def _slice(self, off):
         end = min(off + self.sub_size, self.chunk_size) - 1
@@ -2428,59 +2955,66 @@ def _weight_cache_path(revision, filename):
     rev = str(revision or "main").strip().replace("/", "_").replace("\\", "_")
     d = CHECKPOINT_DIR / "hf_weights" / rev; d.mkdir(parents=True, exist_ok=True); return d / filename
 
+# The background prefetch and the next round can download the same blob; they must not
+# append to one .part file together, and cleanup must not delete a partial that is in use.
+_DOWNLOAD_LOCKS = {}
+_DOWNLOAD_LOCKS_GUARD = threading.Lock()
+
 def _download_file_with_progress(url, dest, emit, stop_evt, expected_size=None, label="file"):
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    expected = int(expected_size) if expected_size is not None else None
-    if dest.exists():
-        sz = dest.stat().st_size
-        if expected is not None and sz == expected: return dest
-        if expected is None and sz > 10_000_000: return dest
-        try: dest.unlink()
-        except Exception: pass
-    tmp = dest.with_suffix(dest.suffix + ".part")
-    last_err = None
-    for attempt in range(3):
-        if stop_evt.is_set(): raise KeyboardInterrupt("Stop requested")
-        try: done = tmp.stat().st_size if tmp.exists() else 0
-        except OSError: done = 0
-        if expected is not None and done > expected:
-            # Stale/oversized fragment; a Range request would be unsatisfiable.
-            try: tmp.unlink()
+    with _DOWNLOAD_LOCKS_GUARD: lock = _DOWNLOAD_LOCKS.setdefault(Path(dest), threading.Lock())
+    with lock:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        expected = int(expected_size) if expected_size is not None else None
+        if dest.exists():
+            sz = dest.stat().st_size
+            if expected is not None and sz == expected: return dest
+            if expected is None and sz > 10_000_000: return dest
+            try: dest.unlink()
             except Exception: pass
-            done = 0
-        if expected is not None and done == expected:
-            os.replace(tmp, dest); return dest
-        try:
-            hdrs = {"Range": f"bytes={done}-"} if done > 0 else {}
-            r = requests.get(url, headers=hdrs, stream=True, timeout=(STREAM_CONNECT_TIMEOUT, STREAM_READ_TIMEOUT), allow_redirects=True)
-            if r.status_code == 416:
-                if expected is not None and done >= expected:
-                    os.replace(tmp, dest); return dest
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        last_err = None
+        for attempt in range(3):
+            if stop_evt.is_set(): raise KeyboardInterrupt("Stop requested")
+            try: done = tmp.stat().st_size if tmp.exists() else 0
+            except OSError: done = 0
+            if expected is not None and done > expected:
+                # Stale/oversized fragment; a Range request would be unsatisfiable.
                 try: tmp.unlink()
                 except Exception: pass
                 done = 0
-                r.raise_for_status()
-            if r.status_code not in (200, 206): r.raise_for_status()
-            append = r.status_code == 206 and done > 0
-            if not append: done = 0  # server ignored Range (or we had nothing): rewrite
-            remaining = int(r.headers.get("content-length", 0) or 0)
-            total = expected if expected is not None else done + remaining
-            last_emit = 0.0
-            with open(tmp, "ab" if append else "wb") as f:
-                for chunk in r.iter_content(chunk_size=1024 * 1024):
-                    if stop_evt.is_set(): raise KeyboardInterrupt("Stop requested")
-                    if not chunk: continue
-                    f.write(chunk); done += len(chunk); now = time.time()
-                    if now - last_emit > 0.25: emit("overlay_progress", {"done": done, "total": total}); last_emit = now
-            if expected is not None and done != expected: raise RuntimeError(f"Size mismatch for {label}: got {done}, expected {expected}")
-            os.replace(tmp, dest); return dest
-        except KeyboardInterrupt:
-            # Keep the partial file so a later run can resume from it.
-            raise
-        except Exception as e:
-            last_err = e
-            if attempt < 2: emit("log", f"Download retry {attempt + 1} for {label}: {e}"); time.sleep(5 * (attempt + 1))
-    raise RuntimeError(f"Failed to download {label}: {last_err}")
+            if expected is not None and done == expected:
+                os.replace(tmp, dest); return dest
+            try:
+                hdrs = {"Range": f"bytes={done}-"} if done > 0 else {}
+                r = requests.get(url, headers=hdrs, stream=True, timeout=(STREAM_CONNECT_TIMEOUT, STREAM_READ_TIMEOUT), allow_redirects=True)
+                if r.status_code == 416:
+                    if expected is not None and done >= expected:
+                        os.replace(tmp, dest); return dest
+                    try: tmp.unlink()
+                    except Exception: pass
+                    done = 0
+                    r.raise_for_status()
+                if r.status_code not in (200, 206): r.raise_for_status()
+                append = r.status_code == 206 and done > 0
+                if not append: done = 0  # server ignored Range (or we had nothing): rewrite
+                remaining = int(r.headers.get("content-length", 0) or 0)
+                total = expected if expected is not None else done + remaining
+                last_emit = 0.0
+                with open(tmp, "ab" if append else "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        if stop_evt.is_set(): raise KeyboardInterrupt("Stop requested")
+                        if not chunk: continue
+                        f.write(chunk); done += len(chunk); now = time.time()
+                        if now - last_emit > 0.25: emit("overlay_progress", {"done": done, "total": total}); last_emit = now
+                if expected is not None and done != expected: raise RuntimeError(f"Size mismatch for {label}: got {done}, expected {expected}")
+                os.replace(tmp, dest); return dest
+            except KeyboardInterrupt:
+                # Keep the partial file so a later run can resume from it.
+                raise
+            except Exception as e:
+                last_err = e
+                if attempt < 2: emit("log", f"Download retry {attempt + 1} for {label}: {e}"); time.sleep(5 * (attempt + 1))
+        raise RuntimeError(f"Failed to download {label}: {last_err}")
 
 def _load_safetensors_flat(path, expected_numel, label="weights"):
     try: from safetensors.torch import load_file
@@ -2639,6 +3173,8 @@ def fetch_weights_from_hf(md, se, emit):
     ie = _load_safetensors_flat(paths["engram"], EXPECTED_ENGRAM_SIZE, "engram weights") if ENGRAM_ACTIVE else None
     try:
         for p in CHECKPOINT_DIR.rglob("*.part"):
+            busy = _DOWNLOAD_LOCKS.get(p.with_suffix(""))
+            if busy is not None and busy.locked(): continue   # another thread is still downloading it
             try: p.unlink()
             except Exception: pass
     except Exception: pass
@@ -2717,6 +3253,14 @@ def _fwl(m, x, y, sl, ua, ad, ls=1.0, preview=False, loss_chunk=LOSS_CHUNK):
         except Exception: cards = []
     return lo * ls, cards
 
+# Batch-size state shared between the sizing call, the OOM ladder and the
+# request headers. An OOM downscale is legitimate on a small card, but the
+# server keys a peer's identity off the batch size it declared, so a silent
+# halving used to look like a different machine and the delta got flagged as a
+# cross-check outlier. Declared is what we sized for; downscales count the
+# reductions, so the coordinator can tell "small card" from "claiming to be big".
+_BS_STATE = {"declared": 0, "downscales": 0}
+
 _OOM_MARKERS = ("out of memory", "cublas_status_alloc_failed", "cudnn_status_alloc_failed",
                 "cublas_status_not_initialized", "cusolver_status_alloc_failed")
 
@@ -2733,6 +3277,7 @@ def _clear_accel_cache(device):
     try:
         if device is not None and device.type == 'cuda': torch.cuda.empty_cache()
         elif device is not None and device.type == 'xpu': torch.xpu.empty_cache()
+        elif device is not None and device.type == 'mps': torch.mps.empty_cache()
     except Exception: pass
     gc.collect()
 
@@ -3005,7 +3550,7 @@ def _attach_paradigm(model, emit=None):
             solo_modules=int(os.environ.get("CROWDGPT_SOLO_MODULES", "2") or 2),
             relora_rank=int(os.environ.get("CROWDGPT_RELORA_RANK", "8") or 8),
             mosaic_slices=int(os.environ.get("CROWDGPT_MOSAIC_SLICES", "2") or 2),
-            mosaic_local_steps=int(os.environ.get("CROWDGPT_MOSAIC_LOCAL_STEPS", "30") or 30),
+            mosaic_local_steps=int(os.environ.get("CROWDGPT_MOSAIC_LOCAL_STEPS") or cp.ParadigmConfig.mosaic_local_steps),
             dust_population=int(os.environ.get("CROWDGPT_DUST_POPULATION", "16") or 16),
             dust_sigma=float(os.environ.get("CROWDGPT_DUST_SIGMA", "0.01") or 0.01),
         )
@@ -3035,11 +3580,6 @@ def _paradigm_step_safe(model, x, y, sl, ua, ad, ls, ladder, emit):
                     loss = par.step(model, x, y, loss_scale=ls, loss_chunk=chunk)
             else:
                 loss = par.step(model, x, y, loss_scale=ls, loss_chunk=chunk)
-            # DUST/MOSAIC ignore loss_scale because they build grads themselves, so
-            # gradient accumulation has to be applied here or `ls` is silently lost.
-            if par.name in ("dust", "mosaic") and ls != 1.0:
-                for prm in model.parameters():
-                    if prm.grad is not None: prm.grad.mul_(ls)
             return torch.tensor(float(loss)), []
         except RuntimeError as e:
             if not _is_oom(e): raise
@@ -3097,8 +3637,13 @@ def _clip_base_grads(model, max_norm=1.0):
 
 def _trim_heap():
     gc.collect()
-    try: ctypes.CDLL("libc.so.6").malloc_trim(0)
-    except Exception: pass
+    try:
+        if sys.platform == "darwin":
+            # macOS has no malloc_trim; this asks every malloc zone to return free pages.
+            ctypes.CDLL("/usr/lib/libSystem.B.dylib").malloc_zone_pressure_relief(None, 0)
+        else:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError): pass  # no trim call on this libc (e.g. musl); gc already ran
 
 def _bf16_from_bytes(buf, offset, nbytes):
     a = np.frombuffer(buf, dtype=np.int16, count=nbytes // 2, offset=offset).copy()
@@ -3644,6 +4189,7 @@ def run_single_round_wrapper(srv, at, se, emit):
     timing_handoff = False
     h = {"Authorization": f"Bearer {at}"} if at else {}
     if DEVICE_ID: h["X-Client-Device"] = DEVICE_ID
+    h["X-Client-Version"] = CLIENT_VERSION   # the server version-gates /fl/submit too
     emit('status', 'waiting'); rs = wait_for_round(srv, h, se, emit)
     if not rs:
         timing.finish(ok=False, error="no_round")
@@ -3741,6 +4287,7 @@ def run_single_round_wrapper(srv, at, se, emit):
         ds = StreamingShardDataset(dc.get("repoId", DATASET_REPO_ID), dc.get("chunkIdx", 0), dc.get("subChunkSize", 10 * 1024 * 1024), dc.get("tokensPerSample", sl + 1), slot, at, cohort_mode=cohort_mode)
 
         _bs_est = recommend_batch_size(sl, force_mode=optim_mode)
+        _BS_STATE["declared"] = int(_bs_est)
         bs = _bs_est
         predegrade = False
         if cohort_mode and cc_bs and int(cc_bs) > 0:
@@ -3752,10 +4299,7 @@ def run_single_round_wrapper(srv, at, se, emit):
         model = None
         while bs >= 1:
             try:
-                if train_backend in ("CUDA", "ROCM"):
-                    try: torch.cuda.empty_cache()
-                    except Exception: pass
-                gc.collect()
+                _clear_accel_cache(train_device)
                 model = _build_model(
                     train_backend, train_device, iw, ie, emit, bs=bs, sl=sl,
                     u8_override=_u8_override, act_bytes_override=_act_bytes_override,
@@ -3768,6 +4312,7 @@ def run_single_round_wrapper(srv, at, se, emit):
                 _clear_accel_cache(train_device)
                 if bs == 1 or (cohort_mode and cc_bs and bs <= int(cc_bs)):
                     emit('log', f"Model build OOM at bs={bs}; skipping this round (try a lower --vram-gb)"); break
+                _BS_STATE["downscales"] += 1
                 bs = max(1, bs // 2); emit('log', f"Model build OOM → bs={bs}")
         if model is None: return
         if cohort_mode and cc_bs and bs < int(cc_bs): emit('log', f"[COHORT] OOM at target bs={cc_bs}; aborting round"); return
@@ -3916,6 +4461,8 @@ def run_single_round_wrapper(srv, at, se, emit):
             "actualSeed": int(cc_seed) if (cohort_mode and cc_seed is not None) else None,
             "actualSteps": int(micro_step),
             "actualBatchSize": int(bs),
+            "declaredBatchSize": int(_BS_STATE["declared"] or bs),
+            "oomDownscales": int(_BS_STATE["downscales"]),
             "lastLoss": float(last_step_loss) if last_step_loss is not None else None,
             "lossStd": float(fl_std),
             "lossSamples": int(round_loss_count),
@@ -4077,11 +4624,10 @@ class Api:
         try:
             if self._backend_file.exists(): saved = json.loads(self._backend_file.read_text()).get("backend")
         except Exception: pass
-        available = get_available_backends(); preferred_backend = get_best_default_backend()
-        if saved and available.get(saved, False):
-            should_upgrade = (os.environ.get("CROWDGPT_HONOR_SAVED_BACKEND") != "1" and ((saved == "cpu" and preferred_backend != "cpu") or (saved == "directml" and preferred_backend in ("cuda", "rocm", "mps", "xpu"))))
-            self.selected_backend = preferred_backend if should_upgrade else saved
-        else: self.selected_backend = preferred_backend
+        # Lazy: no accelerator probing on the UI thread. The verdict comes from a
+        # child process (hw_probe) plus a disk cache, so the window paints instantly.
+        self.selected_backend = saved or "auto"
+        self._initial_backend = self.selected_backend
         self._vram_file = CHECKPOINT_DIR / "selected_vram.json"; self.vram_gb = 0.0
         try:
             if self._vram_file.exists(): self.vram_gb = max(0.0, float(json.loads(self._vram_file.read_text()).get("vram_gb", 0) or 0))
@@ -4131,9 +4677,13 @@ class Api:
         except Exception as e: log.warning(f"[auth] auto-login failed: {e}")
 
     def get_backends(self):
-        self.emit('backends', {'available': get_available_backends(), 'current': self.selected_backend})
+        """Non-blocking. Serve the cache; a cold cache is filled by a child process."""
+        cached = _BACKEND_CACHE.get("available")
+        probing = cached is None
+        self.emit('backends', {'available': cached or {"cpu": True},
+                               'current': self.selected_backend, 'probing': probing})
         self.emit('vram', {'current': self.vram_gb})
-        gpus = get_gpu_list()
+        gpus = _BACKEND_CACHE.get("gpus") or []
         saved = _load_saved_gpu_idx()
         if not gpus:
             current = 0
@@ -4142,6 +4692,8 @@ class Api:
         else:
             current = saved
         self.emit('gpus', {'list': gpus, 'current': current})
+        if probing:
+            probe_backends_async(self)
 
     def set_gpu(self, idx):
         try:
@@ -4238,6 +4790,9 @@ class Api:
     def _check_updates_between_rounds(self): _check_updates_between_rounds(self.emit)
 
     def _rs(self):
+        start_tokenizer_loader()
+        if _GUI_MODE and _HW_PROBE.get("data") is None:
+            hw_probe(warm=True)
         try: _do_backend_setup(self.selected_backend, self.vram_gb, self.emit)
         except Exception as e:
             self.emit('log', f"Error: {e}"); self.emit('status', 'idle'); return
@@ -4308,17 +4863,16 @@ def startup():
         w = max(320, min(w, aw - 16)); h = max(240, min(h, ah - 48))
         webview.windows[0].resize(w, h)
         webview.windows[0].move(max(0, (aw - w) // 2), max(0, (ah - h) // 2))
-        if sys.platform == "win32" and WINDOWS_ICO_PATH:
-            def _win_icon():
-                if _wait_for_window(WINDOW_TITLE, timeout=10.0):
-                    for delay in (0.0, 1.5):          # twice: some builds reset the icon right after the first paint
-                        time.sleep(delay)
-                        try: set_windows_icon(WINDOW_TITLE, WINDOWS_ICO_PATH)
-                        except Exception: pass
-            threading.Thread(target=_win_icon, daemon=True).start()
-        elif sys.platform != "win32":
-            threading.Thread(target=_apply_gtk_icon_list, daemon=True).start()
-    except Exception: pass
+    except Exception:
+        pass
+    if sys.platform == "win32":
+        try:
+            apply_windows_icon(webview.windows[0] if webview.windows else None)
+        except Exception as e:
+            log.warning(f"[icon] {e}")
+    else:
+        threading.Thread(target=_apply_gtk_icon_list, daemon=True).start()
+
 
 def _create_window_safe(title, html, kwargs):
     try: return webview.create_window(title, html=html, **kwargs)
@@ -4326,17 +4880,23 @@ def _create_window_safe(title, html, kwargs):
         kwargs.pop("min_size", None); return webview.create_window(title, html=html, **kwargs)
 
 def _start_icon_kwargs():
-    if sys.platform == "win32" or not ICON_PATH or not os.path.exists(ICON_PATH): return {}
-    path = ICON_PATH
-    if path.lower().endswith(".ico"):
-        # Qt reads every size inside the ICO. GTK needs gdk-pixbuf to be able to open it, otherwise window creation fails.
+    """Hand the icon to pywebview on every platform, Windows included."""
+    if not ICON_PATH or not os.path.exists(ICON_PATH):
+        return {}
+    path = WINDOWS_ICO_PATH if sys.platform == "win32" else ICON_PATH
+    if not path or not os.path.exists(path):
+        return {}
+    if sys.platform != "win32" and path.lower().endswith(".ico"):
         try:
             import gi; gi.require_version("GdkPixbuf", "2.0")
             from gi.repository import GdkPixbuf
             GdkPixbuf.Pixbuf.new_from_file(path)
-        except (ImportError, ValueError): pass
-        except Exception: path = _embedded_png(256) or path
+        except (ImportError, ValueError):
+            pass                      # Qt reads every size inside the ICO
+        except Exception:
+            path = _embedded_png(256) or path
     return {"icon": path}
+
 
 _TUI_STATUS = {
     "idle": ("Idle", "dim"),
@@ -5143,43 +5703,67 @@ def _start_stall_watchdog(limit_s: float = 8.0):
         _STALL_FH = open(CHECKPOINT_DIR / "stall_trace.log", "a", buffering=1)
         def _beat():
             while True:
-                try: faulthandler.dump_traceback_later(limit_s, repeat=False, file=_STALL_FH)
+                try:
+                    if _WARMUP.get("active"):
+                        faulthandler.cancel_dump_traceback_later()
+                    else:
+                        faulthandler.dump_traceback_later(limit_s, repeat=False, file=_STALL_FH)
                 except Exception: return
                 time.sleep(1.0)
         threading.Thread(target=_beat, daemon=True, name="stall-watchdog").start()
     except Exception as e: log.warning(f"[ui] stall watchdog unavailable: {e}")
 
 def _prewarm_gpu(api):
-    """Initialise CUDA/ROCm *before* the window exists. torch's one-time GPU initialisation holds the Python GIL for
-    5-20 s on a cold Windows start; the window's message loop is Python too, so if that happens while the window is
-    open Windows shows "Not responding". Doing it first moves the wait to before the window appears.
-    CROWDGPT_PREWARM_GPU=0 disables it."""
-    if os.environ.get("CROWDGPT_PREWARM_GPU", "1") == "0": return
+    """Warm the driver in a CHILD process. Doing it in-process — even on a worker
+    thread — holds the GIL through CUDA init / PTX JIT and freezes the WinForms
+    pump. The child fills the shared on-disk kernel cache, so this process's
+    later CUDA init is fast. CROWDGPT_PREWARM_GPU=0 disables it."""
+    if os.environ.get("CROWDGPT_PREWARM_GPU", "1") == "0":
+        return
+    if _GUI_MODE:
+        hw_probe(warm=True)
+        return
     try:
-        if not torch.cuda.is_available(): return
-        dev, be = detect_training_backend(api.selected_backend)
-        if be not in ("CUDA", "ROCM"): return
-        t0 = time.time(); log.info("[gpu] initialising the GPU — the window opens right after...")
+        if not torch.cuda.is_available():
+            return
+        dev, be = detect_training_backend(getattr(api, "selected_backend", None))
+        if be not in ("CUDA", "ROCM"):
+            return
+        t0 = time.time()
         with torch.cuda.device(dev):
-            a = torch.zeros(16, 16, device=dev); float((a @ a).sum().item()); del a       # context + cuBLAS handle
-            torch.cuda.empty_cache()
+            a = torch.zeros(16, 16, device=dev); float((a @ a).sum().item()); del a
+        torch.cuda.empty_cache()
         log.info(f"[gpu] ready in {time.time() - t0:.1f}s")
-    except Exception as e: log.warning(f"[gpu] pre-warm skipped: {e}")
+    except Exception as e:
+        log.warning(f"[gpu] pre-warm skipped: {e}")
+
 
 def run_gui(args):
+    global _GUI_MODE
     if not _WEBVIEW_OK:
         log.error(f"GUI unavailable: {_WEBVIEW_ERR}"); return 4
-
-    api = Api(); start_tokenizer_loader()
-    _prewarm_gpu(api); _start_stall_watchdog()
+    _GUI_MODE = True
+    # Every pywebview event re-enters Python on the UI thread. A 5 ms GIL slice
+    # lets a Python-heavy worker monopolise it; 0.5 ms keeps the pump responsive
+    # at no measurable cost to training (torch ops release the GIL anyway).
+    try:
+        sys.setswitchinterval(0.0005)
+    except Exception:
+        pass
+    cached = _hw_cache_load()
+    if cached:
+        _HW_PROBE["data"] = cached
+        _BACKEND_CACHE.update(available=dict(cached.get("available") or {"cpu": True}),
+                              gpus=list(cached.get("gpus") or []),
+                              preferred=cached.get("preferred") or "cpu")
+    api = Api()
+    _start_stall_watchdog()
     kwargs = {"js_api": api, "width": 1000, "height": 720, "min_size": (320, 240)}
-
     html_path = Path(__file__).resolve().parent / "client.html"
     tmp_html = html_path.with_name(html_path.name + ".new")
-
     try:
         if not html_path.is_file():
-            response = requests.get(HTML_URL, timeout=60); response.raise_for_status(); downloaded_html = response.text
+            response = requests.get(HTML_URL, timeout=20); response.raise_for_status(); downloaded_html = response.text
             if ("<html" not in downloaded_html[:500].lower() or "__LOGO__" not in downloaded_html or "__LOGO_DARK__" not in downloaded_html or "__VERSION__" not in downloaded_html):
                 raise ValueError("Downloaded client.html failed validation")
             try: tmp_html.write_text(downloaded_html, encoding="utf-8"); os.replace(str(tmp_html), str(html_path))
@@ -5191,15 +5775,35 @@ def run_gui(args):
             raise ValueError("Local client.html is invalid")
     except Exception as e:
         log.error(f"Could not load/download {html_path}: {e}"); return 4
-
     html_out = render_client_html(html_template)
     window = _create_window_safe("CrowdGPT", html_out, kwargs); api.window = window
     api._add_sink(PywebviewSink(window, api._ui_ready))
+
+    def _warmup():
+        # Runs after first paint. The heavy part is a CHILD process, so this
+        # thread only waits on a pipe (GIL released) — the window stays live.
+        _WARMUP["active"] = True
+        try:
+            _probe_backends_now(api)
+        except Exception as e:
+            log.warning(f"[hw] startup probe skipped: {e}")
+        try:
+            if not args.no_update and not _upload_active():
+                if check_for_update():
+                    log.info("[update] new version staged; it applies at the next round boundary")
+        except Exception:
+            pass
+        try:
+            prune_hf_cache()
+        except Exception:
+            pass
+        _WARMUP["active"] = False
 
     def _on_loaded():
         try: startup()
         except Exception: pass
         api._mark_ui_ready()
+        threading.Thread(target=_warmup, daemon=True, name="hw-warmup").start()
 
     subscribed = False
     for attr_chain in (("events", "loaded"), ("loaded",)):
@@ -5210,14 +5814,29 @@ def run_gui(args):
             subscribed = True
             break
         except Exception: continue
-
     if not subscribed:
         log.warning("[ui] No 'loaded' event available; using fallback thread.")
         threading.Thread(target=lambda: (time.sleep(3.0), _on_loaded()), daemon=True).start()
-
-    try: webview.start(debug=False, **_start_icon_kwargs())
-    except TypeError: webview.start(debug=False)
+    if sys.platform == "win32":
+        def _icon_retry():
+            for delay in (0.4, 1.2, 3.0):
+                time.sleep(delay)
+                try: apply_windows_icon(window)
+                except Exception: pass
+        threading.Thread(target=_icon_retry, daemon=True, name="icon-retry").start()
+    icon_kwargs = _start_icon_kwargs()
+    if icon_kwargs:
+        # A TypeError from a partially-initialised start() must never lead to a
+        # second start(): that wedges the message loop for good.
+        try:
+            import inspect
+            if "icon" not in inspect.signature(webview.start).parameters:
+                icon_kwargs = {}
+        except Exception:
+            icon_kwargs = {}
+    webview.start(debug=False, **icon_kwargs)
     return 0
+
 
 # The desktop UI predates these codes; keep its generic registration message.
 _GUI_REGISTER_CODES = {
@@ -5330,11 +5949,12 @@ if __name__ == "__main__":
         try: ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Vxtzq.CrowdGPT.1")
         except Exception: pass
 
-    if not args.no_update:
+    if not args.no_update and args.headless:
         try:
             if check_for_update():
                 _restart_self()
-        except Exception: pass
+        except Exception:
+            pass
 
     if args.headless: sys.exit(run_headless(args))
     else: sys.exit(run_gui(args))

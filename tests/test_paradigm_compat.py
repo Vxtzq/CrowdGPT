@@ -173,3 +173,14 @@ def test_mosaic_slices_are_name_based_so_relora_wrapping_cannot_break_them():
     assert slice_of("ln_f.weight", splits) == 1
     assert slice_of("solo_heads.0.phi.weight", splits) is None
     assert DIM > 0  # imported for the shared tiny model
+
+
+def test_mosaic_leaves_no_grads_for_the_client_optimizer():
+    """The client steps its own AdamW after every paradigm; MOSAIC must not feed it."""
+    model, _, _ = _round(["mosaic"], "mosaic", optimise=False)
+    assert all(p.grad is None for p in model.parameters())
+
+
+def test_client_mosaic_default_matches_paradigm_config():
+    src = (Path(__file__).resolve().parents[1] / "client.py").read_text()
+    assert 'os.environ.get("CROWDGPT_MOSAIC_LOCAL_STEPS") or cp.ParadigmConfig.mosaic_local_steps' in src
