@@ -207,7 +207,7 @@ class TimingRecorder:
         self.phase("total", time.monotonic() - self.started, ok=ok, **fields)
 
 
-CLIENT_VERSION = "4.1"
+CLIENT_VERSION = "4.2"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
@@ -5705,10 +5705,9 @@ def _start_stall_watchdog(limit_s: float = 8.0):
         def _beat():
             while True:
                 try:
-                    if _WARMUP.get("active"):
-                        faulthandler.cancel_dump_traceback_later()
-                    else:
-                        faulthandler.dump_traceback_later(limit_s, repeat=False, file=_STALL_FH)
+                    # Also armed during the startup warm-up: the child-process wait releases the GIL, so a
+                    # dump there is a real stall, and it is exactly where the "Not responding" freeze happens.
+                    faulthandler.dump_traceback_later(limit_s, repeat=False, file=_STALL_FH)
                 except Exception: return
                 time.sleep(1.0)
         threading.Thread(target=_beat, daemon=True, name="stall-watchdog").start()
@@ -5738,6 +5737,46 @@ def _prewarm_gpu(api):
     except Exception as e:
         log.warning(f"[gpu] pre-warm skipped: {e}")
 
+
+def _start_ui_health_watchdog(window, html_getter, api):
+    """Linux/WebKitGTK: the web process can die or lose its surface after hours (the window turns white and
+    stays white). Probe the page every few seconds; two failed probes in a row reload it and restore the
+    dashboard state. CROWDGPT_UI_WATCHDOG=0 disables it."""
+    if not sys.platform.startswith("linux") or os.environ.get("CROWDGPT_UI_WATCHDOG", "1") == "0": return
+    def _probe():
+        box = {}
+        def _run():
+            try: box["r"] = window.evaluate_js("document.readyState + '|' + (document.body ? document.body.children.length : 0)")
+            except Exception as e: box["e"] = e
+        th = threading.Thread(target=_run, daemon=True); th.start(); th.join(10.0)
+        r = box.get("r")
+        return isinstance(r, str) and r.startswith("complete") and not r.endswith("|0")
+    def _restore():
+        try:
+            window.load_html(html_getter())
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                time.sleep(1.0)
+                if _probe(): break
+            if getattr(api, "auth_token", None) or getattr(api, "username", None):
+                api.emit('login_success', {'username': api.username or 'anonymous', 'autologin': True})
+            try: api.get_backends()
+            except Exception: pass
+            if api.thread is not None and api.thread.is_alive():
+                api.emit('started', {})
+        except Exception as e: log.warning(f"[ui] reload failed: {e}")
+    def _loop():
+        api._ui_ready.wait(); time.sleep(20.0)
+        bad = reloads = 0
+        while reloads < 8:
+            time.sleep(6.0)
+            if _probe(): bad = 0; continue
+            bad += 1
+            if bad >= 2:
+                reloads += 1; bad = 0
+                log.warning(f"[ui] web view unresponsive/blank - reloading it ({reloads}/8)")
+                _restore()
+    threading.Thread(target=_loop, daemon=True, name="ui-health").start()
 
 def run_gui(args):
     global _GUI_MODE
@@ -5779,6 +5818,7 @@ def run_gui(args):
     html_out = render_client_html(html_template)
     window = _create_window_safe("CrowdGPT", html_out, kwargs); api.window = window
     api._add_sink(PywebviewSink(window, api._ui_ready))
+    _start_ui_health_watchdog(window, lambda: html_out, api)
 
     def _warmup():
         # Runs after first paint. The heavy part is a CHILD process, so this
