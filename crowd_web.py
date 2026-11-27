@@ -13,6 +13,7 @@ import hmac
 import inspect
 import ipaddress
 import json
+import logging
 import os
 import re
 import secrets
@@ -23,6 +24,8 @@ from collections import deque
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from typing import NamedTuple, Optional
+
+log = logging.getLogger(__name__)
 
 
 def _write_private(path, text):
@@ -449,3 +452,25 @@ class WebSink:
             self._log.append((self._seq, frame))
         elif ev in WEB_STATE_GROUPS:
             self._state[WEB_STATE_GROUPS[ev]] = (self._seq, frame)
+
+
+def prepare_web(args, env, token_path):
+    """(config, token) for run_web, before anything starts; token is None when auth isn't required.
+    Raises ValueError on a bad setting."""
+    cfg = resolve_web_config(args, env)
+    token = resolve_web_token(cfg.token, token_path) if auth_required(cfg.auth, cfg.host) else None
+    return cfg, token
+
+def start_web(api, cfg, token, html, login):
+    """Wire the Api to browsers and start serving: a WebSink, the page with its shim, the app with
+    token and Host/Origin checks, the server thread. Then log in from the CLI without starting
+    training. html has its placeholders filled; login is (creds, saved, do_login). Returns the server."""
+    sink = WebSink(); api._add_sink(sink)
+    page = render_web_html(html, {"auth": cfg.auth, "loopback": is_loopback(cfg.host)})
+    app = create_web_app(api, {"html": page, "sink": sink, "token": token,
+                               "allowed_hosts": web_allowed_hosts(cfg.host, cfg.allowed_hosts)})
+    server = WebServer(app, cfg.host, cfg.port)
+    log.info(f"[web] listening on {web_url(server.start())}")
+    creds, saved, do_login = login
+    web_autologin(api, creds, saved, do_login, autostart=False)
+    return server
