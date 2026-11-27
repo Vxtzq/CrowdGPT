@@ -33,7 +33,8 @@
   <strong>The best 0$ AI.</strong>
 </p>
 
-# 📢 CrowdGPT v3.5 changelog
+# 📢 CrowdGPT v4.1 changelog
+## Merged many pull requests
 ## Crowd-v1.5 training run started 🥳
 Train as much as you want.
 - Five training paradigms, multi-token prediction, and two
@@ -332,7 +333,7 @@ python client.py
 
 ### CrowdGPT power-trainers applications are open!! 
 
-Power-trainers can train by themselves, without any checks. Reach a trust-score of 1, and you're eligible.
+Power-trainers can train by themselves, without any checks. Reach a trust-score of 1, and you're eligible. You must've trained on 1B tokens as well (2B+ is better), so we can make sure you won't destroy what you used compute for.
 
 ## 📄 License
 

@@ -1175,6 +1175,12 @@ class InstallerAPI:
             return
 
         if self.os_name == "Darwin":
+            rc, out = run_capture(["sysctl", "-n", "hw.optional.arm64"])
+            if self.arch != "arm64" and rc == 0 and out.strip() == "1":
+                # Under Rosetta platform.machine() says x86_64 and there is no MPS torch wheel.
+                raise RuntimeError(
+                    "This Python runs under Rosetta (x86_64) on an Apple Silicon Mac, so it would "
+                    "get a CPU-only install. Open a native (arm64) Terminal and run install.sh again.")
             if self.arch == "arm64":
                 self.backend = "apple"
                 self.torch_index = "https://pypi.org/simple"

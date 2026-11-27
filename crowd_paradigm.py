@@ -173,14 +173,19 @@ class Paradigm:
                     if n in new_w:
                         p.copy_(new_w[n].to(p.device, p.dtype))
             model._mosaic_state = state
-            return float(_ce(model(x), y))
+            # MOSAIC has applied its own outer step; clear the slices' leftover local
+            # grads so the client's outer optimizer does not step on them again.
+            for p in model.parameters():
+                p.grad = None
+            with __import__("torch").no_grad():
+                return float(_ce(model(x), y))
 
         if self.name == "dust":
             from crowd_dust import DustConfig, dust_step
 
             cfg = DustConfig(population=self.type.dust_population, sigma=self.type.dust_sigma,
                              seed=self.type.dust_seed)
-            return float(dust_step(model, x, y, cfg=cfg, loss_fn=_ce))
+            return float(dust_step(model, x, y, cfg=cfg, loss_fn=_ce, loss_scale=loss_scale))
 
         from crowd_relora import trainable_parameters
 

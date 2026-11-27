@@ -8,7 +8,10 @@ services:
         BASE_IMAGE: "${BASE_IMAGE:-pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime}"
         BACKEND: "cuda"
         TORCH_INDEX: "${TORCH_INDEX:-}"
-        TORCH_SPEC: "${TORCH_SPEC:-torch}"
+        # Pinned to the CUDA base image: bump this and BASE_IMAGE together.
+        # Unpinned, the install step resolves the newest wheel, so the same
+        # tag built on two days can contain two different torch versions.
+        TORCH_SPEC: "torch==2.6.0"
         INSTALL_BITSANDBYTES: "${INSTALL_BITSANDBYTES:-auto}"
     image: crowdgpt:cuda
     container_name: crowdgpt

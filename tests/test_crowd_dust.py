@@ -102,3 +102,57 @@ def test_model_without_linears_is_rejected():
 
     with pytest.raises(DustError):
         dust_step(Empty(), torch.zeros(1, 2, D), torch.zeros(1, 2, dtype=torch.long))
+
+
+class WithSparseTable(MLP):
+    def __init__(self):
+        super().__init__()
+        self.table = nn.Embedding(8, D, sparse=True)
+
+    def forward(self, idx):
+        return super().forward(idx + self.table.weight[:1])
+
+
+def test_dust_leaves_non_linear_params_without_a_dense_grad():
+    """A dense zero grad on a sparse table makes SparseAdam raise every round."""
+    model = WithSparseTable()
+    x, y = batch()
+    dust_step(model, x, y, cfg=DustConfig(population=4), loss_fn=loss_fn)
+    assert model.table.weight.grad is None
+    torch.optim.SparseAdam([model.table.weight]).step()
+
+
+def test_dust_accumulates_and_scales_like_backward():
+    x, y = batch()
+    cfg = DustConfig(population=4, seed=3)
+    once = MLP()
+    dust_step(once, x, y, cfg=cfg, loss_fn=loss_fn)
+    twice = MLP()
+    twice.load_state_dict(once.state_dict())
+    for p in twice.parameters():
+        p.grad = None
+    dust_step(twice, x, y, cfg=cfg, loss_fn=loss_fn, loss_scale=0.5)
+    dust_step(twice, x, y, cfg=cfg, loss_fn=loss_fn, loss_scale=0.5)
+    for a, b in zip(once.parameters(), twice.parameters()):
+        assert torch.allclose(a.grad, b.grad, atol=1e-6)
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available() and not torch.cuda.is_available(),
+                    reason="needs a second device")
+def test_dust_handles_layers_on_different_devices():
+    dev = "cuda" if torch.cuda.is_available() else "mps"
+    model = MLP()
+    model.fc2.to(dev)
+
+    class Split(nn.Module):
+        def __init__(self, m):
+            super().__init__()
+            self.m = m
+
+        def forward(self, idx):
+            return self.m.fc2(torch.tanh(self.m.fc1(idx)).to(dev)).cpu()
+
+    x, y = batch()
+    dust_step(Split(model), x, y, cfg=DustConfig(population=2), loss_fn=loss_fn)
+    assert model.fc1.weight.grad.device.type == "cpu"
+    assert model.fc2.weight.grad.device.type == dev
