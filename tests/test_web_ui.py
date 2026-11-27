@@ -204,6 +204,38 @@ class WebUrl(unittest.TestCase):
                 self.assertEqual(cw.web_url(sockname), want)
 
 
+class WebStartupMessages(unittest.TestCase):
+    TOKEN = "t" * 32
+
+    def _logs(self, sockname, token):
+        with self.assertLogs(cw.log, "INFO") as cm:
+            cw.log_web_startup(sockname, token)
+        return [(r.levelname, r.getMessage()) for r in cm.records]
+
+    def test_loopback_logs_url_only(self):
+        self.assertEqual(self._logs(("127.0.0.1", 8765), None),
+                         [("INFO", "[web] listening on http://127.0.0.1:8765")])
+
+    def test_token_url_logged_once(self):
+        msgs = [m for _, m in self._logs(("::1", 8765, 0, 0), self.TOKEN)]
+        self.assertEqual(sum(self.TOKEN in m for m in msgs), 1)
+        self.assertIn(f"http://[::1]:8765/?token={self.TOKEN}", msgs[1])
+
+    def test_unspecified_token_url_uses_localhost(self):
+        msgs = [m for _, m in self._logs(("0.0.0.0", 8765), self.TOKEN)]
+        self.assertTrue(any(f"http://localhost:8765/?token={self.TOKEN}" in m for m in msgs))
+
+    def test_non_loopback_warns(self):
+        warnings = [m for lvl, m in self._logs(("192.168.1.20", 8765), self.TOKEN) if lvl == "WARNING"]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("192.168.1.20", warnings[0])
+
+    def test_no_auth_off_loopback_warns_louder(self):
+        warnings = [m for lvl, m in self._logs(("0.0.0.0", 8765), None) if lvl == "WARNING"]
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("NO authentication", warnings[1])
+
+
 _TEMPLATE = (Path(__file__).resolve().parent.parent / "client.html").read_text(encoding="utf-8")
 _SHIM_MARK = "window.__CROWD_WEB__"
 _HTML = client.render_client_html(_TEMPLATE)

@@ -110,6 +110,20 @@ def web_url(sockname):
     host, port = sockname[0], sockname[1]
     return f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}"
 
+def log_web_startup(sockname, token):
+    """Log where the web UI listens, the ready-to-click token URL (once) and exposure warnings.
+    Judged on the bound address; off loopback without a token means auth is `none`."""
+    url = web_url(sockname)
+    log.info(f"[web] listening on {url}")
+    if token:
+        click = web_url(("localhost", *sockname[1:])) if _is_unspecified(sockname[0]) else url
+        log.info(f"[web] open {click}/?token={token}")
+    if is_loopback(sockname[0]): return
+    log.warning(f"[web] {url} is reachable from other machines, not just this one")
+    if not token:
+        log.warning(f"[web] web UI on {url} with NO authentication: anyone who can reach this port "
+                    "can control training")
+
 def _import_web_stack():
     """Import FastAPI and uvicorn on demand: the updater can ship this file to installs without them."""
     try:
@@ -470,7 +484,7 @@ def start_web(api, cfg, token, html, login):
     app = create_web_app(api, {"html": page, "sink": sink, "token": token,
                                "allowed_hosts": web_allowed_hosts(cfg.host, cfg.allowed_hosts)})
     server = WebServer(app, cfg.host, cfg.port)
-    log.info(f"[web] listening on {web_url(server.start())}")
+    log_web_startup(server.start(), token)
     creds, saved, do_login = login
     web_autologin(api, creds, saved, do_login, autostart=False)
     return server
