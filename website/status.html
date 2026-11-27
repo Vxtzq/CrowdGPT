@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Network Status - CrowdGPT</title>
+<link rel="icon" type="image/svg+xml" href="logo-white.svg" id="favicon">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@1,9..144,400;1,9..144,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0a0a0b; --bg-soft:#111113; --bg-softer:#16161a;
+    --text:#f5f5f7; --text-dim:#c7c7cc; --text-muted:#8a8a92;
+    --border:#1f1f23; --border-strong:#2a2a30;
+    --accent:#22c55e; --accent-dim:#16a34a; --info:#60a5fa; --warn:#fbbf24; --error:#ef4444;
+    --serif:'Fraunces','Times New Roman',serif;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --radius:6px; --radius-sm:3px;
+    --pad-x:clamp(16px,2.2vw,34px); --header-h:clamp(72px,5.2vw,86px);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+
+  header{position:sticky;top:0;z-index:40;height:var(--header-h);background:rgba(10,10,11,.82);
+    backdrop-filter:blur(14px);border-bottom:1px solid var(--border)}
+  .header-inner{max-width:1180px;margin:0 auto;height:100%;padding:0 var(--pad-x);
+    display:flex;align-items:center;gap:clamp(12px,2vw,28px)}
+  .logo{display:flex;align-items:center;gap:9px;cursor:pointer;text-decoration:none;color:inherit}
+  .logo-img{height:clamp(24px,2.1vw,30px);width:auto;display:block}
+  .logo-img-failed .logo-img{display:none}
+  .logo-fallback{display:none;width:26px;height:26px;border-radius:5px;background:var(--accent);
+    color:#04130a;font-weight:700;align-items:center;justify-content:center;font-size:14px}
+  .logo-img-failed .logo-fallback{display:flex}
+  .logo-text{font-family:var(--serif);font-style:italic;font-size:clamp(17px,1.5vw,21px);letter-spacing:.01em}
+  nav{display:flex;align-items:center;gap:clamp(10px,1.5vw,22px);margin-left:auto;flex-wrap:wrap}
+  nav a{font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:lowercase;
+    color:var(--text-muted);text-decoration:none;padding:6px 2px;border-bottom:1px solid transparent}
+  nav a:hover{color:var(--text)}
+  nav a.active{color:var(--text);border-bottom-color:var(--accent)}
+
+  .wrap{max-width:1180px;margin:0 auto;padding:clamp(22px,3.4vw,40px) var(--pad-x) 64px}
+  .crumbs{font-family:var(--mono);font-size:11px;letter-spacing:.07em;color:var(--text-muted);margin-bottom:14px}
+  .crumbs a{color:var(--text-muted);text-decoration:none}
+  .crumbs a:hover{color:var(--text)}
+  .crumbs span{margin:0 .5em;opacity:.5}
+
+  h1{font-family:var(--serif);font-style:italic;font-weight:400;font-size:clamp(28px,3.4vw,44px);
+    line-height:1.12;margin:0 0 8px;letter-spacing:-.01em}
+  .sub{color:var(--text-muted);max-width:62ch;margin:0 0 22px;font-size:14.5px}
+
+  .chip{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;
+    letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim);
+    border:1px solid var(--border-strong);border-radius:999px;padding:5px 11px;margin-left:10px;
+    vertical-align:middle}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px rgba(34,197,94,.16)}
+  .dot.warn{background:var(--warn);box-shadow:0 0 0 3px rgba(251,191,36,.16)}
+  .dot.bad{background:var(--error);box-shadow:0 0 0 3px rgba(239,68,68,.16)}
+
+  .grid{display:grid;gap:14px}
+  .tiles{grid-template-columns:repeat(6,minmax(0,1fr));margin-bottom:14px}
+  .two{grid-template-columns:1.6fr 1fr}
+  .card{background:var(--bg-soft);border:1px solid var(--border);border-radius:var(--radius);
+    padding:16px 18px;min-width:0}
+  .card h2{font-family:var(--mono);font-size:11px;letter-spacing:.09em;text-transform:uppercase;
+    color:var(--text-muted);margin:0 0 12px;font-weight:500}
+  .k{font-family:var(--mono);font-size:clamp(19px,2vw,26px);font-weight:600;letter-spacing:-.02em;
+    color:var(--text);line-height:1.1}
+  .k.small{font-size:16px}
+  .kl{font-size:12px;color:var(--text-muted);margin-top:6px}
+  .accent{color:var(--accent)}
+
+  .bar{height:6px;border-radius:999px;background:var(--bg-softer);overflow:hidden;margin:14px 0 8px}
+  .bar > i{display:block;height:100%;background:linear-gradient(90deg,var(--accent-dim),var(--accent))}
+  .row{display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-family:var(--mono);
+    font-size:11.5px;color:var(--text-muted)}
+
+  .chart{width:100%;height:230px;display:block}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-family:var(--mono);font-size:11px;color:var(--text-muted);margin-top:8px}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+
+  .tabs{display:inline-flex;border:1px solid var(--border-strong);border-radius:var(--radius-sm);overflow:hidden;margin-bottom:12px}
+  .tabs button{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+    background:transparent;color:var(--text-muted);border:0;padding:7px 12px;cursor:pointer}
+  .tabs button.on{background:var(--bg-softer);color:var(--text)}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-family:var(--mono);font-size:12px}
+  .kv b{font-weight:500;color:var(--text-muted)}
+  .note{font-size:13px;color:var(--text-dim);margin:10px 0 0}
+
+  .hbar{display:grid;grid-template-columns:104px 1fr 56px;align-items:center;gap:10px;
+    font-family:var(--mono);font-size:11.5px;color:var(--text-dim);margin-bottom:7px}
+  .hbar .t{height:7px;border-radius:999px;background:var(--bg-softer);overflow:hidden}
+  .hbar .t i{display:block;height:100%;background:var(--accent-dim)}
+  .hbar .t i.alt{background:var(--info)}
+  .hbar .t i.mut{background:#3a3a42}
+
+  .spark{display:flex;align-items:flex-end;gap:2px;height:64px}
+  .spark i{flex:1;background:var(--accent-dim);border-radius:1px 1px 0 0;min-height:1px}
+  .spark i.slow{background:var(--warn)}
+
+  .cal{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,11px);gap:3px;overflow-x:auto;padding-bottom:6px}
+  .cal i{width:11px;height:11px;border-radius:2px;background:#161b22;display:block}
+  .months{display:grid;gap:3px;font-family:var(--mono);font-size:10px;color:var(--text-muted);margin:6px 0 10px}
+
+  .ctr{display:flex;justify-content:space-between;align-items:center;gap:10px;
+    font-family:var(--mono);font-size:11.5px;color:var(--text-muted);padding:7px 0;border-top:1px solid var(--border)}
+  .ctr:first-of-type{border-top:0}
+
+  .btn{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11.5px;
+    letter-spacing:.07em;text-transform:lowercase;color:var(--text);text-decoration:none;
+    border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:9px 14px;background:var(--bg-soft)}
+  .btn:hover{border-color:var(--accent-dim);color:var(--accent)}
+
+  .frame{background:#0d0f0e;border:1px solid var(--border-strong);border-radius:10px;
+    padding:clamp(16px,3vw,30px);display:grid;gap:14px}
+  .frame .big{font-family:var(--serif);font-style:italic;font-size:clamp(19px,2.2vw,28px);line-height:1.25}
+  .frame .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+  .frame .stats div{font-family:var(--mono);font-size:11px;color:var(--text-muted)}
+  .frame .stats b{display:block;font-size:17px;color:var(--text);letter-spacing:-.01em;margin-bottom:3px}
+
+  footer{border-top:1px solid var(--border);margin-top:48px}
+  .footer-inner{max-width:1180px;margin:0 auto;padding:22px var(--pad-x);display:flex;gap:18px;
+    justify-content:space-between;flex-wrap:wrap;font-family:var(--mono);font-size:11.5px;color:var(--text-muted)}
+  .footer-links a{color:var(--text-muted);text-decoration:none;margin-left:16px}
+  .footer-links a:hover{color:var(--text)}
+
+  @media (max-width:1020px){
+    .tiles{grid-template-columns:repeat(3,minmax(0,1fr))}
+    .two{grid-template-columns:1fr}
+  }
+  @media (max-width:640px){
+    .tiles{grid-template-columns:1fr 1fr}
+    .frame .stats{grid-template-columns:1fr 1fr}
+    nav{gap:8px}
+    nav a{font-size:10.5px}
+  }
+  @media (max-width:420px){ .tiles{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <a class="logo" href="index.html" aria-label="CrowdGPT home">
+      <img src="logo-white.svg" alt="CrowdGPT" class="logo-img" id="logo-img" onerror="this.parentElement.classList.add('logo-img-failed')">
+      <div class="logo-fallback">C</div>
+      <span class="logo-text">CrowdGPT</span>
+    </a>
+    <nav>
+      <a href="index.html#home">home</a>
+      <a href="index.html#install">install</a>
+      <a href="index.html#about">about</a>
+      <a href="status.html" class="active">status</a>
+      <a href="index.html#contributors">leaderboard</a>
+      <a href="index.html#submit">submit</a>
+      <a href="index.html#contact">contact</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="crumbs"><a href="index.html">home</a><span>/</span>status</div>
+
+  <h1>Network Status
+    <span class="chip"><span class="dot" id="health-dot"></span><span id="health-label">online</span></span>
+  </h1>
+  <p class="sub">Real-time metrics of the CrowdGPT federated training network. Snapshot <span id="age">12</span>s old, refreshed every 60s.</p>
+
+  <div class="grid tiles">
+    <div class="card">
+      <h2>Active clients</h2>
+      <div class="k" id="stat-clients">9</div>
+      <div class="kl">Currently training</div>
+    </div>
+    <div class="card">
+      <h2>Contributions</h2>
+      <div class="k" id="stat-contribs">694</div>
+      <div class="kl">Submitted model updates</div>
+    </div>
+    <div class="card">
+      <h2>Tokens processed</h2>
+      <div class="k" id="stat-tokens">2.56B</div>
+      <div class="kl">Across all clients</div>
+    </div>
+    <div class="card">
+      <h2>Held-out loss</h2>
+      <div class="k accent" id="stat-loss">6.114</div>
+      <div class="kl">Latest aggregated update</div>
+    </div>
+    <div class="card">
+      <h2>Cohort</h2>
+      <div class="k" id="stat-cohort">2 / 2</div>
+      <div class="kl">Peers per round</div>
+    </div>
+    <div class="card">
+      <h2>Round</h2>
+      <div class="k" id="stat-round">4,182</div>
+      <div class="kl">Last merge 43s ago</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <h2>Token goal</h2>
+    <div class="row"><span id="goal-current">1.60B of 2.56B tokens</span><span id="goal-pct">62%</span></div>
+    <div class="bar"><i style="width:62%" id="goal-fill"></i></div>
+    <p class="note">Every round trains on tokens contributed by volunteers. The goal is the corpus the current model is scheduled to see before the next architecture step.</p>
+  </div>
+
+  <div class="grid two" style="margin-bottom:14px">
+    <div class="card">
+      <h2>Training loss history</h2>
+      <svg class="chart" id="losschart" preserveAspectRatio="none" viewBox="0 0 640 230"></svg>
+      <div class="legend">
+        <span><i style="background:#2a2a30"></i>run-to-run noise (±0.03)</span>
+        <span><i style="background:#22c55e"></i>aggregated loss</span>
+        <span><i style="background:#fbbf24"></i>gate degraded</span>
+        <span><i style="background:#ef4444"></i>gate unmeasured</span>
+      </div>
+      <p class="note" id="loss-last">Last merged update: 6.114 cross-entropy over the held-out slice.</p>
+    </div>
+    <div class="card">
+      <h2>Verification</h2>
+      <div class="tabs" id="gate-tabs">
+        <button data-g="ok" class="on">ok</button>
+        <button data-g="degraded">degraded</button>
+        <button data-g="unmeasured">unmeasured</button>
+      </div>
+      <div class="kv" id="gate-kv"></div>
+      <p class="note" id="gate-note"></p>
+    </div>
+  </div>
+
+  <div class="grid two" style="margin-bottom:14px">
+    <div class="card">
+      <h2>Training pools by hardware</h2>
+      <p class="note" style="margin-top:0;margin-bottom:10px">Which device types are actively training versus waiting for more pool members.</p>
+      <div id="pools"></div>
+      <p class="note" id="pool-summary">6 active pools, 1 forming.</p>
+    </div>
+    <div class="card">
+      <h2>Transfer</h2>
+      <div class="k accent">84% fewer bytes</div>
+      <div class="kl">0.21 GB per peer per round instead of 1.31 GB dense</div>
+      <div class="row" style="margin-top:14px"><span>dense counterfactual</span><span>10.9 TB</span></div>
+      <div class="bar"><i style="width:100%"></i></div>
+      <div class="row"><span>actually moved</span><span class="accent">1.7 TB</span></div>
+      <div class="bar"><i style="width:16%"></i></div>
+      <p class="note">Engram rows are sent only when they carry 99.5% of the update mass, and deltas are compressed per round.</p>
+    </div>
+  </div>
+
+  <div class="grid two" style="margin-bottom:14px">
+    <div class="card">
+      <h2>Round cadence, last 24h</h2>
+      <div class="spark" id="cadence"></div>
+      <p class="note" id="cadence-note">Median round 6m 12s. One 19 minute outlier at 04:30, a straggler holding the cohort.</p>
+    </div>
+    <div class="card">
+      <h2>Who is training</h2>
+      <div id="paradigms"></div>
+      <p class="note">Paradigm mix is <b>declared</b> by each client, not verified by the coordinator.</p>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <h2>Work per day, last 53 weeks</h2>
+    <button class="btn" id="btn-logs" style="float:right;margin-top:-34px" onclick="alert('Server logs live behind the coordinator admin secret.')">view server logs</button>
+    <div class="months" id="months"></div>
+    <div class="cal" id="cal"></div>
+    <div class="legend" style="margin-top:12px">
+      <span>less</span>
+      <span><i style="background:#161b22"></i><i style="background:#0e4429"></i><i style="background:#006d32"></i><i style="background:#26a641"></i><i style="background:#39d353"></i></span>
+      <span>more</span>
+    </div>
+    <p class="note" id="cal-note"></p>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <h2>What the numbers mean</h2>
+    <div class="kv">
+      <b>Contributions</b><span>Total model updates submitted across all contributors.</span>
+      <b>Tokens processed</b><span>Cumulative tokens trained on by every GPU.</span>
+      <b>Active clients</b><span>GPUs that pinged the coordinator in the last 10 minutes.</span>
+      <b>Held-out loss</b><span>Cross-entropy of the most recently aggregated update on a slice no client trains on.</span>
+      <b>Cohort</b><span>Peers that train a round together. A round starts when the pool is full.</span>
+      <b>Noise band</b><span>Run-to-run spread of the same weights, roughly ±0.03. Moves inside it are not improvements.</span>
+      <b>Gate state</b><span>Whether the coordinator replayed submissions. <i>ok</i> means measured on enough windows, <i>degraded</i> means too few, <i>unmeasured</i> means it accepted without checking.</span>
+      <b>Bytes moved</b><span>Upload plus download actually transferred, against the dense per-peer counterfactual.</span>
+    </div>
+  </div>
+
+  <div class="frame" style="margin-bottom:14px">
+    <div class="big">12 people trained a 658M model together and moved 84% fewer bytes doing it.</div>
+    <div class="stats">
+      <div><b>4,182</b>rounds merged</div>
+      <div><b>2.56B</b>tokens trained</div>
+      <div><b>1.7 TB</b>moved, not 10.9</div>
+      <div><b>6.11</b>held-out loss</div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <div class="footer-inner">
+    <div>CrowdGPT - GPL3.0 License - server.crowdgpt.net proudly hosted by <a href="https://xevex.dev" target="_blank" rel="noopener noreferrer">xevex</a></div>
+    <div class="footer-links">
+      <a href="https://github.com/Vxtzq/CrowdGPT" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <a href="https://github.com/Vxtzq/CrowdGPT/tree/main/docs" target="_blank" rel="noopener noreferrer">Docs</a>
+      <a href="mailto:vxtzqmc@gmail.com">Contact</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  const $ = (id) => document.getElementById(id);
+  const lcg = (seed) => { let s = seed >>> 0; return () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296; };
+
+  // loss history: decaying curve with jitter, two gate overrides
+  const r1 = lcg(7), N = 120, loss = [], gates = {};
+  for (let i = 0; i < N; i++) {
+    const base = 5.78 + 2.62 * Math.exp(-i / 13.5);
+    loss.push(base + (r1() - 0.5) * 0.05);
+  }
+  gates[61] = "degraded"; gates[74] = "unmeasured";
+
+  (function chart(){
+    const W = 640, H = 230, pad = {l: 34, r: 8, t: 10, b: 22};
+    const lo = Math.min(...loss) - 0.25, hi = Math.max(...loss) + 0.1;
+    const x = (i) => pad.l + (W - pad.l - pad.r) * i / (N - 1);
+    const y = (v) => pad.t + (H - pad.t - pad.b) * (1 - (v - lo) / (hi - lo));
+    let s = "";
+    // noise band around the curve
+    const bandTop = loss.map((v, i) => x(i) + "," + y(v + 0.03)).join(" ");
+    const bandBot = loss.map((v, i) => x(i) + "," + y(v - 0.03)).reverse().join(" ");
+    s += '<polygon points="' + bandTop + " " + bandBot + '" fill="#2a2a30" opacity=".55"/>';
+    for (let g = 0; g <= 4; g++) {
+      const v = lo + (hi - lo) * g / 4;
+      s += '<line x1="' + pad.l + '" x2="' + (W - pad.r) + '" y1="' + y(v) + '" y2="' + y(v) + '" stroke="#1f1f23"/>';
+      s += '<text x="4" y="' + (y(v) + 3) + '" fill="#8a8a92" font-size="9" font-family="monospace">' + v.toFixed(1) + "</text>";
+    }
+    s += '<polyline fill="none" stroke="#22c55e" stroke-width="1.6" points="' + loss.map((v, i) => x(i) + "," + y(v)).join(" ") + '"/>';
+    Object.keys(gates).forEach((k) => {
+      const i = +k, c = gates[k] === "degraded" ? "#fbbf24" : "#ef4444";
+      s += '<circle cx="' + x(i) + '" cy="' + y(loss[i]) + '" r="3" fill="' + c + '"/>';
+    });
+    $("losschart").innerHTML = s;
+  })();
+
+  // verification card
+  const gateData = {
+    ok: { margin: "0.0039", accepted: "18", rejected: "0", windows: "8", note: "Judged on paired per-window deltas across 8 windows, with the measured bf16 band added to the margin. Every submission was replayed." },
+    degraded: { margin: "0.0001", accepted: "4", rejected: "1", windows: "1", note: "Only one evaluation window, so the margin collapses to its 1e-4 floor and cannot separate a small regression from noise." },
+    unmeasured: { margin: "none", accepted: "6", rejected: "0", windows: "0", note: "No replay evaluator registered. Submissions were accepted without being measured, so this round proves nothing about quality." }
+  };
+  function renderGate(key){
+    const d = gateData[key];
+    $("gate-kv").innerHTML =
+      '<b>state</b><span class="' + (key === "ok" ? "accent" : "") + '">' + key + '</span>' +
+      '<b>margin used</b><span>' + d.margin + '</span>' +
+      '<b>accepted</b><span>' + d.accepted + '</span>' +
+      '<b>rejected</b><span>' + d.rejected + '</span>' +
+      '<b>windows</b><span>' + d.windows + '</span>';
+    $("gate-note").textContent = d.note;
+  }
+  renderGate("ok");
+  $("gate-tabs").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-g]"); if (!b) return;
+    [...$("gate-tabs").children].forEach((c) => c.classList.toggle("on", c === b));
+    renderGate(b.dataset.g);
+  });
+
+  // pools by hardware
+  const pools = [
+    { t: "CUDA, 12GB+", act: 4, wait: 0 },
+    { t: "CUDA, 8GB", act: 2, wait: 1 },
+    { t: "ROCm, gfx11", act: 2, wait: 0 },
+    { t: "CPU", act: 1, wait: 0 }
+  ];
+  const maxPool = Math.max(...pools.map((p) => p.act + p.wait));
+  $("pools").innerHTML = pools.map((p) => {
+    const a = (p.act / maxPool) * 100, w = (p.wait / maxPool) * 100;
+    return '<div class="hbar"><span>' + p.t + '</span>' +
+      '<span class="t"><i style="width:' + a + '%"></i><i class="mut" style="width:' + w + '%;margin-left:2px"></i></span>' +
+      '<span>' + p.act + (p.wait ? " +" + p.wait : "") + '</span></div>';
+  }).join("");
+
+  // paradigm mix
+  const par = [["backprop", 7], ["mosaic", 3], ["solo", 1], ["relora", 1]];
+  const maxPar = Math.max(...par.map((p) => p[1]));
+  $("paradigms").innerHTML = par.map(([n, v]) =>
+    '<div class="hbar"><span>' + n + '</span><span class="t"><i class="alt" style="width:' + (v / maxPar) * 100 + '%"></i></span><span>' + v + '</span></div>'
+  ).join("");
+
+  // cadence sparkline
+  const r2 = lcg(23), cad = [];
+  for (let i = 0; i < 48; i++) cad.push(4 + r2() * 4);
+  cad[35] = 19;
+  const maxCad = Math.max(...cad);
+  $("cadence").innerHTML = cad.map((v) =>
+    '<i class="' + (v > 12 ? "slow" : "") + '" style="height:' + Math.max(3, (v / maxCad) * 64) + 'px"></i>'
+  ).join("");
+
+  // 53 week calendar
+  (function calendar(){
+    const r3 = lcg(11), TOT = 371, today = new Date(Date.UTC(2026, 10, 22));
+    const shades = ["#161b22", "#0e4429", "#006d32", "#26a641", "#39d353"];
+    let cells = "", months = "", lastMonth = -1;
+    for (let i = 0; i < TOT; i++) {
+      const d = new Date(today.getTime() - (TOT - 1 - i) * 86400000);
+      let v = 0.35 + 3.6 * Math.pow(i / TOT, 1.7);
+      if (d.getUTCDay() === 0 || d.getUTCDay() === 6) v *= 0.45;
+      if (r3() < 0.055) v = 0;
+      v += r3() < 0.02 ? 11 + r3() * 7 : 0;
+      const level = v < 0.3 ? 0 : v < 1.2 ? 1 : v < 2.4 ? 2 : v < 4 ? 3 : 4;
+      const iso = d.toISOString().slice(0, 10);
+      cells += '<i style="background:' + shades[level] + '" title="' + iso + ": " + v.toFixed(1) + ' GPU-hours"></i>';
+      const m = d.getUTCMonth();
+      if (m !== lastMonth && d.getUTCDate() <= 7) {
+        months += '<span style="grid-column:' + (Math.floor(i / 7) + 1) + '">' +
+          ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"][m] + "</span>";
+        lastMonth = m;
+      }
+    }
+    $("cal").innerHTML = cells;
+    $("months").style.gridTemplateColumns = "repeat(" + Math.ceil(TOT / 7) + ",11px)";
+    $("months").innerHTML = months;
+    $("cal-note").textContent = "2,148 GPU-hours across 289 active days. A day counts compute that actually merged, not compute volunteered.";
+  })();
+
+  // aging snapshot
+  let age = 12;
+  setInterval(() => { age = age >= 60 ? 0 : age + 1; $("age").textContent = age; }, 1000);
+})();
+</script>
+</body>
+</html>
