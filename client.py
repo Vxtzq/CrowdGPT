@@ -2626,7 +2626,7 @@ class StreamingShardDataset:
     def __init__(self, repo_id, ci, ss=10 * 1024 * 1024, tps=65, slot=0, at=None, cohort_mode=False):
         self.repo_id = repo_id; self.ci = ci; self.sub_size = ss; self.tps = tps; self.auth_token = at
         self.cohort_mode = cohort_mode; self._fmt = "chunk_{:04d}.bin"; self.chunk_size = self._discover(ci)
-        self.off = (slot * ss) % self.chunk_size; self.data = None; self.n = 0; self.steps_used = 0
+        self.off = (slot % max(1, self.chunk_size // ss)) * ss; self.data = None; self.n = 0; self.steps_used = 0   # whole sub-chunks only, never past the end of the file
         self._pft = None; self._pfr = None; self._lock = threading.Lock(); self._load(self.off); self._prefetch(self.off + ss)
 
     def _url(self): return f"https://huggingface.co/datasets/{self.repo_id}/resolve/main/chunks/" + self._fmt.format(self.ci)
@@ -4286,8 +4286,9 @@ def run_single_round_wrapper(srv, at, se, emit):
 
         emit('status', 'preparing'); emit('log', "Preparing model...")
         dc = md.get("datasetConfig", {}); sc = md.get("shardConfig", {}); slot = sc.get("slot", 0)
-        if cohort_mode: slot = 0; emit('log', "[COHORT] slot forced to 0 (identical shard for all members)")
+        if cohort_mode: slot = int(cc_seed or 0)   # same for every pool member (identical shard), different for every pool
         ds = StreamingShardDataset(dc.get("repoId", DATASET_REPO_ID), dc.get("chunkIdx", 0), dc.get("subChunkSize", 10 * 1024 * 1024), dc.get("tokensPerSample", sl + 1), slot, at, cohort_mode=cohort_mode)
+        if cohort_mode: emit('log', f"[COHORT] chunk {ds.ci}: reading bytes {ds.off:,}-{min(ds.off + ds.sub_size, ds.chunk_size) - 1:,} of {ds.chunk_size:,} (same slice for all members)")
 
         _bs_est = recommend_batch_size(sl, force_mode=optim_mode)
         _BS_STATE["declared"] = int(_bs_est)
