@@ -1,5 +1,5 @@
-CrowdGPT Client v4.2 changelog:
+CrowdGPT Client v4.3 changelog:
 - Crowd-v1.5 is here
-- Windows bugfixes
+- Windows "not responding" fixed
 - Better VRAM management for AMD GPUs
 Check GitHub or Discord for more infos
