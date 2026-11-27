@@ -201,8 +201,10 @@ def _add_events_route(app, sink, heartbeat):
         try:
             for frame in backlog: yield frame
             while True:
-                try: yield await asyncio.wait_for(q.get(), heartbeat)
-                except asyncio.TimeoutError: yield ": ping\n\n"
+                try: frame = await asyncio.wait_for(q.get(), heartbeat)
+                except asyncio.TimeoutError: frame = ": ping\n\n"
+                if frame is None: return  # WebSink.close(): the server is stopping
+                yield frame
         finally: sink.unsubscribe(q)  # runs when the client disconnects and the generator is cancelled
 
     @app.get("/events")
@@ -358,6 +360,7 @@ def create_web_app(api, opts):
     app = fastapi.FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=_web_lifespan(sink))
     html = opts["html"]
     if sink: _add_events_route(app, sink, float(opts.get("heartbeat", 15)))
+    app.state.sink = sink  # WebServer.stop() closes its streams
     if opts.get("token"): app.add_middleware(_TokenGate, token=opts["token"])
     if opts.get("allowed_hosts") is not None: app.add_middleware(_HostGate, allowed=opts["allowed_hosts"])  # added last, runs first
 
@@ -384,7 +387,11 @@ class WebServer:
     """uvicorn in a daemon thread. Off the main thread uvicorn leaves signal handling to the caller."""
     def __init__(self, app, host, port):
         _, uvicorn = _import_web_stack()
-        self.server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))
+        # uvicorn waits for open requests before exiting. stop() ends the SSE streams through the sink;
+        # the grace limit is the backstop for anything else still running.
+        self._sink = getattr(getattr(app, "state", None), "sink", None)
+        self.server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning",
+                                                    timeout_graceful_shutdown=2))
         self.thread = threading.Thread(target=self.server.run, name="web-server", daemon=True)
 
     def start(self, timeout=10.0):
@@ -398,6 +405,7 @@ class WebServer:
         return self.server.servers[0].sockets[0].getsockname()
 
     def stop(self, timeout=10.0):
+        if self._sink: self._sink.close()
         self.server.should_exit = True
         if self.thread.is_alive(): self.thread.join(timeout)
 
@@ -437,6 +445,18 @@ class WebSink:
         return q
 
     def unsubscribe(self, q): self._subs.discard(q)
+
+    def close(self):
+        """End every open stream: each subscriber gets None, which /events treats as the end."""
+        loop = self._loop
+        if loop is None or loop.is_closed(): return
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(self._end_streams)
+
+    def _end_streams(self):
+        for q in tuple(self._subs):
+            if q.full(): q.get_nowait()
+            q.put_nowait(None)
 
     def backlog(self, last_id=None):
         """Frames a browser that has seen up to last_id is missing, in seq order. The full snapshot

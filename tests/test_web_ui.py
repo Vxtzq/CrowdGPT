@@ -5,6 +5,7 @@ Reuses the stubbed client import from test_coordinator_rejected: no torch, no GU
     python -m unittest discover -s tests -v
 """
 import argparse
+import asyncio
 import importlib.util
 import os
 import re
@@ -666,6 +667,30 @@ class WebServerThread(unittest.TestCase):
         self.assertLess(time.monotonic() - t0, 5)
         self.assertFalse(srv.thread.is_alive())
 
+    def test_stop_closes_open_event_stream(self):
+        import time
+        import urllib.request
+        sink = cw.WebSink()
+        srv = cw.WebServer(cw.create_web_app(_FakeApi(), {"html": "x", "sink": sink}), "127.0.0.1", 0)
+        port = srv.start(timeout=5)[1]
+        self.addCleanup(srv.stop, 1)
+        stream = urllib.request.urlopen(f"http://127.0.0.1:{port}/events", timeout=10)
+        self.addCleanup(stream.close)
+        t0 = time.monotonic()
+        with self.assertNoLogs("uvicorn.error", "ERROR"):
+            srv.stop(timeout=8)
+        self.assertLess(time.monotonic() - t0, 1)
+        self.assertFalse(srv.thread.is_alive())
+        while stream.read1(4096): pass  # a clean end returns b""; a cut stream raises IncompleteRead
+        self.assertEqual(sink.subscriber_count(), 0)
+
+    def test_sink_close_ends_streams(self):
+        loop = _LoopThread(); self.addCleanup(loop.close)
+        sink = cw.WebSink(); sink.bind(loop.loop)
+        q = loop.run(_subscribe(sink))
+        sink.close()
+        self.assertIsNone(loop.run(asyncio.wait_for(q.get(), 1)))
+
 
 class _LoopThread:
     """A running asyncio loop on its own thread, standing in for uvicorn's."""
@@ -684,6 +709,10 @@ class _LoopThread:
         self.loop.call_soon_threadsafe(self.loop.stop)
         self.thread.join(5)
         self.loop.close()
+
+
+async def _subscribe(sink):
+    return sink.subscribe()
 
 
 async def _drain(q):
