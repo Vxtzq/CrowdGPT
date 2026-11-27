@@ -136,13 +136,14 @@ def _import_web_stack():
 # Stands in for pywebview in a browser: api calls POST to /api/<name>, events arrive over SSE.
 # Both the stream and pywebviewready wait for DOMContentLoaded so the page's handlers exist.
 _WEB_SHIM = (
-    "<script>window.__CROWD_WEB__=%s;(function(){"
+    "<script>window.__CROWD_WEB__=%s;(function(){var d=document.documentElement;d.dataset.web='1';"
     "var api=new Proxy({},{get:function(_,n){if(typeof n!=='string'||n==='then')return undefined;"
     "return function(){return fetch('/api/'+encodeURIComponent(n),{method:'POST',credentials:'same-origin',"
     "headers:{'Content-Type':'application/json'},body:JSON.stringify(Array.prototype.slice.call(arguments))})}}});"
     "window.pywebview={api:api};"
     "document.addEventListener('DOMContentLoaded',function(){"
-    "var es=new EventSource('/events');es.onmessage=function(m){var p;try{p=JSON.parse(m.data)}catch(e){return}"
+    "var es=new EventSource('/events');es.onopen=function(){d.dataset.webConn='open'};"
+    "es.onerror=function(){d.dataset.webConn=es.readyState===EventSource.CLOSED?'closed':'retrying'};es.onmessage=function(m){var p;try{p=JSON.parse(m.data)}catch(e){return}"
     "if(window.handleEvent)window.handleEvent(p.ev,p.data)};"
     "window.dispatchEvent(new Event('pywebviewready'))})})();</script>"
 )

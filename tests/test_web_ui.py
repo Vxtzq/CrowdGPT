@@ -7,6 +7,7 @@ Reuses the stubbed client import from test_coordinator_rejected: no torch, no GU
 import argparse
 import importlib.util
 import os
+import re
 import shutil
 import stat
 import sys
@@ -237,7 +238,7 @@ class WebStartupMessages(unittest.TestCase):
 
 
 _TEMPLATE = (Path(__file__).resolve().parent.parent / "client.html").read_text(encoding="utf-8")
-_SHIM_MARK = "window.__CROWD_WEB__"
+_SHIM_MARK = "window.__CROWD_WEB__="
 _HTML = client.render_client_html(_TEMPLATE)
 
 
@@ -255,6 +256,39 @@ class RenderClientHtml(unittest.TestCase):
 
     def test_no_shim_in_gui_output(self):
         self.assertNotIn(_SHIM_MARK, client.render_client_html(_TEMPLATE))
+
+
+class ClientHtmlWebIndicators(unittest.TestCase):
+    INDICATORS = {"web-conn": "web_retrying", "web-closed": "web_closed", "web-noauth": "web_noauth",
+                  "web-http": "web_http"}
+    LANGS = ("en", "fr", "es", "de", "tr")
+
+    def test_template_keeps_placeholders(self):
+        for ph in ("__LOGO__", "__LOGO_DARK__", "__VERSION__"):
+            self.assertIn(ph, _TEMPLATE)
+
+    def test_indicators_hidden_by_default(self):
+        for el_id, key in self.INDICATORS.items():
+            with self.subTest(el_id=el_id):
+                tag = re.search(rf'<[^>]*\bid="{el_id}"[^>]*>', _TEMPLATE)
+                self.assertIsNotNone(tag)
+                self.assertIn(f'data-i18n="{key}"', tag.group(0))
+                self.assertIn(" hidden", tag.group(0))
+
+    def test_indicator_text_in_every_language(self):
+        for lang in self.LANGS:
+            table = re.search(rf"^{lang}:\{{.*\}},?$", _TEMPLATE, re.M).group(0)
+            for key in self.INDICATORS.values():
+                with self.subTest(lang=lang, key=key):
+                    self.assertIn(f"{key}:", table)
+
+    def test_conn_pill_follows_shim_state(self):
+        self.assertIn('[data-web-conn="retrying"] #web-conn', _TEMPLATE)
+        self.assertIn('[data-web-conn="closed"] #web-closed', _TEMPLATE)
+        self.assertNotIn('[data-web-conn="closed"] #web-conn', _TEMPLATE)
+
+    def test_page_logic_only_in_web_mode(self):
+        self.assertIn("if(window.__CROWD_WEB__)", _TEMPLATE)
 
 
 class RenderWebHtml(unittest.TestCase):
@@ -280,6 +314,13 @@ class RenderWebHtml(unittest.TestCase):
         start = out.index("<script")
         end = out.index("</script>", start) + len("</script>")
         self.assertEqual(out[:start] + out[end:], _HTML)
+
+    def test_shim_tracks_connection_state(self):
+        out = cw.render_web_html(_HTML, {})
+        shim = out[out.index(_SHIM_MARK):out.index("</script>", out.index(_SHIM_MARK))]
+        for needle in ("dataset.web", "dataset.webConn", "onopen", "onerror", "'open'", "'retrying'",
+                       "'closed'", "EventSource.CLOSED"):
+            self.assertIn(needle, shim)
 
     def test_opts_cannot_close_script(self):
         out = cw.render_web_html(_HTML, {"x": "</script><b>"})
