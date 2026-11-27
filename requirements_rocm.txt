@@ -16,3 +16,6 @@ safetensors
 rich>=13.0.0
 psutil>=5.9.0
 pywebview
+# web UI (--web)
+fastapi>=0.110
+uvicorn>=0.29

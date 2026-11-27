@@ -71,11 +71,8 @@ os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
 import re, sys, io, json, time, struct, math, gc, threading, queue, base64, logging, tempfile, atexit, subprocess, hashlib, shutil, ctypes, signal, argparse, datetime, uuid, getpass
 import platform
-import ipaddress
-import secrets
 import importlib.metadata as importlib_metadata
 from pathlib import Path
-from typing import NamedTuple, Optional
 
 try:
     import termios, tty, select
@@ -5458,80 +5455,18 @@ _HEADLESS_EXIT_MESSAGES = {
     6: "The coordinator rejected this client's architecture.",
 }
 
-WEB_AUTH_MODES = ("auto", "token", "none")
-WEB_TOKEN_MIN_LEN = 16
+def render_client_html(template):
+    """Fill client.html's logo and version placeholders."""
+    return template.replace("__LOGO__", LOGO_URI_LIGHT).replace("__LOGO_DARK__", LOGO_URI_DARK).replace("__VERSION__", CLIENT_VERSION)
 
-class WebConfig(NamedTuple):
-    host: str
-    port: int
-    auth: str
-    token: Optional[str]
-    allowed_hosts: tuple
-    any_host: bool
+def _import_crowd_web():
+    """Import the web UI module on demand: the updater ships only client.py and client.html."""
+    try:
+        import crowd_web
+    except ImportError as err:
+        raise RuntimeError("the web UI needs crowd_web.py next to client.py: reinstall or update CrowdGPT") from err
+    return crowd_web
 
-def _web_port(raw):
-    try: port = 8765 if raw is None else int(raw)
-    except (TypeError, ValueError): raise ValueError(f"web port must be a number, got {raw!r}") from None
-    if not 1 <= port <= 65535: raise ValueError(f"web port must be 1-65535, got {port}")
-    return port
-
-def _web_allowed_hosts(raw):
-    hosts = []
-    for item in (raw or "").split(","):
-        h = item.strip().lower()
-        if h and h not in hosts: hosts.append(h)
-    return tuple(hosts)
-
-def resolve_web_config(args, env):
-    """Web UI settings from argparse flags and an env mapping; a flag beats its env variable.
-
-    An empty env value counts as unset. Raises ValueError on a bad auth mode, port or token."""
-    def pick(flag, name):
-        v = getattr(args, flag, None)
-        if v is not None: return v
-        return (env.get(name) or "").strip() or None
-    host = pick("web_host", "CROWDGPT_WEB_HOST") or "127.0.0.1"
-    port = _web_port(pick("web_port", "CROWDGPT_WEB_PORT"))
-    auth = str(pick("web_auth", "CROWDGPT_WEB_AUTH") or "auto").strip().lower()
-    if auth not in WEB_AUTH_MODES:
-        raise ValueError(f"web auth mode must be one of {', '.join(WEB_AUTH_MODES)}, got {auth!r}")
-    token = pick("web_token", "CROWDGPT_WEB_TOKEN") or None
-    if token is not None and len(token) < WEB_TOKEN_MIN_LEN:
-        raise ValueError(f"web token must be at least {WEB_TOKEN_MIN_LEN} characters")
-    hosts = _web_allowed_hosts(env.get("CROWDGPT_WEB_ALLOWED_HOSTS"))
-    return WebConfig(host, port, auth, token, hosts, "*" in hosts)
-
-def resolve_web_token(override, path=WEB_TOKEN_FILE):
-    """The web UI token: the override, else the saved file, else a new one saved with mode 0600.
-
-    An empty file counts as missing. Read errors other than a missing file propagate."""
-    if override: return override
-    try: saved = Path(path).read_text(encoding="utf-8").strip()
-    except FileNotFoundError: saved = ""
-    if saved: return saved
-    token = secrets.token_urlsafe(32)
-    _write_private(path, token + "\n")
-    return token
-
-def is_loopback(host):
-    """True for 127.0.0.0/8, ::1 (also bracketed or IPv4-mapped) and `localhost`. No DNS lookup."""
-    h = str(host).strip().strip("[]").lower()
-    if h == "localhost": return True
-    try: ip = ipaddress.ip_address(h)
-    except ValueError: return False
-    return (getattr(ip, "ipv4_mapped", None) or ip).is_loopback
-
-def auth_required(mode, host):
-    """Whether the web UI asks for a token: always for `token`, never for `none`, off loopback for `auto`."""
-    if mode == "token": return True
-    if mode == "none": return False
-    if mode == "auto": return not is_loopback(host)
-    raise ValueError(f"web auth mode must be one of {', '.join(WEB_AUTH_MODES)}, got {mode!r}")
-
-def web_url(sockname):
-    """Display URL for a bound socket address (2- or 4-tuple); IPv6 hosts get brackets."""
-    host, port = sockname[0], sockname[1]
-    return f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}"
 
 def parse_args():
     p = argparse.ArgumentParser(prog="client.py", description="CrowdGPT client. Runs GUI by default; use --headless for SSH/servers.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -5841,7 +5776,7 @@ def run_gui(args):
             raise ValueError("Local client.html is invalid")
     except Exception as e:
         log.error(f"Could not load/download {html_path}: {e}"); return 4
-    html_out = (html_template.replace("__LOGO__", LOGO_URI_LIGHT).replace("__LOGO_DARK__", LOGO_URI_DARK).replace("__VERSION__", CLIENT_VERSION))
+    html_out = render_client_html(html_template)
     window = _create_window_safe("CrowdGPT", html_out, kwargs); api.window = window
     api._add_sink(PywebviewSink(window, api._ui_ready))
 
