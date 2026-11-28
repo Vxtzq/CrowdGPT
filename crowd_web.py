@@ -9,17 +9,23 @@ FastAPI and uvicorn are imported on demand too, so importing this module needs o
 """
 import asyncio
 import contextlib
+import hmac
 import inspect
 import ipaddress
 import json
+import logging
 import os
 import re
 import secrets
+import socket
 import threading
 import time
 from collections import deque
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 from typing import NamedTuple, Optional
+
+log = logging.getLogger(__name__)
 
 
 def _write_private(path, text):
@@ -104,6 +110,20 @@ def web_url(sockname):
     host, port = sockname[0], sockname[1]
     return f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}"
 
+def log_web_startup(sockname, token):
+    """Log where the web UI listens, the ready-to-click token URL (once) and exposure warnings.
+    Judged on the bound address; off loopback without a token means auth is `none`."""
+    url = web_url(sockname)
+    log.info(f"[web] listening on {url}")
+    if token:
+        click = web_url(("localhost", *sockname[1:])) if _is_unspecified(sockname[0]) else url
+        log.info(f"[web] open {click}/?token={token}")
+    if is_loopback(sockname[0]): return
+    log.warning(f"[web] {url} is reachable from other machines, not just this one")
+    if not token:
+        log.warning(f"[web] web UI on {url} with NO authentication: anyone who can reach this port "
+                    "can control training")
+
 def _import_web_stack():
     """Import FastAPI and uvicorn on demand: the updater can ship this file to installs without them."""
     try:
@@ -116,13 +136,14 @@ def _import_web_stack():
 # Stands in for pywebview in a browser: api calls POST to /api/<name>, events arrive over SSE.
 # Both the stream and pywebviewready wait for DOMContentLoaded so the page's handlers exist.
 _WEB_SHIM = (
-    "<script>window.__CROWD_WEB__=%s;(function(){"
+    "<script>window.__CROWD_WEB__=%s;(function(){var d=document.documentElement;d.dataset.web='1';"
     "var api=new Proxy({},{get:function(_,n){if(typeof n!=='string'||n==='then')return undefined;"
     "return function(){return fetch('/api/'+encodeURIComponent(n),{method:'POST',credentials:'same-origin',"
     "headers:{'Content-Type':'application/json'},body:JSON.stringify(Array.prototype.slice.call(arguments))})}}});"
     "window.pywebview={api:api};"
     "document.addEventListener('DOMContentLoaded',function(){"
-    "var es=new EventSource('/events');es.onmessage=function(m){var p;try{p=JSON.parse(m.data)}catch(e){return}"
+    "var es=new EventSource('/events');es.onopen=function(){d.dataset.webConn='open'};"
+    "es.onerror=function(){d.dataset.webConn=es.readyState===EventSource.CLOSED?'closed':'retrying'};es.onmessage=function(m){var p;try{p=JSON.parse(m.data)}catch(e){return}"
     "if(window.handleEvent)window.handleEvent(p.ev,p.data)};"
     "window.dispatchEvent(new Event('pywebviewready'))})})();</script>"
 )
@@ -191,9 +212,147 @@ def _add_events_route(app, sink, heartbeat):
         last_id = _last_event_id(request.headers.get("last-event-id"))
         return StreamingResponse(stream(last_id), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
+WEB_AUTH_COOKIE = "crowdgpt_web_token"
+_TOKEN_PAGE = (b"<!doctype html><meta charset=utf-8><title>CrowdGPT</title>"
+               b"<form method=get action=/><p>Web UI token: <input name=\"token\" type=password autofocus>"
+               b" <button>Open</button></p></form>")
+
+def _token_matches(candidate, token):
+    """Constant-time comparison; an empty or non-ASCII candidate never matches."""
+    if not candidate: return False
+    try: return hmac.compare_digest(candidate.encode("ascii"), token.encode("ascii"))
+    except UnicodeEncodeError: return False
+
+def _cookie_value(raw, name):
+    """One cookie's value from a raw Cookie header, or None."""
+    for part in raw.split(";"):
+        k, _, v = part.strip().partition("=")
+        if k == name: return v
+    return None
+
+class _TokenGate:
+    """ASGI middleware: every HTTP request but /healthz needs the token as a Bearer header, the cookie
+    or ?token= (which sets the cookie and redirects). Others get the token page on / or a 401."""
+    def __init__(self, app, token):
+        self.app, self.token = app, token
+
+    def _authorized(self, headers):
+        """A matching Bearer header or cookie."""
+        scheme, _, cred = headers.get("authorization", "").partition(" ")
+        if scheme.lower() == "bearer" and _token_matches(cred.strip(), self.token): return True
+        return _token_matches(_cookie_value(headers.get("cookie", ""), WEB_AUTH_COOKIE), self.token)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["path"] == "/healthz":
+            return await self.app(scope, receive, send)
+        if self._authorized({k.decode("latin-1"): v.decode("latin-1") for k, v in scope["headers"]}):
+            return await self.app(scope, receive, send)
+        query = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+        if scope["method"] == "GET" and _token_matches((query.get("token") or [""])[0], self.token):
+            cookie = f"{WEB_AUTH_COOKIE}={self.token}; HttpOnly; SameSite=Strict; Path=/"
+            return await _respond(send, 303, [(b"location", scope["path"].encode()), (b"set-cookie", cookie.encode())])
+        if scope["path"] == "/":
+            return await _respond(send, 401, [(b"content-type", b"text/html; charset=utf-8")], _TOKEN_PAGE)
+        await _respond(send, 401)
+
+async def _respond(send, status, headers=(), body=b""):
+    await send({"type": "http.response.start", "status": status,
+                "headers": [*headers, (b"content-length", str(len(body)).encode())]})
+    await send({"type": "http.response.body", "body": body})
+
+def cli_credentials(args, env):
+    """The login the CLI asked for (--anon, --token, --user/--password or their env variables)."""
+    return {"anon": bool(args.anon), "token": args.token or env.get("CROWDGPT_TOKEN"),
+            "user": args.user, "password": args.password or env.get("CROWDGPT_PASSWORD")}
+
+def _saved_for_server(saved, server):
+    """(token, username) from a saved session for this server, or None."""
+    saved = saved or {}
+    if saved.get("token") and (saved.get("server") or "").rstrip("/") == server.rstrip("/"):
+        return saved["token"], saved.get("username")
+    return None
+
+def _password_login(creds, server, do_login):
+    if not creds.get("password"): return "missing_password"
+    tok, err = do_login(server, creds["user"], creds["password"])
+    return (tok, creds["user"]) if tok else (err or "login_failed")
+
+def resolve_cli_login(creds, server, saved, do_login):
+    """In headless order: anon, token, user + password, then the saved session for this server.
+    Returns (token, username), an error code string, or None when nothing was given."""
+    if creds.get("anon"): return None, "anonymous"
+    if creds.get("token"): return creds["token"], creds.get("user")
+    if creds.get("user"): return _password_login(creds, server, do_login)
+    return _saved_for_server(saved, server)
+
+def web_autologin(api, creds, saved, do_login, autostart=False):
+    """Log the Api in from CLI credentials, without saving them; start training if autostart.
+    Emits login_success or login_error like the page's own login. True on login."""
+    got = resolve_cli_login(creds, api.server_url, saved, do_login)
+    if got is None: return False  # nothing given: the page shows its login screen
+    if isinstance(got, str):
+        api.emit("login_error", {"code": got}); return False
+    api.auth_token, api.username = got
+    api.emit("login_success", {"username": api.username or "restored", "autologin": True})
+    if autostart: api.start()
+    return True
+
+_LOOPBACK_NAMES = ("localhost", "127.0.0.1", "::1")
+
+def _is_unspecified(host):
+    """True for the listen-on-everything addresses (0.0.0.0, ::); False for names."""
+    try: return ipaddress.ip_address(host).is_unspecified
+    except ValueError: return False
+
+def web_allowed_hosts(bind, extra):
+    """Host names the web UI answers to: loopback, the bind address and extra; for 0.0.0.0/:: also
+    this machine's hostname and its addresses. None when extra has `*` (the check is off)."""
+    if "*" in extra: return None
+    bind = str(bind).strip().strip("[]").lower()
+    hosts = {*_LOOPBACK_NAMES, *(h.lower() for h in extra)}
+    if not _is_unspecified(bind):
+        return frozenset(hosts | {bind})
+    names = {n.lower() for n in (socket.gethostname(), socket.getfqdn()) if n}
+    hosts |= names
+    for name in names:
+        try: infos = socket.getaddrinfo(name, None)
+        except OSError: continue
+        hosts |= {info[4][0].lower() for info in infos}
+    return frozenset(hosts)
+
+def _hostname(netloc):
+    """The lowercased host part of host[:port] or [v6][:port], or None when it doesn't parse."""
+    try: return urlsplit("//" + netloc).hostname
+    except ValueError: return None
+
+class _HostGate:
+    """ASGI middleware against DNS rebinding and CSRF: the Host header must be in `allowed`, and a
+    POST's Origin, when sent, must be allowed or the same as Host. `allowed=None` turns both off."""
+    def __init__(self, app, allowed):
+        self.app, self.allowed = app, allowed
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in scope["headers"]}
+        host = headers.get("host", "")
+        if _hostname(host) not in self.allowed:
+            return await _respond(send, 400)
+        origin = headers.get("origin")
+        if scope["method"] == "POST" and origin is not None and not self._origin_ok(origin, host):
+            return await _respond(send, 403)
+        await self.app(scope, receive, send)
+
+    def _origin_ok(self, origin, host):
+        try: parts = urlsplit(origin)
+        except ValueError: return False
+        return parts.hostname in self.allowed or (bool(parts.netloc) and parts.netloc.lower() == host.lower())
+
 def create_web_app(api, opts):
     """FastAPI app: opts["html"] at /, a health check, allow-listed Api calls and, with opts["sink"],
-    the /events stream. The docs endpoints are off."""
+    the /events stream. The docs endpoints are off. With opts["token"], every route but /healthz
+    needs it (see _TokenGate). With opts["allowed_hosts"] (from web_allowed_hosts), Host and Origin
+    are checked first (see _HostGate); missing or None turns that check off."""
     fastapi, _ = _import_web_stack()
     from fastapi.responses import HTMLResponse, Response
     from starlette.concurrency import run_in_threadpool
@@ -202,6 +361,8 @@ def create_web_app(api, opts):
     html = opts["html"]
     if sink: _add_events_route(app, sink, float(opts.get("heartbeat", 15)))
     app.state.sink = sink  # WebServer.stop() closes its streams
+    if opts.get("token"): app.add_middleware(_TokenGate, token=opts["token"])
+    if opts.get("allowed_hosts") is not None: app.add_middleware(_HostGate, allowed=opts["allowed_hosts"])  # added last, runs first
 
     @app.post("/api/{method}")
     async def call_api(method: str, request: fastapi.Request):
@@ -326,3 +487,25 @@ class WebSink:
             self._log.append((self._seq, frame))
         elif ev in WEB_STATE_GROUPS:
             self._state[WEB_STATE_GROUPS[ev]] = (self._seq, frame)
+
+
+def prepare_web(args, env, token_path):
+    """(config, token) for run_web, before anything starts; token is None when auth isn't required.
+    Raises ValueError on a bad setting."""
+    cfg = resolve_web_config(args, env)
+    token = resolve_web_token(cfg.token, token_path) if auth_required(cfg.auth, cfg.host) else None
+    return cfg, token
+
+def start_web(api, cfg, token, html, login):
+    """Wire the Api to browsers and start serving: a WebSink, the page with its shim, the app with
+    token and Host/Origin checks, the server thread. Then log in from the CLI without starting
+    training. html has its placeholders filled; login is (creds, saved, do_login). Returns the server."""
+    sink = WebSink(); api._add_sink(sink)
+    page = render_web_html(html, {"auth": cfg.auth, "loopback": is_loopback(cfg.host)})
+    app = create_web_app(api, {"html": page, "sink": sink, "token": token,
+                               "allowed_hosts": web_allowed_hosts(cfg.host, cfg.allowed_hosts)})
+    server = WebServer(app, cfg.host, cfg.port)
+    log_web_startup(server.start(), token)
+    creds, saved, do_login = login
+    web_autologin(api, creds, saved, do_login, autostart=False)
+    return server

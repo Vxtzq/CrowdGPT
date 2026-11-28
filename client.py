@@ -4655,6 +4655,7 @@ class Api:
         except Exception: pass
 
     _sinks = ()  # class default: an Api built with __new__ (tests) has no sinks
+    max_rounds = 0  # the web entry point sets it from --rounds; 0 = no cap
 
     def _add_sink(self, sink):
         self._sinks = [*self._sinks, sink]  # copy-on-write: emit() iterates a stable snapshot
@@ -4810,6 +4811,10 @@ class Api:
         self.emit('logged_out', {})
     def _check_updates_between_rounds(self): _check_updates_between_rounds(self.emit)
 
+    def _round_cap_reached(self, round_count):
+        if not self.max_rounds or round_count < self.max_rounds: return False
+        self.emit('log', f"Reached {self.max_rounds} rounds."); return True
+
     def _rs(self):
         start_tokenizer_loader()
         if _GUI_MODE and _HW_PROBE.get("data") is None:
@@ -4845,6 +4850,7 @@ class Api:
                 fails += 1
             else: fails = 0
             if self.stop_event.is_set(): break
+            if self._round_cap_reached(round_count): break
             wait_s = 10 if not fails else min(10 * 2 ** (fails - 1), 300)     # back off on repeated failures: each retry re-downloads the weights
             self._check_updates_between_rounds(); self.emit('status', 'waiting')
             self.emit('log', f"✅ Round complete. Auto-relaunching next round in {wait_s}s..." if not fails
@@ -5758,6 +5764,60 @@ def _prewarm_gpu(api):
         log.warning(f"[gpu] pre-warm skipped: {e}")
 
 
+def _valid_client_html(text):
+    """An HTML page carrying the placeholders the updater validates."""
+    return "<html" in text[:500].lower() and all(p in text for p in ("__LOGO__", "__LOGO_DARK__", "__VERSION__"))
+
+def _load_client_html_template():
+    """client.html next to this file, downloaded first if missing; None (logged) when it can't be
+    loaded or lacks the placeholders the updater validates."""
+    html_path = Path(__file__).resolve().parent / "client.html"
+    tmp_html = html_path.with_name(html_path.name + ".new")
+
+    try:
+        if not html_path.is_file():
+            response = requests.get(HTML_URL, timeout=20); response.raise_for_status(); downloaded_html = response.text
+            if not _valid_client_html(downloaded_html): raise ValueError("Downloaded client.html failed validation")
+            try: tmp_html.write_text(downloaded_html, encoding="utf-8"); os.replace(str(tmp_html), str(html_path))
+            finally:
+                try: tmp_html.unlink(missing_ok=True)
+                except OSError: pass
+        html_template = html_path.read_text(encoding="utf-8")
+        if not _valid_client_html(html_template): raise ValueError("Local client.html is invalid")
+    except Exception as e:
+        log.error(f"Could not load/download {html_path}: {e}"); return None
+    return html_template
+
+def run_web(args, stop_event=None):
+    """Serve the client UI over HTTP until SIGINT/SIGTERM (or stop_event), then stop training, wait
+    for it and its upload, and stop the server. CLI credentials log in but never start training."""
+    cw = _import_crowd_web()
+    try: cfg, token = cw.prepare_web(args, os.environ, WEB_TOKEN_FILE)
+    except ValueError as e: log.error(f"[web] {e}"); return 2
+    html_template = _load_client_html_template()
+    if html_template is None: return 4
+
+    api = Api(); api.server_url = args.server
+    api.max_rounds = args.rounds if args.rounds and args.rounds > 0 else 0
+    if not args.no_tokenizer: start_tokenizer_loader()
+    _prewarm_gpu(api); _start_stall_watchdog()
+    server = cw.start_web(api, cfg, token, render_client_html(html_template),
+                          (cw.cli_credentials(args, os.environ), api._saved, do_login))
+
+    stop_event = stop_event or threading.Event()
+    _install_stop_signal_handlers(stop_event)
+    while not stop_event.wait(1.0): pass                       # a timeout keeps Ctrl+C responsive on Windows
+    api.stop()                                                   # compose allows 2 min: 90 s + 15 s + the server
+    if api.thread is not None: api.thread.join(timeout=90.0)
+    _join_upload(timeout=15.0)
+    server.stop()                                                # last, so browsers still see stopped/idle
+    return 0
+
+def _pick_runner(args):
+    """--web serves the UI over HTTP (with or without --headless, no TUI); else headless or the window."""
+    if args.web: return run_web
+    return run_headless if args.headless else run_gui
+
 def _start_ui_health_watchdog(window, html_getter, api):
     """Linux/WebKitGTK: the web process can die or lose its surface after hours (the window turns white and
     stays white). Probe the page every few seconds; two failed probes in a row reload it and restore the
@@ -5819,22 +5879,10 @@ def run_gui(args):
     api = Api()
     _start_stall_watchdog()
     kwargs = {"js_api": api, "width": 1000, "height": 720, "min_size": (320, 240)}
-    html_path = Path(__file__).resolve().parent / "client.html"
-    tmp_html = html_path.with_name(html_path.name + ".new")
-    try:
-        if not html_path.is_file():
-            response = requests.get(HTML_URL, timeout=20); response.raise_for_status(); downloaded_html = response.text
-            if ("<html" not in downloaded_html[:500].lower() or "__LOGO__" not in downloaded_html or "__LOGO_DARK__" not in downloaded_html or "__VERSION__" not in downloaded_html):
-                raise ValueError("Downloaded client.html failed validation")
-            try: tmp_html.write_text(downloaded_html, encoding="utf-8"); os.replace(str(tmp_html), str(html_path))
-            finally:
-                try: tmp_html.unlink(missing_ok=True)
-                except OSError: pass
-        html_template = html_path.read_text(encoding="utf-8")
-        if "<html" not in html_template[:500].lower() or "__LOGO__" not in html_template or "__LOGO_DARK__" not in html_template or "__VERSION__" not in html_template:
-            raise ValueError("Local client.html is invalid")
-    except Exception as e:
-        log.error(f"Could not load/download {html_path}: {e}"); return 4
+
+    html_template = _load_client_html_template()
+    if html_template is None: return 4
+
     html_out = render_client_html(html_template)
     window = _create_window_safe("CrowdGPT", html_out, kwargs); api.window = window
     api._add_sink(PywebviewSink(window, api._ui_ready))
@@ -6017,5 +6065,4 @@ if __name__ == "__main__":
         except Exception:
             pass
 
-    if args.headless: sys.exit(run_headless(args))
-    else: sys.exit(run_gui(args))
+    sys.exit(_pick_runner(args)(args))

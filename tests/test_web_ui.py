@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import importlib.util
 import os
+import re
 import shutil
 import stat
 import sys
@@ -205,8 +206,40 @@ class WebUrl(unittest.TestCase):
                 self.assertEqual(cw.web_url(sockname), want)
 
 
+class WebStartupMessages(unittest.TestCase):
+    TOKEN = "t" * 32
+
+    def _logs(self, sockname, token):
+        with self.assertLogs(cw.log, "INFO") as cm:
+            cw.log_web_startup(sockname, token)
+        return [(r.levelname, r.getMessage()) for r in cm.records]
+
+    def test_loopback_logs_url_only(self):
+        self.assertEqual(self._logs(("127.0.0.1", 8765), None),
+                         [("INFO", "[web] listening on http://127.0.0.1:8765")])
+
+    def test_token_url_logged_once(self):
+        msgs = [m for _, m in self._logs(("::1", 8765, 0, 0), self.TOKEN)]
+        self.assertEqual(sum(self.TOKEN in m for m in msgs), 1)
+        self.assertIn(f"http://[::1]:8765/?token={self.TOKEN}", msgs[1])
+
+    def test_unspecified_token_url_uses_localhost(self):
+        msgs = [m for _, m in self._logs(("0.0.0.0", 8765), self.TOKEN)]
+        self.assertTrue(any(f"http://localhost:8765/?token={self.TOKEN}" in m for m in msgs))
+
+    def test_non_loopback_warns(self):
+        warnings = [m for lvl, m in self._logs(("192.168.1.20", 8765), self.TOKEN) if lvl == "WARNING"]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("192.168.1.20", warnings[0])
+
+    def test_no_auth_off_loopback_warns_louder(self):
+        warnings = [m for lvl, m in self._logs(("0.0.0.0", 8765), None) if lvl == "WARNING"]
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("NO authentication", warnings[1])
+
+
 _TEMPLATE = (Path(__file__).resolve().parent.parent / "client.html").read_text(encoding="utf-8")
-_SHIM_MARK = "window.__CROWD_WEB__"
+_SHIM_MARK = "window.__CROWD_WEB__="
 _HTML = client.render_client_html(_TEMPLATE)
 
 
@@ -224,6 +257,39 @@ class RenderClientHtml(unittest.TestCase):
 
     def test_no_shim_in_gui_output(self):
         self.assertNotIn(_SHIM_MARK, client.render_client_html(_TEMPLATE))
+
+
+class ClientHtmlWebIndicators(unittest.TestCase):
+    INDICATORS = {"web-conn": "web_retrying", "web-closed": "web_closed", "web-noauth": "web_noauth",
+                  "web-http": "web_http"}
+    LANGS = ("en", "fr", "es", "de", "tr")
+
+    def test_template_keeps_placeholders(self):
+        for ph in ("__LOGO__", "__LOGO_DARK__", "__VERSION__"):
+            self.assertIn(ph, _TEMPLATE)
+
+    def test_indicators_hidden_by_default(self):
+        for el_id, key in self.INDICATORS.items():
+            with self.subTest(el_id=el_id):
+                tag = re.search(rf'<[^>]*\bid="{el_id}"[^>]*>', _TEMPLATE)
+                self.assertIsNotNone(tag)
+                self.assertIn(f'data-i18n="{key}"', tag.group(0))
+                self.assertIn(" hidden", tag.group(0))
+
+    def test_indicator_text_in_every_language(self):
+        for lang in self.LANGS:
+            table = re.search(rf"^{lang}:\{{.*\}},?$", _TEMPLATE, re.M).group(0)
+            for key in self.INDICATORS.values():
+                with self.subTest(lang=lang, key=key):
+                    self.assertIn(f"{key}:", table)
+
+    def test_conn_pill_follows_shim_state(self):
+        self.assertIn('[data-web-conn="retrying"] #web-conn', _TEMPLATE)
+        self.assertIn('[data-web-conn="closed"] #web-closed', _TEMPLATE)
+        self.assertNotIn('[data-web-conn="closed"] #web-conn', _TEMPLATE)
+
+    def test_page_logic_only_in_web_mode(self):
+        self.assertIn("if(window.__CROWD_WEB__)", _TEMPLATE)
 
 
 class RenderWebHtml(unittest.TestCase):
@@ -249,6 +315,13 @@ class RenderWebHtml(unittest.TestCase):
         start = out.index("<script")
         end = out.index("</script>", start) + len("</script>")
         self.assertEqual(out[:start] + out[end:], _HTML)
+
+    def test_shim_tracks_connection_state(self):
+        out = cw.render_web_html(_HTML, {})
+        shim = out[out.index(_SHIM_MARK):out.index("</script>", out.index(_SHIM_MARK))]
+        for needle in ("dataset.web", "dataset.webConn", "onopen", "onerror", "'open'", "'retrying'",
+                       "'closed'", "EventSource.CLOSED"):
+            self.assertIn(needle, shim)
 
     def test_opts_cannot_close_script(self):
         out = cw.render_web_html(_HTML, {"x": "</script><b>"})
@@ -410,6 +483,169 @@ class WebApiDispatch(unittest.TestCase):
     def test_get_is_not_allowed(self):
         self.assertEqual(self.c.get("/api/stop").status_code, 405)
         self.assertEqual(self.api.calls, [])
+
+
+_TOKEN = "t" * 20 + "-good"
+
+
+@unittest.skipUnless(_HAVE_WEB, "needs fastapi, uvicorn and httpx")
+class WebTokenAuth(unittest.TestCase):
+    def _client(self, token=_TOKEN):
+        from fastapi.testclient import TestClient
+        self.api = _RecordingApi()
+        opts = {"html": "<html>page</html>", "sink": cw.WebSink(), "token": token}
+        return TestClient(cw.create_web_app(self.api, opts))
+
+    def test_no_auth_needed_leaves_routes_open(self):
+        c = self._client(token=None)
+        self.assertEqual(c.get("/").text, "<html>page</html>")
+        self.assertEqual(c.post("/api/stop", json=[]).status_code, 204)
+
+    def test_good_query_token_sets_cookie_and_redirects(self):
+        c = self._client()
+        r = c.get("/", params={"token": _TOKEN}, follow_redirects=False)
+        self.assertEqual(r.status_code, 303)
+        self.assertEqual(r.headers["location"], "/")
+        cookie = r.headers["set-cookie"]
+        self.assertIn(f"crowdgpt_web_token={_TOKEN}", cookie)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+        self.assertIn("Path=/", cookie)
+        self.assertEqual(c.get("/").text, "<html>page</html>")  # the cookie now carries the auth
+
+    def test_bad_query_token_gets_token_page_and_no_cookie(self):
+        r = self._client().get("/", params={"token": "wrong"}, follow_redirects=False)
+        self.assertEqual(r.status_code, 401)
+        self.assertNotIn("set-cookie", r.headers)
+        self.assertIn('name="token"', r.text)
+
+    def test_cookie_is_accepted(self):
+        c = self._client()
+        c.cookies.set("crowdgpt_web_token", _TOKEN)
+        self.assertEqual(c.get("/").text, "<html>page</html>")
+        self.assertEqual(c.post("/api/stop", json=[]).status_code, 204)
+
+    def test_bad_cookie_is_rejected(self):
+        c = self._client()
+        c.cookies.set("crowdgpt_web_token", "wrong")
+        self.assertEqual(c.post("/api/stop", json=[]).status_code, 401)
+        self.assertEqual(self.api.calls, [])
+
+    def test_bearer_is_accepted(self):
+        c = self._client()
+        r = c.post("/api/stop", json=[], headers={"Authorization": f"Bearer {_TOKEN}"})
+        self.assertEqual(r.status_code, 204)
+        self.assertEqual(self.api.calls, [("stop", ())])
+
+    def test_bad_or_empty_bearer_is_rejected(self):
+        c = self._client()
+        for value in ("Bearer wrong", "Bearer ", "Basic " + _TOKEN, _TOKEN):
+            with self.subTest(value=value):
+                r = c.post("/api/stop", json=[], headers={"Authorization": value})
+                self.assertEqual(r.status_code, 401)
+        self.assertEqual(self.api.calls, [])
+
+    def test_missing_token_on_each_route(self):
+        c = self._client()
+        page = c.get("/")
+        self.assertEqual(page.status_code, 401)
+        self.assertIn("text/html", page.headers["content-type"])
+        self.assertIn('name="token"', page.text)
+        self.assertNotIn("page</html>", page.text)
+        for method, path in (("POST", "/api/stop"), ("GET", "/events"), ("GET", "/nope")):
+            with self.subTest(path=path):
+                r = c.request(method, path, json=[] if method == "POST" else None)
+                self.assertEqual(r.status_code, 401)
+                self.assertNotIn('name="token"', r.text)
+        self.assertEqual(self.api.calls, [])
+
+    def test_healthz_stays_open_and_minimal(self):
+        r = self._client().get("/healthz")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {"ok": True, "status": "idle"})
+
+
+class WebAllowedHosts(unittest.TestCase):
+    def _hosts(self, bind, extra=()):
+        from unittest import mock
+        infos = [(None, None, None, "", ("192.168.1.20", 0)), (None, None, None, "", ("fe80::1", 0, 0, 0))]
+        with mock.patch.object(cw.socket, "gethostname", return_value="Box"), \
+                mock.patch.object(cw.socket, "getfqdn", return_value="box.lan"), \
+                mock.patch.object(cw.socket, "getaddrinfo", return_value=infos):
+            return cw.web_allowed_hosts(bind, extra)
+
+    def test_loopback_bind(self):
+        self.assertEqual(self._hosts("127.0.0.1"), {"localhost", "127.0.0.1", "::1"})
+
+    def test_lan_ip_bind_adds_it(self):
+        self.assertEqual(self._hosts("10.0.0.5"), {"localhost", "127.0.0.1", "::1", "10.0.0.5"})
+
+    def test_wildcard_binds_add_hostname_and_interfaces(self):
+        for bind in ("0.0.0.0", "::", "[::]"):
+            with self.subTest(bind=bind):
+                self.assertEqual(self._hosts(bind), {"localhost", "127.0.0.1", "::1", "box", "box.lan",
+                                                     "192.168.1.20", "fe80::1"})
+
+    def test_extra_hosts_and_star(self):
+        self.assertIn("stats.example.com", self._hosts("127.0.0.1", ("stats.example.com",)))
+        self.assertIsNone(self._hosts("127.0.0.1", ("stats.example.com", "*")))
+
+    def test_lookup_failure_keeps_names(self):
+        import socket
+        from unittest import mock
+        with mock.patch.object(cw.socket, "gethostname", return_value="box"), \
+                mock.patch.object(cw.socket, "getfqdn", return_value="box"), \
+                mock.patch.object(cw.socket, "getaddrinfo", side_effect=socket.gaierror):
+            self.assertEqual(cw.web_allowed_hosts("0.0.0.0", ()), {"localhost", "127.0.0.1", "::1", "box"})
+
+
+@unittest.skipUnless(_HAVE_WEB, "needs fastapi, uvicorn and httpx")
+class WebHostOriginChecks(unittest.TestCase):
+    def _client(self, allowed=frozenset({"localhost", "127.0.0.1", "::1"}), base="http://127.0.0.1:8765", **extra):
+        from fastapi.testclient import TestClient
+        self.api = _RecordingApi()
+        opts = {"html": "x", "allowed_hosts": allowed, **extra}
+        return TestClient(cw.create_web_app(self.api, opts), base_url=base)
+
+    def test_same_origin_post_accepted(self):
+        r = self._client().post("/api/stop", json=[], headers={"Origin": "http://127.0.0.1:8765"})
+        self.assertEqual(r.status_code, 204)
+
+    def test_post_without_origin_accepted(self):
+        self.assertEqual(self._client().post("/api/stop", json=[]).status_code, 204)
+
+    def test_cross_site_post_rejected(self):
+        c = self._client()
+        for origin in ("http://evil.example", "null", "http://127.0.0.1.evil.example:8765"):
+            with self.subTest(origin=origin):
+                self.assertEqual(c.post("/api/stop", json=[], headers={"Origin": origin}).status_code, 403)
+        self.assertEqual(self.api.calls, [])
+
+    def test_rebinding_host_rejected_on_every_route(self):
+        c = self._client(base="http://evil.example:8765")
+        for method, path in (("GET", "/"), ("GET", "/healthz"), ("POST", "/api/stop")):
+            with self.subTest(path=path):
+                self.assertEqual(c.request(method, path, json=[] if method == "POST" else None).status_code, 400)
+        self.assertEqual(self.api.calls, [])
+
+    def test_ipv6_host_accepted(self):
+        self.assertEqual(self._client(base="http://[::1]:8765").get("/healthz").status_code, 200)
+
+    def test_extra_allowed_host_accepted_behind_rewriting_proxy(self):
+        allowed = frozenset({"localhost", "127.0.0.1", "::1", "stats.example.com"})
+        c = self._client(allowed=allowed)  # the proxy rewrote Host to 127.0.0.1:8765
+        r = c.post("/api/stop", json=[], headers={"Origin": "https://stats.example.com"})
+        self.assertEqual(r.status_code, 204)
+        self.assertEqual(self._client(allowed=allowed, base="https://stats.example.com").get("/").status_code, 200)
+
+    def test_star_turns_both_checks_off(self):
+        c = self._client(allowed=None, base="http://evil.example")
+        self.assertEqual(c.get("/").status_code, 200)
+        self.assertEqual(c.post("/api/stop", json=[], headers={"Origin": "http://other.example"}).status_code, 204)
+
+    def test_host_check_runs_before_token(self):
+        c = self._client(base="http://evil.example", token="t" * 20)
+        self.assertEqual(c.get("/").status_code, 400)
 
 
 @unittest.skipUnless(_HAVE_WEB, "needs fastapi, uvicorn and httpx")
