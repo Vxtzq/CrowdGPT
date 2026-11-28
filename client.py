@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CrowdGPT GUI Client v4.1
+CrowdGPT GUI Client v4.3
 v3.4 changes
   - Auto-pause: VRAM is measured as growth since start (the CUDA context and desktop were counted as "another app"), 4 samples of debounce
   - Stop now fully releases VRAM (the degradation ladder kept the model alive after Stop)
@@ -71,6 +71,12 @@ os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
 import re, sys, io, json, time, struct, math, gc, threading, queue, base64, logging, tempfile, atexit, subprocess, hashlib, shutil, ctypes, signal, argparse, datetime, uuid, getpass
 import platform
+# pythonw.exe (what CrowdGPT.pyw / the Start-Menu shortcut use) starts with sys.stdout/sys.stderr = None: every print() or
+# logging StreamHandler would raise. Give them a sink.
+for _n in ("stdout", "stderr"):
+    if getattr(sys, _n, None) is None:
+        try: setattr(sys, _n, open(os.devnull, "w", encoding="utf-8", errors="replace"))
+        except Exception: pass
 import importlib.metadata as importlib_metadata
 from pathlib import Path
 
@@ -207,7 +213,7 @@ class TimingRecorder:
         self.phase("total", time.monotonic() - self.started, ok=ok, **fields)
 
 
-CLIENT_VERSION = "4.1"
+CLIENT_VERSION = "4.3"
 VERSION_URL = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/docs/version.txt"
 CLIENT_URL  = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.py"
 HTML_URL    = "https://raw.githubusercontent.com/Vxtzq/CrowdGPT/main/client.html"
@@ -1068,6 +1074,19 @@ sys.stdout.flush()
 """
 
 
+def _child_python():
+    """Interpreter for helper processes. Under pythonw.exe sys.executable is pythonw.exe, whose child has no usable
+    stdout: the hardware probe printed nothing, failed, and the client fell back to probing CUDA INSIDE the GUI
+    process (GIL held for seconds = "Not responding"). Always use the console python.exe, hidden."""
+    exe = sys.executable or "python"
+    if sys.platform == "win32" and os.path.basename(exe).lower() == "pythonw.exe":
+        cand = os.path.join(os.path.dirname(exe), "python.exe")
+        if os.path.exists(cand): return cand
+    return exe
+
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+
+
 def _hw_probe_subprocess(timeout_s=None, warm=False):
     """Run the probe in a CHILD process. communicate() releases the GIL, so the
     window keeps painting for the whole cold-driver / PTX-JIT wait."""
@@ -1090,9 +1109,10 @@ def _hw_probe_subprocess(timeout_s=None, warm=False):
     for extra in (["-I"], []):
         try:
             proc = subprocess.Popen(
-                [sys.executable] + extra + ["-c", _HW_PROBE_SRC, json.dumps(cfg)],
+                [_child_python()] + extra + ["-c", _HW_PROBE_SRC, json.dumps(cfg)],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL, cwd=str(tempfile.gettempdir()), env=env)
+                stdin=subprocess.DEVNULL, cwd=str(tempfile.gettempdir()), env=env,
+                creationflags=_NO_WINDOW)
         except Exception as e:
             log.warning(f"[hw] probe could not start: {e}")
             return None
@@ -2623,7 +2643,7 @@ class StreamingShardDataset:
     def __init__(self, repo_id, ci, ss=10 * 1024 * 1024, tps=65, slot=0, at=None, cohort_mode=False):
         self.repo_id = repo_id; self.ci = ci; self.sub_size = ss; self.tps = tps; self.auth_token = at
         self.cohort_mode = cohort_mode; self._fmt = "chunk_{:04d}.bin"; self.chunk_size = self._discover(ci)
-        self.off = (slot * ss) % self.chunk_size; self.data = None; self.n = 0; self.steps_used = 0
+        self.off = (slot % max(1, self.chunk_size // ss)) * ss; self.data = None; self.n = 0; self.steps_used = 0   # whole sub-chunks only, never past the end of the file
         self._pft = None; self._pfr = None; self._lock = threading.Lock(); self._load(self.off); self._prefetch(self.off + ss)
 
     def _url(self): return f"https://huggingface.co/datasets/{self.repo_id}/resolve/main/chunks/" + self._fmt.format(self.ci)
@@ -4283,8 +4303,9 @@ def run_single_round_wrapper(srv, at, se, emit):
 
         emit('status', 'preparing'); emit('log', "Preparing model...")
         dc = md.get("datasetConfig", {}); sc = md.get("shardConfig", {}); slot = sc.get("slot", 0)
-        if cohort_mode: slot = 0; emit('log', "[COHORT] slot forced to 0 (identical shard for all members)")
+        if cohort_mode: slot = int(cc_seed or 0)   # same for every pool member (identical shard), different for every pool
         ds = StreamingShardDataset(dc.get("repoId", DATASET_REPO_ID), dc.get("chunkIdx", 0), dc.get("subChunkSize", 10 * 1024 * 1024), dc.get("tokensPerSample", sl + 1), slot, at, cohort_mode=cohort_mode)
+        if cohort_mode: emit('log', f"[COHORT] chunk {ds.ci}: reading bytes {ds.off:,}-{min(ds.off + ds.sub_size, ds.chunk_size) - 1:,} of {ds.chunk_size:,} (same slice for all members)")
 
         _bs_est = recommend_batch_size(sl, force_mode=optim_mode)
         _BS_STATE["declared"] = int(_bs_est)
@@ -5710,10 +5731,9 @@ def _start_stall_watchdog(limit_s: float = 8.0):
         def _beat():
             while True:
                 try:
-                    if _WARMUP.get("active"):
-                        faulthandler.cancel_dump_traceback_later()
-                    else:
-                        faulthandler.dump_traceback_later(limit_s, repeat=False, file=_STALL_FH)
+                    # Also armed during the startup warm-up: the child-process wait releases the GIL, so a
+                    # dump there is a real stall, and it is exactly where the "Not responding" freeze happens.
+                    faulthandler.dump_traceback_later(limit_s, repeat=False, file=_STALL_FH)
                 except Exception: return
                 time.sleep(1.0)
         threading.Thread(target=_beat, daemon=True, name="stall-watchdog").start()
@@ -5798,6 +5818,46 @@ def _pick_runner(args):
     if args.web: return run_web
     return run_headless if args.headless else run_gui
 
+def _start_ui_health_watchdog(window, html_getter, api):
+    """Linux/WebKitGTK: the web process can die or lose its surface after hours (the window turns white and
+    stays white). Probe the page every few seconds; two failed probes in a row reload it and restore the
+    dashboard state. CROWDGPT_UI_WATCHDOG=0 disables it."""
+    if not sys.platform.startswith("linux") or os.environ.get("CROWDGPT_UI_WATCHDOG", "1") == "0": return
+    def _probe():
+        box = {}
+        def _run():
+            try: box["r"] = window.evaluate_js("document.readyState + '|' + (document.body ? document.body.children.length : 0)")
+            except Exception as e: box["e"] = e
+        th = threading.Thread(target=_run, daemon=True); th.start(); th.join(10.0)
+        r = box.get("r")
+        return isinstance(r, str) and r.startswith("complete") and not r.endswith("|0")
+    def _restore():
+        try:
+            window.load_html(html_getter())
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                time.sleep(1.0)
+                if _probe(): break
+            if getattr(api, "auth_token", None) or getattr(api, "username", None):
+                api.emit('login_success', {'username': api.username or 'anonymous', 'autologin': True})
+            try: api.get_backends()
+            except Exception: pass
+            if api.thread is not None and api.thread.is_alive():
+                api.emit('started', {})
+        except Exception as e: log.warning(f"[ui] reload failed: {e}")
+    def _loop():
+        api._ui_ready.wait(); time.sleep(20.0)
+        bad = reloads = 0
+        while reloads < 8:
+            time.sleep(6.0)
+            if _probe(): bad = 0; continue
+            bad += 1
+            if bad >= 2:
+                reloads += 1; bad = 0
+                log.warning(f"[ui] web view unresponsive/blank - reloading it ({reloads}/8)")
+                _restore()
+    threading.Thread(target=_loop, daemon=True, name="ui-health").start()
+
 def run_gui(args):
     global _GUI_MODE
     if not _WEBVIEW_OK:
@@ -5826,6 +5886,7 @@ def run_gui(args):
     html_out = render_client_html(html_template)
     window = _create_window_safe("CrowdGPT", html_out, kwargs); api.window = window
     api._add_sink(PywebviewSink(window, api._ui_ready))
+    _start_ui_health_watchdog(window, lambda: html_out, api)
 
     def _warmup():
         # Runs after first paint. The heavy part is a CHILD process, so this
